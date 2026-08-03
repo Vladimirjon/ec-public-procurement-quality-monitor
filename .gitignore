@@ -1,0 +1,36 @@
+# Python environment
+.venv/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# Local project data
+data/raw/*
+data/processed/*
+data/quarantine/*
+!data/**/.gitkeep
+
+# Logs
+*.log
+
+# Operating system
+.DS_Store
+Thumbs.db
+
+# IDE local configuration
+.vscode/
+.idea/
