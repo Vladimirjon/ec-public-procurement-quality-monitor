@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "tools": [
+    "claude-code"
+  ],
+  "roles": [
+    {
+      "id": "sdd-architect",
+      "tier": "most-capable"
+    }
+  ],
+  "gates": [
+    "post-specs",
+    "post-red-tests",
+    "post-audit"
+  ],
+  "skills": [
+    "harny-propose",
+    "harny-test",
+    "harny-implement",
+    "harny-audit",
+    "harny-document",
+    "harny-sync",
+    "harny-feedback",
+    "harny-doctor",
+    "harny-standards"
+  ]
+}
