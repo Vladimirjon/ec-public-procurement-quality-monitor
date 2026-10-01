@@ -178,6 +178,10 @@ Leyenda: 🧑 lo escribes tú a mano · 🤖 lo hace un agente y tú lo revisas 
   3. Ejecuta `node .sdd/doctor/run-doctor.mjs`.
   4. Corrige los dos avisos de seguridad:
      `git config core.hooksPath .sdd/git-hooks` e instala gitleaks.
+     Ojo: los hooks están guardados en git sin permiso de ejecución
+     (`100644`). Git para Windows los ejecuta igual, pero en Linux o macOS
+     se ignoran. Investiga `git update-index --chmod=+x` y decide si
+     corregirlo.
   5. 🧑 Dibuja en papel las 4 capas y qué puede importar cada una.
 - ✅ El doctor da 0 avisos y la bitácora tiene la entrada del Día 1.
 - **Autoevaluación:** ¿Por qué `domain` no puede importar `psycopg`? ¿Qué
@@ -213,9 +217,13 @@ Leyenda: 🧑 lo escribes tú a mano · 🤖 lo hace un agente y tú lo revisas 
 - **Concepto:** feedback computacional: hooks por turno frente a CI. Por qué
   el agente necesita el mismo control que el CI.
 - **Práctica:**
-  1. Ejecuta `npx harny init --help` y lee las opciones antes de correr nada.
-  2. Vuelve a ejecutar `npx harny init` con los 5 roles y el stack `python`
-     (D-06).
+  1. harny no está publicado en npm: se instaló desde su código fuente,
+     `github.com/Danii2020/harny` (ver el commit `d0b08fc`). Repite ese
+     proceso: clona el repositorio, revisa qué cambió desde la instalación
+     anterior y lee la ayuda de su comando `init` antes de ejecutarlo.
+  2. Vuelve a ejecutar el `init` de harny con los 5 roles y el stack
+     `python` (D-06). Decide de nuevo, a conciencia, si incluir `.mcp.json`
+     (Context7), que se excluyó a propósito en la primera instalación.
   3. 🧑 Revisa el diff generado archivo por archivo: `.claude/agents/`,
      `.claude/settings.json`, `.sdd/` y el bloque generado de
      `harny-feedback.yml`.
