@@ -39,4 +39,14 @@ Ver [plan.md](plan.md).
   Se activa el Día 4.
 - **Roles harny activos:** solo `sdd-architect`. Los otros cuatro se
   habilitan el Día 4 (decisión D-06).
+- **Flujo con GitHub (decidido el Día 0):**
+  - Los commits se firman como autor `Vladimirjon <vladimirpasquel11@gmail.com>`,
+    también en las sesiones con Claude. Claude aparece como coautor
+    (`Co-Authored-By`).
+  - Todo cambio llega a `main` por pull request, con el CI en verde antes
+    del merge. El gráfico de contribuciones de GitHub solo cuenta los commits
+    que llegan a la rama por defecto con un correo vinculado a la cuenta.
+  - El primer commit del plan quedó con Claude como autor. No se reescribió
+    porque `.claude/settings.json` prohíbe `git push --force`, y eso es
+    correcto: el historial publicado no se reescribe.
 - **Siguiente paso:** Día 1, orientación.
