@@ -86,14 +86,16 @@ Ver [plan.md](plan.md).
   - **`.sdd`:** son las siglas de Specification-Driven Development. Es la
     carpeta del harness, y el punto inicial la hace "oculta" por convención.
 - **Decisiones tomadas (ID del plan y resumen):** ninguna del registro D-01 a
-  D-13 (empiezan el Día 3). Queda pendiente decidir si se corrige el modo de
-  ejecución de los hooks con `git update-index --chmod=+x`.
+  D-13 (empiezan el Día 3). Decisión local del día: **corregir** el modo de
+  los hooks de `100644` a `100755` con `git update-index --chmod=+x`
+  (`pre-commit` y `pre-push`). Motivo: costo mínimo, sin riesgo en Windows y
+  el repositorio queda igual en Linux y macOS. El CI no invoca los hooks y una
+  clonación nueva no los activa, así que el riesgo real era bajo.
 - **Verificación (comando y resultado):** `node .sdd/doctor/run-doctor.mjs`:
   30 OK, 2 omitidos, 0 avisos, 0 fallos. gitleaks 8.30.1 instalado. Tras la
   instalación hubo que abrir una terminal nueva para que gitleaks entrara en
   el PATH.
 - **Dudas abiertas:**
-  - Si corregir el permiso de ejecución de los hooks, y cómo.
   - Me interesa probar un adaptador con otra base de datos (MongoDB o MySQL)
     para ver el efecto de los puertos. Cambiar la base del proyecto sería una
     decisión de arquitectura y requiere aprobación.
