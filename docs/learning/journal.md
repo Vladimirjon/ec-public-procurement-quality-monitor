@@ -53,9 +53,6 @@ Ver [plan.md](plan.md).
 
 ## Día 1: Orientación (2026-10-01)
 
-> Borrador redactado por Claude a partir de lo que expliqué en la sesión.
-> Lo revisaré y lo reescribiré con mis palabras cuando repase.
-
 - **Objetivo:** entender la arquitectura del proyecto y el método SDD, y dejar
   el doctor de harny sin avisos.
 - **Qué hice:** leí `AGENTS.md`, `README.md`, `docs/architecture.md`, los tres
