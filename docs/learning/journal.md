@@ -104,3 +104,68 @@ Ver [plan.md](plan.md).
     evidencia original de SERCOP, que es la base de todo lo demás.
 - **Siguiente paso:** Día 2, conocer la fuente de datos (OCDS y portal de
   SERCOP).
+
+## Día 2: Conocer la fuente de datos (2026-10-02 al 2026-10-03)
+
+- **Objetivo:** entender el estándar OCDS y observar cómo se comporta el portal
+  de datos abiertos de SERCOP para consultar los procesos de E.E.Q.
+- **Qué hice:** leí el estándar Open Contracting Data Standard. Exploré el
+  portal de SERCOP con la pestaña Network de las herramientas del navegador,
+  revisé los paquetes y repetí las consultas desde mi terminal. Al principio me
+  daba 429 y tuve que ajustar los parámetros. Para las consultas pedí ayuda a
+  ChatGPT. Escribí `docs/sources/sercop-observations.md` con lo observado. Además
+  se configuró la protección de `main` y otras buenas prácticas del repositorio
+  (PR #4), que el plan tenía para el Día 27.
+- **Qué aprendí (con mis palabras):**
+  - **OCDS:** es un modelo común de datos para publicar de forma estandarizada
+    los datos y documentos de las contrataciones, ya sean bienes, obras o
+    servicios.
+  - **OCID:** significa Open Contracting ID y distingue mayúsculas de
+    minúsculas. Lleva el prefijo `ocds-`, seis caracteres alfanuméricos que
+    identifican a quien publica, y después el identificador interno del proceso.
+  - **Release:** la información de un proceso de contratación en un momento
+    dado. No se edita: si algo cambia, se publica otro release.
+  - **Record:** el registro de un OCID. Reúne sus releases.
+  - **Etapas (ciclo de vida):**
+    - `planning`: qué se contrata y cómo.
+    - `tender`: el procedimiento para seleccionar un proveedor.
+    - `award`: qué proveedor se eligió y por qué valor.
+    - `contract`: los eventos de la firma entre comprador y proveedor.
+    - `implementation`: la ejecución hasta su terminación.
+  - **Del portal:** el buscador de SERCOP usa `GET /PLATAFORMA/api/search_ocds`.
+    Filtrando por año 2025 y por el comprador E.E.Q., sin palabra clave, dio 284
+    procesos en 29 páginas. Con la palabra clave `ELECTRICA QUITO` dio solo 3. La
+    palabra clave **restringe** el resultado, así que no sirve para traer todo.
+  - **Campos:** algunos procesos traen `suppliers` y `budget` en `null`, así que
+    hay que tratarlos como opcionales.
+  - **Límite de uso:** las respuestas traen `X-RateLimit-Limit: 60` y un contador
+    `X-RateLimit-Remaining`. El 429 que vi viene de `/api/record`. No sé cuánto
+    dura la ventana ni a quién se le cuenta.
+  - **Lo que me costó:** no tenía por dónde empezar con "explora el portal".
+    Necesité que cada paso venga con una técnica sugerida y una pregunta de
+    comprobación.
+- **Decisiones tomadas (ID del plan y resumen):** ninguna del registro D-01 a
+  D-13. Decisión local: configurar desde ya la protección de `main` (PR y check
+  `feedback` obligatorios, borrado automático de ramas, Dependabot), en lugar de
+  esperar al Día 27. Queda registrada en `docs/repository-settings.md`.
+- **Verificación (comando y resultado):** `node .sdd/doctor/run-doctor.mjs`:
+  30 OK, 2 omitidos, 0 avisos, 0 fallos.
+- **Dudas abiertas:** quedaron anotadas en el documento de observaciones, y las
+  retomo el Día 12 cuando haga falta para el adaptador:
+  - Qué significa `local=1`.
+  - La ventana exacta del límite de uso y a quién se le cuenta.
+  - Si el 429 trae `Retry-After` y en qué formato viene su cuerpo.
+  - Qué pasa al pedir una página fuera de rango.
+  - Si se puede filtrar directamente por el RUC de E.E.Q. o por `buyerId`.
+- **Respuestas de autoevaluación:**
+  - *¿Qué es un contrato observado frente a uno inventado y por qué `AGENTS.md`
+    lo prohíbe?* Trabajamos con datos reales, y no tendría sentido inventar
+    contratos cuando ya consulto la propia aplicación web. Lo que me faltaba:
+    el riesgo es asumir cómo se comporta la fuente sin haberlo visto (por
+    ejemplo, el significado de `local=1`), porque el código falla en silencio.
+    Observado es lo que vi, con fecha y evidencia.
+  - *¿Por qué un release inmutable encaja con el ADR 0002?* Porque el ADR dice
+    que no se debe modificar la información cruda y un release es una foto que
+    SERCOP no edita. Lo que me faltaba: el release viene tal cual lo publica la
+    fuente, y normalizarlo es un trabajo posterior sobre una copia (F5).
+- **Siguiente paso:** Día 3, decisiones de toolchain (D-01 a D-05) y ADR 0004.
