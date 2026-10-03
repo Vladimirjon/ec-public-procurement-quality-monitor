@@ -152,7 +152,9 @@ verificar no demuestra nada.
 | 6 | `pytest` con pruebas unitarias y reporte de cobertura | `.github/workflows/tests.yml` |
 | 17 | Pruebas de integración contra PostgreSQL (`services: postgres`) | `tests.yml` |
 | 27 | CD: release automática al hacer push de un tag `v*` | `.github/workflows/release.yml` |
-| 27 | Protección de la rama `main`, checks obligatorios y badges en el README | Configuración de GitHub y `README.md` |
+| 2 | Protección de `main` (PR y check `feedback` obligatorios), borrado automático de ramas y Dependabot | Configuración de GitHub y [repository-settings.md](../repository-settings.md) |
+| 6 | Agregar el check `tests` a los checks obligatorios de `main` | Configuración de GitHub y `repository-settings.md` |
+| 27 | Badges de CI en el README | `README.md` |
 
 Para la entrevista, esto te deja una historia concreta: *"Cada PR pasa lint,
 tipos, pruebas unitarias, pruebas de integración contra PostgreSQL real y un
@@ -405,9 +407,9 @@ Leyenda: 🧑 lo escribes tú a mano · 🤖 lo hace un agente y tú lo revisas 
   2. 🧑 Escribe `.github/workflows/release.yml`: al hacer push de un tag
      `v*` construye wheel y sdist y crea un GitHub Release con las notas
      del `CHANGELOG.md`.
-  3. Configura la protección de `main` (checks obligatorios y PR requerido).
-  4. Agrega badges de CI al README.
-  5. Publica `v0.9.0` como prueba.
+  3. Agrega badges de CI al README. (La protección de `main` ya se configuró
+     el Día 2.)
+  4. Publica `v0.9.0` como prueba.
 - ✅ Release creada automáticamente.
 
 #### Día 28: Endurecimiento y repaso de la semana 4
