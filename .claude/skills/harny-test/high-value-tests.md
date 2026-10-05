@@ -74,10 +74,9 @@ or don't write it.**
 
 ## Using this in the SDD workflow
 
-Contract guarantees and intent success criteria are the **source of what to cover** —
+Intent acceptance criteria (ACs) are the **source of what to cover** —
 but each one maps to the *cheapest test that would actually fail on a regression*, at
-the right tier. Before writing a test for a contract or intent line, run it through
+the right tier. Before writing a test for an AC, run it through
 "The one question" above. If the only way to cover a line is a tautology, a framework
 test, or a source-text grep, that line is better verified by a behavioral or
-integration test, or by code review for pure styling — note it in `audit.md` (the Test
-Plan's "Not covered by an automated test" line) and move on rather than adding noise.
+integration test, or by code review for pure styling — note it in the `tasks.md` outcome and move on rather than adding noise.

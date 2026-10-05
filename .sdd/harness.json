@@ -7,6 +7,22 @@
     {
       "id": "sdd-architect",
       "tier": "most-capable"
+    },
+    {
+      "id": "sdd-test-writer",
+      "tier": "mid"
+    },
+    {
+      "id": "sdd-executor",
+      "tier": "mid"
+    },
+    {
+      "id": "sdd-auditor",
+      "tier": "most-capable"
+    },
+    {
+      "id": "sdd-documentation",
+      "tier": "mid"
     }
   ],
   "gates": [
@@ -24,5 +40,6 @@
     "harny-feedback",
     "harny-doctor",
     "harny-standards"
-  ]
+  ],
+  "stack": "python"
 }

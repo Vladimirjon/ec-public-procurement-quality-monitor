@@ -1,9 +1,10 @@
 ---
 name: harny-propose
 description: >-
-  Runs the full SDD propose procedure: deeply explore a codebase and produce the five
-  specification files (intent.md, contract.md, roadmap.md, audit.md, tasks.md) for a
-  new feature, one file at a time with human review between them. Use this before any
+  Runs the full SDD propose procedure: deeply explore a codebase and produce the three
+  specification files (intent.md, execution-plan.md, tasks.md) for a new feature, one
+  file at a time with human review between them. The auditor, not the architect, writes
+  audit.md. Use this before any
   implementation begins on a new feature — invoked by the `sdd-architect` role, or
   directly by a human who wants to draft a spec set outside the full pipeline. The user
   must provide a feature name and a description of what they want to build.
@@ -54,8 +55,9 @@ implementation begins.
    existing tests and their conventions, the consumers of anything you will change, and
    the README. Extend existing code rather than forking it. Verify library APIs via
    Context7 (or the tool's equivalent docs-lookup MCP) before pinning a signature.
-3. **Write the five files** in `specs/<feature-name>/`: `intent.md`, `contract.md`,
-   `roadmap.md`, `audit.md`, `tasks.md`. Their exact schema lives in the project's
+3. **Write exactly three files** in `specs/<feature-name>/`: `intent.md`,
+   `execution-plan.md`, `tasks.md`. Never write `audit.md`: only the auditor creates it.
+   Leave `Approval: Pending` in `intent.md`; the human records the approval. The exact schema lives in the project's
    spec-schema templates (this repo: `templates/spec-schema/*.md`; a repo scaffolded by
    `npx harny init`: `.sdd/spec-schema/*.md`). Read each schema file before writing that
    document and follow its structure exactly.
@@ -64,17 +66,18 @@ implementation begins.
    else calls, pseudocode and test bodies to the implementer unless an external contract
    or repository rule requires them. Label requirements separately from revisable
    suggestions.
-5. **Map every success criterion to a validation**, including failure and compatibility
-   cases, and cover existing consumers and test migration, not only new components.
+5. **Map every acceptance criterion to a validation row** in `execution-plan.md`
+   § Validation (the only test plan: tests to write, tier, framework, setup, focused and
+   broader commands), including failure and compatibility cases, and cover existing
+   consumers and test migration, not only new components.
 
 ## Guardrails
 
-- **Never create all five files at once.** Write one at a time and wait for human
+- **Never create all three files at once.** Write one at a time and wait for human
   approval before the next.
 - **Never skip exploration.** Specs must reflect the actual architecture.
-- **Traceability is mandatory**: every contract item traces to an intent goal, every
-  task to a roadmap phase, every audit item to an intent requirement or contract
-  guarantee.
+- **Traceability is mandatory**: every § Validation row cites an AC, every `tasks.md`
+  outcome cites ACs, and every audit item cites an AC or a binding constraint.
 - **Use the project's real conventions**: every code block is in the codebase's actual
   language with real file extensions, and every path is a real one.
 - **Never assume approval.** Only a human's explicit word approves a spec.
@@ -82,4 +85,5 @@ implementation begins.
   `.sdd/spec-schema/` nor an equivalent the repo names exists), **STOP and report it.**
   Never improvise a spec format from memory.
 - The spec files are the single source of truth for every downstream skill
-  (`harny-implement`, `harny-test`, `harny-audit`, `harny-document`).
+  (`harny-implement`, `harny-test`, `harny-audit`, `harny-document`). A feature dir
+  holding `contract.md`/`roadmap.md` is legacy shape; leave it as it is.
