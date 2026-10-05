@@ -8,6 +8,11 @@
     ],
     "schemaFiles": [
       "intent",
+      "execution-plan",
+      "tasks"
+    ],
+    "legacySchemaFiles": [
+      "intent",
       "contract",
       "roadmap",
       "tasks",
@@ -51,25 +56,12 @@
       }
     },
     {
-      "id": "spec-schema:contract",
-      "description": ".sdd/spec-schema/contract.md exists",
+      "id": "spec-schema:execution-plan",
+      "description": ".sdd/spec-schema/execution-plan.md exists",
       "anyOf": [
-        ".sdd/spec-schema/contract.md"
+        ".sdd/spec-schema/execution-plan.md"
       ],
-      "remediation": "run npx harny init to scaffold .sdd/spec-schema/contract.md",
-      "requires": {
-        "anyFile": [
-          ".sdd/harness.json"
-        ]
-      }
-    },
-    {
-      "id": "spec-schema:roadmap",
-      "description": ".sdd/spec-schema/roadmap.md exists",
-      "anyOf": [
-        ".sdd/spec-schema/roadmap.md"
-      ],
-      "remediation": "run npx harny init to scaffold .sdd/spec-schema/roadmap.md",
+      "remediation": "run npx harny init to scaffold .sdd/spec-schema/execution-plan.md",
       "requires": {
         "anyFile": [
           ".sdd/harness.json"
@@ -426,5 +418,18 @@
       }
     ]
   },
-  "commands": []
+  "commands": [
+    {
+      "id": "pytest",
+      "kind": "test",
+      "argv": [
+        "pytest",
+        "-q"
+      ],
+      "pathMode": "whole-project",
+      "requires": {
+        "binary": "pytest"
+      }
+    }
+  ]
 }

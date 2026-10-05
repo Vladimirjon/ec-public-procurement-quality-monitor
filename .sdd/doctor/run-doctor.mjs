@@ -355,6 +355,7 @@ function main() {
     const specsDir = specs.dir;
     const reservedDirs = new Set(specs.reservedDirs ?? []);
     const schemaFiles = specs.schemaFiles ?? [];
+    const legacySchemaFiles = specs.legacySchemaFiles;
     const shippedMarker = specs.shippedMarker;
     const approvedVerdicts = specs.approvedVerdicts ?? [];
 
@@ -378,7 +379,14 @@ function main() {
         continue;
       }
 
-      const missing = schemaFiles.filter((name2) => !entries.includes(`${name2}.md`));
+      // A dir holding contract.md or roadmap.md is legacy shape (even beside an
+      // execution-plan.md); a checks.json without legacySchemaFiles judges every dir
+      // against schemaFiles, as before.
+      const isLegacy =
+        Array.isArray(legacySchemaFiles) &&
+        (entries.includes('contract.md') || entries.includes('roadmap.md'));
+      const required = isLegacy ? legacySchemaFiles : schemaFiles;
+      const missing = required.filter((name2) => !entries.includes(`${name2}.md`));
       if (missing.length > 0) {
         emit(
           `spec-state:${name}`,

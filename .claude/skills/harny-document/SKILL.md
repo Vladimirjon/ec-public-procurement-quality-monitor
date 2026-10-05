@@ -16,7 +16,7 @@ description: >-
   the harny-sync/harny-adr hand-off.
 license: MIT
 compatibility: >-
-  Requires the feature's full `specs/<feature-name>/` directory with a Final Verdict in
+  Requires the feature's full `specs/<feature-name>/` directory with a final verdict in
   `audit.md`, and, for the hand-off, `harny-sync` and `harny-adr` skills in the same
   skill set.
 allowed-tools: Read, Write, Edit, Glob, Bash
@@ -46,15 +46,16 @@ actually did — never design, verify or embellish it.
 ## Inputs
 
 Exactly these three; nothing else is ground truth:
-1. The feature's five spec files in `specs/<feature-name>/`.
-2. `audit.md`'s final verdict and its Requirements, Contract Compliance and Test
-   Coverage tables.
+1. The feature's spec files in `specs/<feature-name>/` (`intent.md`, `execution-plan.md`,
+   `tasks.md`, `audit.md`).
+2. `audit.md`'s final verdict, its AC results, Binding-constraint compliance and Test
+   coverage sections.
 3. The real diff of files changed during implementation — verify against it, not just
-   the roadmap's File Change Map.
+   the execution plan's ownership.
 
 ## Steps
 
-1. **Confirm the trigger.** Read `audit.md`'s Final Verdict. **APPROVED** or
+1. **Confirm the trigger.** Read `audit.md`'s Final verdict. **APPROVED** or
    **APPROVED WITH RESERVATIONS**: proceed. **REJECTED**: stop, touch nothing, and report
    that documentation was skipped because the feature was not approved.
 2. **Update documentation:**
@@ -79,7 +80,7 @@ Exactly these three; nothing else is ground truth:
    directory it was written into):
    1. `harny-sync` in archive mode moves `specs/<feature-name>/` to
       `specs/archived/<feature-name>/` and re-verifies checksums.
-   2. `harny-adr` writes the ADRs the approved `contract.md` / `roadmap.md` earn into
+   2. `harny-adr` writes the ADRs the approved `execution-plan.md` earns into
       `specs/archived/<feature-name>/decisions/`.
    3. `harny-sync` again updates the affected `specs/current/` capability docs and
       regenerates `_index.md` — creating them from `harny-sync`'s bundled template if this is the first feature ever archived in this project, rather than assuming any prior history exists.

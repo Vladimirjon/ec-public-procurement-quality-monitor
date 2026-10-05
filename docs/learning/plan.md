@@ -86,7 +86,7 @@ bitácora. No te saltes puertas humanas para recuperar tiempo.
 ## 3. El pipeline harny (lo repetirás 7 veces)
 
 ```
-sdd-architect   → specs/<feature>/{intent,contract,roadmap,tasks,audit}.md
+sdd-architect   → specs/<feature>/{intent,execution-plan,tasks}.md (el auditor agrega audit.md)
    ⛩ PUERTA 1: revisas y apruebas las specs
 sdd-test-writer → pruebas en ROJO (fallan porque aún no hay código)
    ⛩ PUERTA 2: revisas que fallen por la razón correcta
@@ -235,7 +235,8 @@ Leyenda: 🧑 lo escribes tú a mano · 🤖 lo hace un agente y tú lo revisas 
   error de lint?
 
 #### Día 5: F0 `project-skeleton`, specs
-- **Concepto:** contract-first. Qué va en `intent`, `contract`, `roadmap`,
+- **Concepto:** qué va en `intent` (criterios de éxito), `execution-plan`
+  (reemplaza a `contract` y `roadmap`: restricciones, enfoque y validación),
   `tasks` y `audit`.
 - **Práctica:**
   1. 🤖 `sdd-architect` redacta las specs de F0: `pyproject.toml`,
