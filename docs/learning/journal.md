@@ -221,3 +221,53 @@ Ver [plan.md](plan.md).
     dependencias) y `mypy` estricto en todo (más fricción con librerías, y se
     puede endurecer después).
 - **Siguiente paso:** Día 4, configurar harny por completo y el primer CI real.
+
+## Día 4: Configurar harny por completo y el primer CI real (2026-10-05)
+
+- **Objetivo:** reinstalar harny con los 5 roles y el stack `python`, y dejar el
+  CI listo para revisar Python con `ruff` y `mypy`.
+- **Qué hice:** clono el código fuente de harny en una carpeta fuera del
+  proyecto (`harny-source`) y veo qué cambió desde mi instalación del 26 de
+  septiembre: un solo commit, que cambia el formato de las specs. Instalo sus
+  dependencias con `npm ci --ignore-scripts`, compilo y leo la ayuda de `init`.
+  Hago un ensayo con `--dry-run` y después ejecuto `init` en la rama
+  `chore/day-4-harny-full-install`. Abro el PR #9 y el check `feedback` pasa en
+  verde.
+- **Qué aprendí (con mis palabras):**
+  - **Por qué clonar:** harny no está en npm, así que el programa que genera los
+    archivos solo existe en su código fuente. Mi repo solo tiene los archivos ya
+    generados.
+  - **De dónde sale lo instalado:** `init` copia la carpeta `templates` del
+    clon hacia mi proyecto.
+  - **Roles:** son los cinco agentes del pipeline (architect, test-writer,
+    executor, auditor y documentation). El doctor no es un rol.
+  - **Stack:** `python` es el perfil que ya trae harny, con `ruff` y `mypy`.
+  - **Formato nuevo de las specs:** `contract.md` y `roadmap.md` se fusionaron
+    en `execution-plan.md`. Ahora son `intent`, `execution-plan` y `tasks`, y el
+    auditor agrega `audit.md`.
+  - **Lo que me costó:** sentí que armar el comando de `init` y revisar el diff
+    eran demasiadas vueltas para algo que no tiene que ver con el proyecto.
+    Esperaba que harny fuera fácil.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **D-06:** los 5 roles y el stack `python`.
+  - Actualizar a la versión actual de harny (commit `466c636`) en lugar de
+    quedarme con la instalación del 26 de septiembre.
+  - Instalar las dependencias del clon con `npm ci --ignore-scripts`.
+  - No incluir `.mcp.json` (Context7). Pierdo que los agentes consulten
+    documentación de librerías, y lo reviso en los Días 12 y 15.
+  - Volver `actions/checkout` a `v7`, porque harny lo había regresado a `v5` y
+    deshacía el PR de Dependabot.
+- **Verificación (comando y resultado):** `node .sdd/doctor/run-doctor.mjs`: 29
+  OK, 2 omitidos, 0 avisos, 0 fallos. `git diff --check` sin problemas. El check
+  `feedback` del PR #9 pasó en verde.
+- **Dudas abiertas:**
+  - `ruff` y `mypy` se omiten mientras no estén instalados, y todavía no hay
+    `pyproject.toml`, así que el CI pasa sin revisar código. Cobra sentido en F0.
+  - Un `harny update` futuro puede volver a bajar `checkout` a `v5`.
+  - Cada reinstalación necesita `core.autocrlf=false` en el clon: en Windows, Git
+    convirtió los archivos a CRLF y harny falló al leerlos.
+- **Respuestas de autoevaluación:**
+  - *¿Qué pasa cuando el agente termina un turno con un error de lint?* No la
+    respondí hoy. La retomo en el Día 5.
+- **Siguiente paso:** Día 5, F0 `project-skeleton`, specs, con el formato nuevo
+  de tres archivos.
