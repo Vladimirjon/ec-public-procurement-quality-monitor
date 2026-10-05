@@ -41,12 +41,11 @@ Ver [plan.md](plan.md).
   habilitan el Día 4 (decisión D-06).
 - **Flujo con GitHub (decidido el Día 0):**
   - Los commits se firman como autor `Vladimirjon <vladimirpasquel11@gmail.com>`,
-    también en las sesiones con Claude. Claude aparece como coautor
-    (`Co-Authored-By`).
+    sin líneas de coautoría.
   - Todo cambio llega a `main` por pull request, con el CI en verde antes
     del merge. El gráfico de contribuciones de GitHub solo cuenta los commits
     que llegan a la rama por defecto con un correo vinculado a la cuenta.
-  - El primer commit del plan quedó con Claude como autor. No se reescribió
+  - El primer commit del plan quedó con otro autor. No se reescribió
     porque `.claude/settings.json` prohíbe `git push --force`, y eso es
     correcto: el historial publicado no se reescribe.
 - **Siguiente paso:** Día 1, orientación.
@@ -169,3 +168,56 @@ Ver [plan.md](plan.md).
     SERCOP no edita. Lo que me faltaba: el release viene tal cual lo publica la
     fuente, y normalizarlo es un trabajo posterior sobre una copia (F5).
 - **Siguiente paso:** Día 3, decisiones de toolchain (D-01 a D-05) y ADR 0004.
+
+## Día 3: Decisiones de toolchain (2026-10-03 al 2026-10-04)
+
+- **Objetivo:** decidir las herramientas de Python (D-01 a D-05) y escribir el
+  ADR 0004 frase por frase.
+- **Qué hice:** aprendí qué es un ADR (Architecture Decision Record) y revisé el
+  ADR 0003 como ejemplo. Comprobé que mi `.venv` usa Python 3.13.9 y solo tiene
+  `pip`. Decidí D-01 a D-05 y escribí `docs/adr/0004-python-toolchain.md` frase
+  por frase, con contexto, decisión, alternativas y consecuencias. Instalé `uv`
+  con winget (versión 0.12.23).
+- **Qué aprendí (con mis palabras):**
+  - **ADR:** es la trazabilidad que dejamos para el futuro y para nosotros
+    mismos sobre el repositorio: cuáles eran las prioridades en ese momento y
+    cómo se construyó el proyecto.
+  - **Contexto frente a decisión:** yo describí como contexto algo que era una
+    decisión (usar adaptadores). El contexto es la situación y el problema; la
+    decisión es lo que elegimos hacer.
+  - **venv:** restringe el área donde trabajamos, no complicamos al resto de
+    proyectos ni lo hacemos más pesado con tantas dependencias. En la carrera
+    instalaba todo a nivel global.
+  - **Poetry frente a `uv`:** elegiría Poetry para publicar una librería. Como
+    aquí no se busca publicar, elegí `uv` con `uv.lock`, que mantiene una
+    versión de cada paquete.
+  - **Cadena de herramientas:** `ruff` revisa y formatea el estilo, `mypy`
+    comprueba que los tipos sean los correctos, `pytest` ejecuta las pruebas, y
+    `uv` hace que, si alguien clona el repositorio en otra máquina, también le
+    funcione con las mismas dependencias.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **D-01:** Python `>=3.13`, CI con 3.13. Pierdo que versiones inferiores no
+    puedan usar el proyecto, y no me importa porque no es una librería.
+  - **D-02:** `uv` con `uv.lock`. Descarté Poetry porque no busco publicar
+    paquetes.
+  - **D-03:** `ruff`. Pierdo familiaridad con `flake8` y `black`.
+  - **D-04:** `mypy`, estricto en `domain`. Se podría endurecer capa por capa
+    en el futuro.
+  - **D-05:** `pytest`. Pierdo no tener cero dependencias.
+- **Verificación (comando y resultado):** `node .sdd/doctor/run-doctor.mjs`:
+  30 OK, 2 omitidos, 0 avisos, 0 fallos. `git diff --check` sin problemas.
+- **Dudas abiertas:** ninguna que haya expresado hoy.
+- **Respuestas de autoevaluación:**
+  - *¿Qué cambia con el ADR y por qué?* Nos casamos con decisiones importantes
+    de cómo desarrollamos: en lugar de `pip` y de instalar en global, usamos un
+    venv gestionado por `uv` y el archivo `uv.lock`.
+  - *¿Cómo puede fallar?* Si alguien no sigue las indicaciones de las
+    dependencias y `uv.lock` queda desactualizado, el proyecto puede fallar en
+    otra máquina.
+  - *¿Qué demostraría que funciona?* Que alguien clone el repositorio en otra
+    máquina y le funcione con las dependencias que fijamos.
+  - *¿Qué alternativa descartaste y qué perdiste?* Poetry (no busco publicar),
+    `flake8` y `black` (pierdo familiaridad), `unittest` (pierdo cero
+    dependencias) y `mypy` estricto en todo (más fricción con librerías, y se
+    puede endurecer después).
+- **Siguiente paso:** Día 4, configurar harny por completo y el primer CI real.
