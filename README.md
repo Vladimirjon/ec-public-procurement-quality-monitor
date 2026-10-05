@@ -41,6 +41,7 @@ See [the architecture](docs/architecture.md) and the accepted decisions:
 - [ADR 0001: Modular monolith](docs/adr/0001-modular-monolith.md)
 - [ADR 0002: Immutable raw storage](docs/adr/0002-immutable-raw-storage.md)
 - [ADR 0003: No distributed infrastructure in v1](docs/adr/0003-no-distributed-infrastructure-in-v1.md)
+- [ADR 0004: Python toolchain](docs/adr/0004-python-toolchain.md)
 
 ## Technologies
 
