@@ -1,0 +1,43 @@
+[project]
+name = "ec-procurement-quality"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+ec-procurement-quality = "ec_procurement_quality.interfaces.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13"]
+build-backend = "uv_build"
+
+[tool.mypy]
+# Global defaults stay non-strict. Strictness applies to the domain layer only,
+# through explicit flags in the override below ("strict = true" is not applied
+# reliably inside per-module sections).
+
+[[tool.mypy.overrides]]
+module = "ec_procurement_quality.domain.*"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+check_untyped_defs = true
+warn_return_any = true
+strict_equality = true
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+# Default rules (they include the Pyflakes "F" rules) and default formatting.
+# The target version is inferred from requires-python.
+
+[tool.pytest]
+testpaths = ["tests"]
