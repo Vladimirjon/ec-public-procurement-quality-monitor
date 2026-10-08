@@ -95,7 +95,7 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
     - `git grep -n "setup-uv" -- .github/workflows/harny-feedback.yml docs/repository-settings.md` shows the step with its adjacent comment and the note.
     - `git grep -n -i "PATH" -- README.md` shows the hook limitation.
   - Evidence (2026-10-08): `README.md` now lists the real install, CLI, lint, format, type and test commands, drops the "planned" wording for the package and CLI, and states the Stop/pre-commit `.venv`-on-`PATH` limitation. `AGENTS.md` § Current commands drops the "no command or test suite" sentence and lists the same commands. `docs/repository-settings.md` has a new subsection "Hand-maintained steps in `harny-feedback.yml`" with the three steps and restore instructions; the `pip` Dependabot line is kept. `git grep -n "setup-uv" -- .github/workflows/harny-feedback.yml docs/repository-settings.md` -> workflow line 77 (comment block on lines 71-75) and settings lines 32 and 49. `git grep -n -i "PATH" -- README.md` -> lines 82 and 86 (hook limitation). `git diff --check` -> exit 0.
-- [ ] **O7** Local manual verification (AC1, AC2, AC3, AC7, AC8, AC11, AC12). The executor runs these after O1 to O6 are committed on `feat/project-skeleton`. The auditor re-runs them or records them as reused or unavailable. Probe files and throwaway clones are never committed.
+- [x] **O7** Local manual verification (AC1, AC2, AC3, AC7, AC8, AC11, AC12). The executor runs these after O1 to O6 are committed on `feat/project-skeleton`. The auditor re-runs them or records them as reused or unavailable. Probe files and throwaway clones are never committed.
   - AC1: run `tmp=$(mktemp -d) && git clone . "$tmp" && cd "$tmp" && uv sync --locked`. Expect exit 0, and `git status --short` in the clone shows no change.
   - AC2: in a throwaway clone, change a version bound in `[dependency-groups] dev` without running `uv lock`, then run `uv sync --locked; echo $?`. Expect a non-zero exit and an error saying the lockfile needs updating. Record the exact message.
   - AC3: in a throwaway clone, run `uv sync --python 3.12; echo $?`. Expect a non-zero exit and an error naming `>=3.13`. This may download Python 3.12. If there is no network, record it as unavailable, never as a pass.
@@ -103,6 +103,14 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
   - AC8: with `src/ec_procurement_quality/domain/probe.py` containing `def f(x): return x`, `uv run mypy .` exits non-zero with "missing a type annotation". With the same file moved to `src/ec_procurement_quality/application/`, it exits 0. Delete the probe afterwards; `uv run mypy .` then exits 0 and `git status --short` shows no probe file.
   - AC11: add an unused `import os` to a file under `src/`, run the runner command from Baseline, and expect `finding from \`ruff\`` and exit 2. Then revert the file and confirm `git status --short` is clean.
   - AC12: the O5 commands give the same results on the final commit.
+  - Evidence (2026-10-08, committed state `cbaefec`, uv 0.12.23, Python 3.13.9; throwaway clones `a1` and `a3` under the session scratchpad, made with `git -c core.longpaths=true clone` because the default clone failed with "Filename too long" on the long scratchpad path):
+    - AC1: `git clone` + `uv sync --locked` in the clone -> exit 0 (created `.venv`, installed 14 packages including `ec-procurement-quality==0.1.0`); `git status --short` in the clone -> empty. Pass.
+    - AC2: in the clone, `pyproject.toml` dev bound `"pytest>=9.1.1"` changed to `"pytest>=9.0.0"` with no `uv lock`; `uv sync --locked; echo $?` -> exit 1. Exact output: `Resolved 14 packages in 386ms`, then `error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.`, blank line, `hint: To update the lockfile, run `uv lock`.` Pass.
+    - AC3: `uv sync --python 3.12` in a clone; network was available and uv downloaded `cpython-3.12.15-windows-x86_64-none` (21.0MiB). Run from PowerShell -> exit 2. Exact output: `Using CPython 3.12.15 interpreter at: C:\Users\johan\AppData\Roaming\uv\python\cpython-3.12.15-windows-x86_64-none\python.exe`, then `error: The requested interpreter resolved to Python 3.12.15, which is incompatible with the project's Python requirement: `>=3.13` (from `project.requires-python`)`. Pass. Unexpected: the first runs from Git Bash (the Bash tool) failed after the download with `error: Missing expected target directory for Python minor version link at `C:\Users\johan\AppData\Roaming\uv\python\cpython-3.12.15-windows-x86_64-none`` (exit 2), also after `uv python install 3.12 --reinstall`. That is a Git Bash symlink quirk of uv's minor-version link, not a project problem, and the same command from PowerShell gives the expected error. Side effect outside the repo: uv's managed Python 3.12.15 is now installed under `%APPDATA%\uv\python`.
+    - AC7: `uv run ruff check .` -> exit 0 ("All checks passed!"); `uv run ruff format --check .` -> exit 0 ("46 files already formatted"). Pass.
+    - AC8: probe `src/ec_procurement_quality/domain/probe.py` with `def f(x): return x` -> `uv run mypy .` exit 1: `src\ec_procurement_quality\domain\probe.py:1: error: Function is missing a type annotation  [no-untyped-def]`, "Found 1 error in 1 file (checked 9 source files)". Same file moved to `application/` -> exit 0 ("Success: no issues found in 9 source files"). Probe deleted; `uv run mypy .` -> exit 0 ("no issues found in 8 source files"); `git status --short` empty. Pass.
+    - AC11: appended `import os` to `src/ec_procurement_quality/interfaces/cli.py`; the Baseline runner command printed `finding from `ruff` (exit 1):` followed by ``F401 [*] `os` imported but unused`` at `src\ec_procurement_quality\interfaces\cli.py:29:8`, then `harny-feedback: 2 of 2 command(s) ran, 0 skipped.`, exit 2. Reverted with `git checkout -- <file>`; `git status --short` empty. Pass.
+    - AC12: `node .sdd/doctor/run-doctor.mjs` -> `29 ok, 2 skipped, 0 warned, 0 failed`; `uv run node .sdd/doctor/run-doctor.mjs` -> `OK pytest`, `30 ok, 1 skipped, 0 warned, 0 failed`. `.venv/Scripts/python.exe --version` -> `Python 3.13.9`. With the real diff form, `git diff --name-only main -- '*.py'` lists the 8 `.py` files; `uv run ruff check <those>` -> exit 0 and `uv run mypy <those>` -> exit 0 ("no issues found in 8 source files"). `git diff --check` -> exit 0. `git diff --name-only main -- .sdd .claude` -> empty. `src/ec_procurement_quality/` holds one file of its own (`__init__.py`). Same results as O5. Pass.
 - [ ] **O8** CI verification (AC1, AC10, AC11, AC12). The human pushes `feat/project-skeleton` and opens the F0 pull request. The human, or the conductor reading the run log with `gh`, records the evidence below.
   - AC10: the `harny feedback (Python)` step log ends with `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` and the `feedback` check is green.
   - AC1: the `uv sync --locked` step is green on the runner.
@@ -116,8 +124,8 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
 
 ## Working state
 - Updated: 2026-10-08
-- Outcome: O1 to O6 done. O7 and O8 not started (O7 needs the work committed; O8 needs the pull request). O9, O10 not started.
-- Phase: implementation complete for O2 to O6 on branch `feat/project-skeleton`; everything is in the working tree, nothing is committed. Next is the human commit, then O7.
+- Outcome: O1 to O7 done. O8 not started (needs the pull request). O9, O10 not started.
+- Phase: O1 to O6 committed (`8bb7d66`, `cbaefec`) on branch `feat/project-skeleton`; O7 local verification done and recorded. Next is the human push and pull request for O8.
 - In progress: nothing
 - Deviation from Baseline: the branch was created from `f07c304`, not `699cae5` (see O1 notes). Use `main`/`f07c304` for the `git diff` checks.
 - Deviation from plan: `astral-sh/setup-uv` is pinned to `v10.2.0` (`c18668ad3cf93ea998bef934396af7bb5c839dc7`) because the re-check found it is the latest release, not `v10.1.0`. The step names also carry "(hand-maintained, restore after harny init or update)" next to the comment block.
@@ -134,12 +142,12 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
   - `src/ec_procurement_quality/` held one file of its own (`__init__.py`, empty). `pyproject.toml` has no `authors`, and `uv.lock` has no local path or email. `.venv` was reused (still Python 3.13.9, no "Creating virtual environment" message); no `.python-version` was created.
   - `[tool.ruff]` and the bare `[tool.mypy]` table contain only comments (defaults). The mypy override has no `strict = true`.
 - Standards and feedback checks: `AGENTS.md` has no coding-standards section, so `harny-standards` found nothing binding beyond its boundaries, change restrictions and "run relevant verification" (done above). `src/feedback.ts` is not in this repo; the mapped commands were taken from `.sdd/git-hooks/commands.json` (ruff check, mypy), and both pass. Re-applied for O2 to O6 on 2026-10-08 with the same result.
-- Last command: `uv run pytest` -> exit 0, `7 passed`
-- Next step: the human reviews and commits O1 to O6 and writes `.github/workflows/tests.yml` by hand later. Then the executor does O7 (local manual verification on the committed branch), the human pushes and opens the pull request for O8, then O9 and the auditor's O10.
+- Last command: O7 AC12 checks -> all exit 0 (`git status --short` clean after the probes)
+- Next step: the human pushes and opens the pull request for O8 (and writes `.github/workflows/tests.yml` by hand later), then O9 and the auditor's O10.
 
 ## Finding responses
 | Finding | Response | Evidence |
 |---|---|---|
 
 ## Checkpoint
-O1 to O6 are implemented (uncommitted, in the working tree) on branch `feat/project-skeleton`, created from `f07c304`. Resume at O7 after the human commits.
+O1 to O7 are done on branch `feat/project-skeleton` (created from `f07c304`). Resume at O8 after the human pushes and opens the pull request.
