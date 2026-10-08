@@ -271,3 +271,58 @@ Ver [plan.md](plan.md).
     respondí hoy. La retomo en el Día 5.
 - **Siguiente paso:** Día 5, F0 `project-skeleton`, specs, con el formato nuevo
   de tres archivos.
+
+## Día 5: F0 `project-skeleton`, specs (2026-10-05 al 2026-10-07)
+
+- **Objetivo:** tener aprobadas las tres specs de F0 (`intent`, `execution-plan` y
+  `tasks`) para empezar a construir el Día 6.
+- **Qué hice:** no tenía criterios propios para F0 y se lo dije, así que cambiamos
+  el orden: el architect redactó primero y yo juzgué lo que escribió. Revisé
+  `intent.md` (13 criterios) y aprobé la revisión 2 después de contestar las 6
+  preguntas abiertas. Luego aprobé `execution-plan.md` y `tasks.md`. Todavía no hay
+  commit ni PR; falta cerrar la bitácora.
+- **Qué aprendí (con mis palabras):**
+  - **Para qué sirve cada archivo:** `intent` dice qué debe ser verdad al final,
+    `execution-plan` dice cómo y con qué restricciones, `tasks` dice en qué orden, y
+    `audit` lo escribe solo el auditor.
+  - **Un buen criterio** tiene un comando y un resultado que se puede ver. Con el
+    ejemplo de `--verbose` lo expliqué así: con la bandera obtengo los detalles de la
+    ejecución, sin ella solo lo mínimo, y un riesgo es que la bandera cambie la salida
+    o cargue el procesamiento.
+  - **Sobre `uv`:** pensé que se encargaba de todo. Me corrigieron: `uv` instala y
+    fija versiones, pero no crea las capas, ni el comando `--version`, ni hace que
+    el check de GitHub revise el código.
+  - **Lo que me costó:** quedarme sin saber qué escribir cuando me pidieron criterios
+    desde cero. Me pesó el método, y dije que esto era para dejar un proceso
+    auditable y que no esperaba tantas preguntas ni archivos técnicos largos.
+    Acordamos preguntarme solo lo estrictamente necesario.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **Nombre de la feature:** `project-skeleton`.
+  - **Programa de empaquetado:** `uv_build`, que es de `uv`.
+  - **Instalar `uv` en CI:** la acción oficial `astral-sh/setup-uv`, con versión fija.
+    La elegí porque Dependabot vigila su versión.
+  - **Comando y versión:** `ec-procurement-quality` y `0.1.0`.
+  - **Comando sin argumentos:** queda para el primer comando real.
+  - **Pasos de CI:** llevan un comentario y una nota en
+    `docs/repository-settings.md` para restaurarlos si harny los borra.
+  - **Hooks locales:** solo corren `ruff` y `mypy` con `.venv` en `PATH`; queda
+    documentado como limitación y no se arregla en F0.
+  - **`uv` en CI:** sin fijar su versión; `--locked` hace que falle con ruido si hay
+    desacuerdo con `uv.lock`.
+  - **Orden de F0:** el executor prepara el toolchain (O1) antes de las pruebas en
+    rojo, porque sin `pyproject.toml` `pytest` ni corre.
+- **Verificación (comando y resultado):** `node .sdd/doctor/run-doctor.mjs`: 29 OK,
+  2 omitidos, 0 avisos, 0 fallos. `git diff --check` sin problemas. `git status`
+  muestra solo `specs/` sin seguimiento.
+- **Dudas abiertas:**
+  - El texto exacto de los errores de `uv` en AC2 y AC3 y el SHA de `setup-uv`
+    se confirman al implementar.
+  - Una actualización de harny puede borrar los pasos de CI que agregaremos; el AC10
+    es la alarma.
+  - `src/ec_procurement_quality/` no puede tener 3 o más archivos propios o el
+    doctor avisa.
+- **Respuestas de autoevaluación:** no respondí hoy qué pasa cuando el agente termina
+  un turno con un error de lint (viene del Día 4). Queda pendiente.
+- **Siguiente paso:** Día 6, F0 en rojo y verde. Aprobar las pruebas en rojo, aprobar
+  el veredicto del auditor y escribir a mano `.github/workflows/tests.yml`. Antes,
+  hacer el commit y el PR de las specs de hoy.
