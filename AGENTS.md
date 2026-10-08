@@ -22,8 +22,19 @@ documented source behavior and approved fixtures.
 
 ## Current commands
 
-There is no application command, test suite, or dependency configuration yet.
-Available checks include:
+Install and run from the repository root with `uv` (Python 3.13, committed
+`uv.lock`):
+
+```powershell
+uv sync --locked
+uv run ec-procurement-quality --version
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy .
+uv run pytest
+```
+
+Other available checks:
 
 ```powershell
 .venv\Scripts\python.exe --version
@@ -31,6 +42,9 @@ Available checks include:
 git status --short
 git diff --check
 ```
+
+The Stop and pre-commit hooks run `ruff` and `mypy` only when `.venv` is on
+`PATH`.
 
 Run relevant verification after every change and report the results.
 

@@ -25,7 +25,7 @@ Order: O1 is done by the executor before the red phase. pytest cannot run, and `
 
 Then the test-writer writes the red tests for O2 and O3 and fills their Tests and Red lines. The human reviews them at the post-red-tests gate. After that, the executor does O2 to O8 in order, then the auditor does O9. Manual and CI checks are explicit outcomes (O7, O8), each naming who runs it.
 
-- [ ] **O1** (AC1, AC2, AC3, AC7, AC8): Toolchain bootstrap, done by the executor before the red phase.
+- [x] **O1** (AC1, AC2, AC3, AC7, AC8): Toolchain bootstrap, done by the executor before the red phase.
   - What it delivers:
     - `pyproject.toml`, written by hand and with no `authors` email, containing: project name `ec-procurement-quality`, version `0.1.0`, `requires-python = ">=3.13"`, empty runtime dependencies, and build system `uv_build>=0.12.23,<0.13`.
     - `ruff`, `mypy` and `pytest` in the `[dependency-groups] dev` group, added with `uv add --dev`. This command triggers the permission prompt, which the human approves.
@@ -41,24 +41,36 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
     - `git status --short -- uv.lock` shows `uv.lock` only as a new file, and a second `uv sync --locked` changes nothing.
     - `uv run ruff check .`, `uv run ruff format --check .` and `uv run mypy .` exit 0.
     - `uv run pytest` exits 5 with "no tests ran". That is the expected state before the red phase.
-- [ ] **O2** (AC6): The four layer packages `domain`, `application`, `infrastructure` and `interfaces` exist under `src/ec_procurement_quality/`, can be imported, and contain only what makes them packages. `domain` imports nothing outside the standard library and itself.
-  - Tests: to be filled in by the test-writer. The unit test in `tests/unit/` imports the four layer packages.
-  - Red: to be filled in by the test-writer. The expected right reason is `ModuleNotFoundError` for the `ec_procurement_quality` layer packages, from `uv run pytest tests/unit -q`.
+- [x] **O2** (AC6): The four layer packages `domain`, `application`, `infrastructure` and `interfaces` exist under `src/ec_procurement_quality/`, can be imported, and contain only what makes them packages. `domain` imports nothing outside the standard library and itself.
+  - Tests: `tests/unit/test_layers.py` (tier: unit, pytest, setup `uv sync --locked`; selected by `-k layer`).
+    - `test_layer_package_is_importable[domain|application|infrastructure|interfaces]` (AC6): `importlib.import_module("ec_procurement_quality.<layer>")` succeeds and the result is a regular package, i.e. it has an `__init__.py` (`__file__` is not `None`), not a bare directory that only imports as a namespace package.
+    - `test_layer_domain_imports_only_stdlib_and_itself` (AC6): `domain` is a regular package, and every import in every `.py` file under it (found with `ast`) is either in `sys.stdlib_module_names` or inside `ec_procurement_quality.domain`; relative imports may not climb out of `domain`. It passes vacuously on the empty package and guards later domain code.
+  - Red: run on 2026-10-07 from the repo root.
+    - `uv run pytest tests/unit/test_layers.py -q` -> exit 1, `5 failed`. The four importability tests fail with `AssertionError: <layer> needs an __init__.py` (`assert None is not None`, module is `<module 'ec_procurement_quality.<layer>' (namespace) ...>`), and the domain test fails the same way for `domain`.
+    - Reason this is the right one and not `ModuleNotFoundError`: the untracked, empty local folders `src/ec_procurement_quality/{domain,application,infrastructure,interfaces}/` already exist in this working tree, so Python imports them as namespace packages. In a clean clone they do not exist and the failure would be `ModuleNotFoundError`. The `__file__` check makes the test red in both situations and turns green only when the executor creates the `__init__.py` files.
+    - `uv run pytest tests/unit -q` (whole directory) is interrupted at collection, exit 2, because of `tests/unit/test_cli.py` (see O3), so the layer tests only report when run on their own file or with `--ignore=tests/unit/test_cli.py` (`5 failed`).
   - Green: `uv run pytest tests/unit -q -k layer` passes, and `uv run python -c "import ec_procurement_quality.domain, ec_procurement_quality.application, ec_procurement_quality.infrastructure, ec_procurement_quality.interfaces"` exits 0 with no output.
-- [ ] **O3** (AC4, AC5, AC9): The CLI `ec-procurement-quality` exists.
+  - Evidence (2026-10-08, repo root): created `__init__.py` (empty) in `domain`, `application`, `infrastructure` and `interfaces`. `uv run pytest tests/unit/test_layers.py -q -k layer` -> exit 0, `5 passed`. `uv run python -c "import ec_procurement_quality.domain, ..."` -> exit 0, no output. (The Green line `uv run pytest tests/unit -q -k layer` could only run after O3, because `test_cli.py` failed collection before; after O3 it gives exit 0, `5 passed, 2 deselected`.)
+- [x] **O3** (AC4, AC5, AC9): The CLI `ec-procurement-quality` exists.
   - What it delivers:
     - The console script `ec-procurement-quality` in `[project.scripts]` targets `ec_procurement_quality.interfaces.cli:main`. `main` accepts an optional argument list.
     - `--version` prints exactly `ec-procurement-quality 0.1.0` and a newline to stdout and exits 0. The version is read from the installed distribution metadata and never hard-coded. `prog` is set explicitly.
     - An unknown option exits 2, prints nothing to stdout, and writes a usage error naming the option to stderr.
     - Only the standard library is used.
-  - Tests: to be filled in by the test-writer. The unit tests in `tests/unit/` check the `--version` output against `[project] version` read with `tomllib`, and the unknown-option exit code and streams.
-  - Red: to be filled in by the test-writer. The expected right reason is `ModuleNotFoundError` for `ec_procurement_quality.interfaces.cli`, from `uv run pytest tests/unit -q`.
+  - Tests: `tests/unit/test_cli.py` (tier: unit, pytest, setup `uv sync --locked`; in-process calls of `main` with `capsys`, no subprocess).
+    - `test_version_prints_program_name_and_pyproject_version` (AC4, AC9; `-k version`): `main(["--version"])` raises `SystemExit` with code 0; stdout equals `ec-procurement-quality ` + `[project] version` read from `pyproject.toml` with `tomllib` + newline; stderr is empty.
+    - `test_bogus_option_is_a_usage_error` (AC5; `-k bogus`): `main(["--bogus"])` raises `SystemExit` with code 2; stdout is empty; stderr contains `unrecognized arguments: --bogus`.
+  - Red: run on 2026-10-07 from the repo root.
+    - `uv run pytest tests/unit -q` -> exit 2, `1 error in 0.18s`, collection of `tests/unit/test_cli.py` fails: `ImportError: cannot import name 'main' from 'ec_procurement_quality.interfaces.cli' (unknown location)`.
+    - Reason this is the right one and not `ModuleNotFoundError`: the untracked empty folder `src/ec_procurement_quality/interfaces/cli/` exists locally, so `ec_procurement_quality.interfaces.cli` resolves as an empty namespace package that has no `main`. In a clean clone the failure would be `ModuleNotFoundError: No module named 'ec_procurement_quality.interfaces'`. Either way the cause is that the CLI module does not exist yet. Note for the executor: create `interfaces/cli.py` (the target is `ec_procurement_quality.interfaces.cli:main`); a regular module file takes precedence over the empty `cli/` namespace folder.
+    - `uv run mypy .` -> exit 1: `tests\unit\test_cli.py:12: error: Module "ec_procurement_quality.interfaces.cli" has no attribute "main"  [attr-defined]` (1 error, expected until O3). `uv run ruff check .` and `uv run ruff format --check .` -> exit 0. mypy resolves `ec_procurement_quality` from the tests without `mypy_path`.
   - Green: all of the following must hold.
     - `uv run pytest tests/unit -q` passes, with at least 1 test passed.
     - `uv run ec-procurement-quality --version` prints `ec-procurement-quality 0.1.0` and exits 0.
     - `uv run ec-procurement-quality --bogus` exits 2.
     - `uv sync --locked` still exits 0 after the `[project.scripts]` change.
-- [ ] **O4** (AC10, AC11, AC13): The `feedback` CI job gets three new steps, each with a comment saying it is hand-maintained and must be restored after `harny init` or `update`. They go in `.github/workflows/harny-feedback.yml` after `Checkout` and before the harny-generated block.
+  - Evidence (2026-10-08): added `src/ec_procurement_quality/interfaces/cli.py` (argparse, `prog="ec-procurement-quality"`, `version` action reading `importlib.metadata.version`) and `[project.scripts] ec-procurement-quality = "ec_procurement_quality.interfaces.cli:main"`. `uv run pytest tests/unit -q` -> exit 0, `7 passed`. `uv run ec-procurement-quality --version` -> `ec-procurement-quality 0.1.0`, exit 0. `uv run ec-procurement-quality --bogus` -> usage plus `error: unrecognized arguments: --bogus` on stderr, exit 2. `uv sync --locked` -> exit 0 ("Checked 14 packages"). `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy .` -> exit 0.
+- [x] **O4** (AC10, AC11, AC13): The `feedback` CI job gets three new steps, each with a comment saying it is hand-maintained and must be restored after `harny init` or `update`. They go in `.github/workflows/harny-feedback.yml` after `Checkout` and before the harny-generated block.
   1. `astral-sh/setup-uv`, pinned to a commit SHA with a `# v10.1.0` comment or to a full version tag, with `python-version: "3.13"`. The executor re-checks the latest release before pinning.
   2. `uv sync --locked`.
   3. Add `$GITHUB_WORKSPACE/.venv/bin` to `$GITHUB_PATH`.
@@ -66,20 +78,23 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
   - Tests: none (CI configuration; checked by O7 and O8).
   - Red: not applicable.
   - Green, locally: the runner command from Baseline prints `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` and exits 0, and `git diff 699cae5 -- .github/workflows/harny-feedback.yml` shows no line changed between the harny markers.
-- [ ] **O5** Migration (AC12): The existing consumers keep working with no change to their files: the doctor, the Stop, SubagentStop and pre-commit hooks, the gitleaks step, the local `.venv` and branch protection's `feedback` check.
+  - Evidence (2026-10-08): the latest setup-uv release is `v10.2.0` (published 2026-09-21, not a prerelease; `gh api repos/astral-sh/setup-uv/releases/latest`), newer than the `v10.1.0` named in the plan. Pinned `astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0`. The SHA comes from `gh api repos/astral-sh/setup-uv/git/ref/tags/v10.2.0` (type `commit`, so not an annotated tag) and matches `gh api repos/astral-sh/setup-uv/commits/v10.2.0`. `action.yml` at that tag has the `python-version` input. Three steps added after `Checkout`, before the harny block, with a hand-maintained comment block and "(hand-maintained, restore after harny init or update)" in each step name. `uv run node .sdd/feedback/run-feedback.mjs run --whole-project --commands "$(cat .sdd/git-hooks/commands.json)"` -> `harny-feedback: 2 of 2 command(s) ran, 0 skipped.`, exit 0. `git diff main -- .github/workflows/harny-feedback.yml` shows one hunk (13 added lines) before the `harny:begin` marker and nothing between the markers. The workflow YAML was not parsed by a YAML tool (none installed); not run on GitHub yet (O8).
+- [x] **O5** Migration (AC12): The existing consumers keep working with no change to their files: the doctor, the Stop, SubagentStop and pre-commit hooks, the gitleaks step, the local `.venv` and branch protection's `feedback` check.
   - `node .sdd/doctor/run-doctor.mjs` reports `0 warned, 0 failed`. In particular there is no `repo-readiness:component-doc:src/ec_procurement_quality` warning.
   - `uv run node .sdd/doctor/run-doctor.mjs` reports `OK pytest`.
   - `.venv\Scripts\python.exe --version` (PowerShell) prints Python 3.13.x. Record whether `uv sync` recreated `.venv`.
   - `uv run ruff check $(git diff --name-only 699cae5 -- '*.py')` and `uv run mypy $(git diff --name-only 699cae5 -- '*.py')` exit 0. This is the per-file form the hooks use. If mypy cannot resolve `ec_procurement_quality` from a test file, add `mypy_path = "src"` and record why.
   - `git diff --check` is clean.
   - No file under `.sdd/` and no `.claude/settings.json` change.
-- [ ] **O6** Docs (AC13):
+  - Evidence (2026-10-08): `node .sdd/doctor/run-doctor.mjs` -> `29 ok, 2 skipped, 0 warned, 0 failed`, exit 0, no `component-doc` warning. `uv run node .sdd/doctor/run-doctor.mjs` -> `OK pytest`, `30 ok, 1 skipped, 0 warned, 0 failed` (the remaining skip is `knowledge-base`). `.venv/Scripts/python.exe --version` -> `Python 3.13.9`; `.venv` was reused, not recreated. Per-file hook form: the files are still untracked, so `git diff --name-only main -- '*.py'` is empty; the same form on the 8 untracked `.py` files (from `git status --short --untracked-files=all`) -> `uv run ruff check <files>` exit 0 and `uv run mypy <files>` exit 0 ("no issues found in 8 source files"), including the test files, so `mypy_path` was not needed. To re-run with the real diff form after the commit (O7/AC12). `git diff --check` -> exit 0. `git status --short .sdd .claude` -> empty. `src/ec_procurement_quality/` holds one file of its own.
+- [x] **O6** Docs (AC13):
   - `README.md` lists the real install, CLI, lint, format, type and test commands and stops calling the CLI and modules planned. It also states that the Stop and pre-commit hooks run `ruff` and `mypy` only when `.venv` is on `PATH`.
   - `AGENTS.md` § Current commands drops "There is no application command, test suite, or dependency configuration yet" and lists the same commands.
   - `docs/repository-settings.md` gets a note that names the hand-maintained CI steps (the `astral-sh/setup-uv` step and the two after it) and explains how to restore them after `harny init` or `update`. Its existing line about the Python Dependabot ecosystem is kept.
   - Green:
     - `git grep -n "setup-uv" -- .github/workflows/harny-feedback.yml docs/repository-settings.md` shows the step with its adjacent comment and the note.
     - `git grep -n -i "PATH" -- README.md` shows the hook limitation.
+  - Evidence (2026-10-08): `README.md` now lists the real install, CLI, lint, format, type and test commands, drops the "planned" wording for the package and CLI, and states the Stop/pre-commit `.venv`-on-`PATH` limitation. `AGENTS.md` § Current commands drops the "no command or test suite" sentence and lists the same commands. `docs/repository-settings.md` has a new subsection "Hand-maintained steps in `harny-feedback.yml`" with the three steps and restore instructions; the `pip` Dependabot line is kept. `git grep -n "setup-uv" -- .github/workflows/harny-feedback.yml docs/repository-settings.md` -> workflow line 77 (comment block on lines 71-75) and settings lines 32 and 49. `git grep -n -i "PATH" -- README.md` -> lines 82 and 86 (hook limitation). `git diff --check` -> exit 0.
 - [ ] **O7** Local manual verification (AC1, AC2, AC3, AC7, AC8, AC11, AC12). The executor runs these after O1 to O6 are committed on `feat/project-skeleton`. The auditor re-runs them or records them as reused or unavailable. Probe files and throwaway clones are never committed.
   - AC1: run `tmp=$(mktemp -d) && git clone . "$tmp" && cd "$tmp" && uv sync --locked`. Expect exit 0, and `git status --short` in the clone shows no change.
   - AC2: in a throwaway clone, change a version bound in `[dependency-groups] dev` without running `uv lock`, then run `uv sync --locked; echo $?`. Expect a non-zero exit and an error saying the lockfile needs updating. Record the exact message.
@@ -100,16 +115,31 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
 - [ ] **O10** Independent audit (AC1 to AC13): the auditor writes `specs/project-skeleton/audit.md` with a verdict. The human accepts or rejects it at the post-audit gate.
 
 ## Working state
-- Updated: 2026-10-07
-- Outcome: O1
-- Phase: not started. The specs are approved (intent Revision 2, execution-plan Revision 1 and this file, by Vladimirjon on 2026-10-07); the next step is the toolchain bootstrap.
+- Updated: 2026-10-08
+- Outcome: O1 to O6 done. O7 and O8 not started (O7 needs the work committed; O8 needs the pull request). O9, O10 not started.
+- Phase: implementation complete for O2 to O6 on branch `feat/project-skeleton`; everything is in the working tree, nothing is committed. Next is the human commit, then O7.
 - In progress: nothing
-- Last command: `node .sdd/doctor/run-doctor.mjs` -> `29 ok, 2 skipped, 0 warned, 1 failed` (the missing `tasks.md`, now written)
-- Next step: the executor creates `feat/project-skeleton` from `699cae5` and does O1. Then the test-writer writes the red tests for O2 and O3, and the human reviews them at the post-red-tests gate.
+- Deviation from Baseline: the branch was created from `f07c304`, not `699cae5` (see O1 notes). Use `main`/`f07c304` for the `git diff` checks.
+- Deviation from plan: `astral-sh/setup-uv` is pinned to `v10.2.0` (`c18668ad3cf93ea998bef934396af7bb5c839dc7`) because the re-check found it is the latest release, not `v10.1.0`. The step names also carry "(hand-maintained, restore after harny init or update)" next to the comment block.
+- Full-suite state (2026-10-08): `uv run pytest` -> exit 0, `7 passed`; `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy .` -> exit 0; doctor `29 ok, 2 skipped, 0 warned, 0 failed` (plain) and `30 ok, 1 skipped, 0 warned, 0 failed` (via `uv run`).
+- Files changed in O2 to O6: `src/ec_procurement_quality/{domain,application,infrastructure,interfaces}/__init__.py` (new, empty), `src/ec_procurement_quality/interfaces/cli.py` (new), `pyproject.toml` (`[project.scripts]`), `.github/workflows/harny-feedback.yml`, `README.md`, `AGENTS.md`, `docs/repository-settings.md`. The red tests `tests/unit/test_layers.py` and `tests/unit/test_cli.py` were not edited.
+- O1 evidence (all run from the repo root, 2026-10-07, uv 0.12.23, Python 3.13.9):
+  - `uv add --dev ruff mypy pytest` -> exit 0. Locked: mypy 2.4.0, pytest 9.1.1, ruff 0.16.10 (plus transitive packages; 14 resolved in total). Because pytest is 9.1.1, the native `[tool.pytest]` table is used.
+  - `uv sync --locked` -> exit 0. `git status --short -- uv.lock pyproject.toml` -> `?? pyproject.toml`, `?? uv.lock` (new files only). A second `uv sync --locked` -> exit 0, "Checked 14 packages", no change.
+  - `uv run ruff check .` -> exit 0 ("All checks passed!"). `uv run ruff format --check .` -> exit 0 ("39 files already formatted"). `uv run mypy .` -> exit 0 ("no issues found in 1 source file").
+  - `uv run pytest` -> exit 5, "collected 0 items ... no tests ran" (expected before the red phase).
+  - `git diff --check` -> exit 0. `node .sdd/doctor/run-doctor.mjs` -> `29 ok, 2 skipped, 0 warned, 0 failed` (the `spec-state` failure from the baseline is gone; the `pytest` skip remains because the doctor was run without `uv run`).
+  - Local runner `uv run node .sdd/feedback/run-feedback.mjs run --whole-project ...` -> `harny-feedback: 2 of 2 command(s) ran, 0 skipped.`, exit 0.
+  - Per-file hook form on `src/ec_procurement_quality/__init__.py`: `uv run ruff check` and `uv run mypy` -> exit 0.
+  - `src/ec_procurement_quality/` held one file of its own (`__init__.py`, empty). `pyproject.toml` has no `authors`, and `uv.lock` has no local path or email. `.venv` was reused (still Python 3.13.9, no "Creating virtual environment" message); no `.python-version` was created.
+  - `[tool.ruff]` and the bare `[tool.mypy]` table contain only comments (defaults). The mypy override has no `strict = true`.
+- Standards and feedback checks: `AGENTS.md` has no coding-standards section, so `harny-standards` found nothing binding beyond its boundaries, change restrictions and "run relevant verification" (done above). `src/feedback.ts` is not in this repo; the mapped commands were taken from `.sdd/git-hooks/commands.json` (ruff check, mypy), and both pass. Re-applied for O2 to O6 on 2026-10-08 with the same result.
+- Last command: `uv run pytest` -> exit 0, `7 passed`
+- Next step: the human reviews and commits O1 to O6 and writes `.github/workflows/tests.yml` by hand later. Then the executor does O7 (local manual verification on the committed branch), the human pushes and opens the pull request for O8, then O9 and the auditor's O10.
 
 ## Finding responses
 | Finding | Response | Evidence |
 |---|---|---|
 
 ## Checkpoint
-Nothing implemented yet. Resume at O1 on branch `feat/project-skeleton`, created from `699cae5`.
+O1 to O6 are implemented (uncommitted, in the working tree) on branch `feat/project-skeleton`, created from `f07c304`. Resume at O7 after the human commits.
