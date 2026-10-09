@@ -476,3 +476,69 @@ Ver [plan.md](plan.md).
 - **Siguiente paso:** Día 8, modelo de dominio: escribir a mano `docs/glossary.md`
   (proceso de contratación, evidencia cruda, ejecución de ingesta, regla de
   calidad y hallazgo de calidad).
+
+## Día 8: Modelo de dominio (2026-10-09)
+
+- **Objetivo:** definir el lenguaje ubicuo del proyecto en `docs/glossary.md`
+  (proceso de contratación, evidencia cruda, ejecución de ingesta, regla de
+  calidad y hallazgo de calidad) y responder si un hallazgo de calidad es una
+  entidad o un objeto de valor.
+- **Qué hice:** vi el ejemplo completo de un término (proceso de contratación)
+  y decidí cambiar la forma de trabajo: en lugar de escribir yo los cuatro
+  restantes a mano, pedí que las definiciones se redactaran con los principios
+  de *Fundamentals of Data Engineering* (Reis y Housley) y que yo las aprobara
+  una por una. Revisé y aprobé evidencia cruda, ejecución de ingesta, regla de
+  calidad y hallazgo de calidad, cada uno con definición, invariantes y ejemplo
+  sintético, y aprobé el borrador de la autoevaluación.
+- **Qué aprendí (con mis palabras):**
+  - Mi criterio de hoy: con el glosario definido, "todo debe estar claro" para
+    las features que siguen, así que prioricé aprobar definiciones revisadas
+    antes que redactarlas yo.
+  - **Lo que no expliqué con mis palabras hoy:** la diferencia entre entidad y
+    objeto de valor. La respuesta de autoevaluación fue un borrador que aprobé,
+    no una que redacté yo.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - Ninguna del registro D-01 a D-13 hoy.
+  - **Forma de trabajo del glosario:** definiciones redactadas con los
+    principios del libro y aprobadas por mí término por término. Esto cambia la
+    marca 🧑 (escribirlo a mano) que traía el plan para hoy.
+  - **Idioma del glosario:** inglés, como el resto de la documentación técnica
+    del repositorio, con el término en español entre paréntesis en cada título.
+  - **Dejado fuera a propósito del glosario:** si las respuestas de error (por
+    ejemplo un `429`) cuentan como evidencia, cómo se guarda la obtención
+    repetida de un mismo contenido, y la severidad, los umbrales y la ejecución
+    de las reglas. Cada uno se decide en la feature que lo necesita.
+- **Verificación (comando y resultado):**
+  - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`: 7
+    pasan, cobertura 100 % de 10 líneas.
+  - `uv run ruff check .`, `uv run ruff format --check .` y `uv run mypy .`: sin
+    errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio.
+- **Dudas abiertas:**
+  - ¿Las respuestas de error (`429`, respuestas incompletas) se preservan como
+    evidencia cruda? Se decide en F1 (ADR 0002 solo las menciona como
+    preocupación).
+  - Cómo representa el almacén que dos ejecuciones obtuvieron el mismo contenido
+    sin duplicarlo (D-07, Día 9).
+  - Severidad, umbrales y ejecución de las reglas de calidad (F6).
+  - Explicar con mis palabras entidad vs objeto de valor antes de escribir el
+    puerto y el objeto de valor del hash (Día 10).
+  - Siguen abiertas las dudas heredadas del Día 7 (checks que fallan, hooks sin
+    `.venv` en el `PATH`, `harny init` o `update` y `_index.md` de
+    `specs/current/`).
+- **Respuestas de autoevaluación:**
+  - *¿Un hallazgo de calidad es una entidad o un objeto de valor?* Es un
+    **objeto de valor**. No tiene identidad propia que persista: se define por
+    su regla y versión, su sujeto, su evidencia y el valor observado, y dos
+    hallazgos con esos mismos valores son el mismo (por eso reevaluar no
+    duplica). Es inmutable y no tiene ciclo de vida: si el dato se corrige,
+    aparece otro hallazgo o ninguno, y el original no se edita. Un proceso de
+    contratación sí es entidad, porque sigue siendo el mismo (`ocid`) aunque su
+    monto cambie. La base de datos le pondrá una clave por fila, pero eso es un
+    detalle de persistencia, no identidad del dominio. Si un hallazgo tuviera
+    estado (abierto, resuelto, asignado), pasaría a ser entidad; hoy no está en
+    el alcance.
+- **Siguiente paso:** Día 9, F1 `raw-evidence-store`: decido D-07 y escribo el
+  ADR sobre la disposición del almacén crudo, y reviso las specs de F1 en la
+  puerta 1.
