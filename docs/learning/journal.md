@@ -371,17 +371,23 @@ Ver [plan.md](plan.md).
   - `git diff --check` limpio.
   - PR #11: `feedback` y `Tests` en verde, mergeable.
 - **Dudas abiertas:**
-  - Hacer `tests` un check obligatorio de `main` en GitHub, que es una acción
-    mía en la configuración. Falta también actualizar
-    `docs/repository-settings.md` cuando se haga.
+  - `tests` pasó a ser check obligatorio de `main` el 2026-10-09. Pedí que lo
+    hicieran por mí, pero cambiar una regla de seguridad del repositorio lo hago
+    yo: ejecuté el comando de `gh api` que me dieron. `docs/repository-settings.md`,
+    el README y el CHANGELOG quedaron actualizados.
   - Reservas aceptadas del auditor (F3, F4 y F7): no se probó en GitHub que un
     import sin usar o un test roto pongan el check en rojo, y los hooks locales
     saltan `ruff` y `mypy` si `.venv` no está en el `PATH`.
   - Ver si el `_index.md` de `specs/current/` quedó con buena forma.
   - Un `harny init` o `update` puede borrar los tres pasos manuales de
     `harny-feedback.yml`.
-- **Respuestas de autoevaluación:** no respondí qué pasa cuando el agente termina
-  un turno con un error de lint (viene del Día 4). Sigue pendiente.
+- **Respuestas de autoevaluación:**
+  - *¿Qué pasa cuando el agente termina un turno con un error de lint?* (viene
+    del Día 4) Cuando el agente termina un turno con un error de lint, el hook lo
+    detecta y le comunica el problema. En GitHub Actions, ese error sí hace
+    fallar el check `feedback`. Aclaración: el hook solo corre `ruff` y `mypy` si
+    `.venv` está en el `PATH`, y el agente tiene que corregir el error antes de
+    poder terminar el turno.
 - **Siguiente paso:** Día 7, repaso de la semana 1: explicar la arquitectura y el
-  pipeline sin mirar, quiz de 10 preguntas, hacer el check `tests` obligatorio,
-  mergear el PR #11 y escribir la retrospectiva.
+  pipeline sin mirar, quiz de 10 preguntas y escribir la retrospectiva. El PR #11
+  se mergea al cerrar el Día 6.

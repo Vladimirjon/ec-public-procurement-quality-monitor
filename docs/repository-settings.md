@@ -11,16 +11,17 @@ Last verified: 2026-10-02.
 | Setting | Value | Why |
 |---|---|---|
 | Pull request required | Yes, 0 approvals | Every change is reviewed in a PR. A solo maintainer cannot approve their own PR, so no approval count is enforced. |
-| Required status check | `feedback` (strict) | Nothing merges unless the CI is green and the branch is up to date with `main`. |
+| Required status checks | `feedback` and `tests` (strict) | Nothing merges unless both CI jobs are green and the branch is up to date with `main`. |
 | Resolve conversations | Required | Review comments cannot be ignored. |
 | Dismiss stale approvals | Yes | A new push invalidates an earlier review. |
 | Include administrators | Yes | The rules also bind the owner. |
 | Force pushes | Blocked | Published history is never rewritten. |
 | Branch deletion | Blocked | `main` cannot be deleted. |
 
-`feedback` is the job id in `.github/workflows/harny-feedback.yml`. When new
-workflows add jobs that must pass (for example `tests` on Day 6), add their
-check names to the required list.
+`feedback` is the job id in `.github/workflows/harny-feedback.yml`, and `tests`
+is the job id in `.github/workflows/tests.yml` (added to the required list on
+2026-10-09, after its first green run on PR #11). When new workflows add jobs
+that must pass, add their check names to the required list.
 
 ### Hand-maintained steps in `harny-feedback.yml`
 

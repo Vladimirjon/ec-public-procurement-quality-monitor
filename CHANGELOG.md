@@ -43,4 +43,5 @@ The project has not been released yet, so every entry is under `Unreleased`.
   error fails `feedback` and that a failing test fails `tests` were verified
   locally only, not on a throwaway pull request. The local Stop and pre-commit
   hooks skip `ruff` and `mypy` when `.venv` is not on `PATH`.
-- `tests` is not a required status check of `main`; only `feedback` is.
+- No coverage threshold is enforced yet; it is decided once real domain code
+  exists.

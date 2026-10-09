@@ -83,8 +83,8 @@ Run these from the repository root. They need [uv](https://docs.astral.sh/uv/).
 
 The `Tests` workflow runs the coverage command on every pull request and on
 every push to `main`. It reports coverage only: no minimum percentage is
-enforced, and a failing test fails the check. `Tests` is not yet a required
-check of `main`; only `feedback` is.
+enforced, and a failing test fails the check. `tests` and `feedback` are both
+required checks of `main`.
 
 The Stop hook (after each agent turn) and the pre-commit hook run `ruff` and
 `mypy` on the touched or staged Python files only when `.venv` is on `PATH`.

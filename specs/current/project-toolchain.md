@@ -192,8 +192,9 @@ set a coverage threshold (`--cov-fail-under` or any coverage configuration).
 | F6 | `tasks.md` bookkeeping was stale at audit time; `tasks.md` says it was corrected afterwards, which the auditor did not re-check | LOW | project-skeleton · audit.md |
 | F7 | The CI-side probe that a failing test turns `tests` red was not run; only the local exit code exists | LOW | project-skeleton · audit.md |
 
-`tests` is also not a required status check of `main` (only `feedback` is).
-That is a human GitHub settings action outside F0 scope, not an audit finding.
+`tests` became a required status check of `main` on 2026-10-09, after the F0
+audit, as a human GitHub settings action outside F0 scope (see
+`docs/repository-settings.md`).
 
 ## Contributing features
 
