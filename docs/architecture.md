@@ -80,6 +80,5 @@ reliability, or operational requirements demonstrate a need. See
 - What are the minimum audit events and quality-rule contracts?
 - Which raw-storage paths, compression, retention policy, and metadata fields
   are supported by observed usage and legal or operational requirements?
-- Which Python compatibility range should be declared in project metadata?
 
 These questions are intentionally not resolved by this baseline.

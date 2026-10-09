@@ -53,8 +53,10 @@ Implemented in the repository:
 - The `ec_procurement_quality` package under `src/` with the four empty layer
   packages and the `ec-procurement-quality` CLI, which only supports
   `--version`.
-- `ruff` (lint and format), `mypy` (strict in `domain` only) and `pytest` as
-  development tools.
+- `ruff` (lint and format), `mypy` (strict in `domain` only), `pytest` and
+  `pytest-cov` as development-only dependencies.
+- Two GitHub Actions workflows on pull requests: `feedback` (`ruff` and `mypy`,
+  plus a secret scan) and `Tests` (unit tests with a coverage report).
 - Git-based source and documentation management.
 
 Planned, not implemented yet:
@@ -77,6 +79,12 @@ Run these from the repository root. They need [uv](https://docs.astral.sh/uv/).
 | Apply formatting | `uv run ruff format .` |
 | Type check | `uv run mypy .` |
 | Test | `uv run pytest` |
+| Test with coverage report (what CI runs) | `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` |
+
+The `Tests` workflow runs the coverage command on every pull request and on
+every push to `main`. It reports coverage only: no minimum percentage is
+enforced, and a failing test fails the check. `Tests` is not yet a required
+check of `main`; only `feedback` is.
 
 The Stop hook (after each agent turn) and the pre-commit hook run `ruff` and
 `mypy` on the touched or staged Python files only when `.venv` is on `PATH`.

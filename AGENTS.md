@@ -32,7 +32,11 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy .
 uv run pytest
+uv run pytest --cov=ec_procurement_quality --cov-report=term-missing
 ```
+
+The last command is what the `Tests` workflow runs in CI. It reports coverage
+and sets no minimum percentage.
 
 Other available checks:
 

@@ -1,5 +1,6 @@
 # Intent: Project skeleton (F0)
 
+Shipped: 2026-10-08
 Revision: 3
 Approval: Approved revision 3 by Vladimirjon on 2026-10-08
 
