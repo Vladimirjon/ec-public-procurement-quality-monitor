@@ -391,3 +391,88 @@ Ver [plan.md](plan.md).
 - **Siguiente paso:** Día 7, repaso de la semana 1: explicar la arquitectura y el
   pipeline sin mirar, quiz de 10 preguntas y escribir la retrospectiva. El PR #11
   se mergea al cerrar el Día 6.
+
+## Día 7: Repaso de la semana 1 (2026-10-09)
+
+- **Objetivo:** explicar sin mirar la arquitectura y el pipeline harny, responder
+  el quiz de 10 preguntas y cerrar la semana 1 con una retrospectiva.
+- **Qué hice:** expliqué la arquitectura y los pasos del pipeline con mis
+  palabras, respondí las 10 preguntas del quiz (incluidas las dos pendientes del
+  Día 6) y revisé el estado del repositorio. El PR #11 de F0 ya estaba mergeado
+  en `main` (commit `c9159c9`).
+- **Qué aprendí (con mis palabras):**
+  - **Arquitectura:** `domain` guarda las reglas del negocio, como recetas que
+    no dependen de un proveedor; `application` coordina los casos de uso y pide
+    servicios mediante puertos; `infrastructure` conecta esos puertos con
+    SERCOP, PostgreSQL o el disco; `interfaces` traduce lo que pide el usuario
+    por el CLI. Así, cambiar cómo se consulta o guarda información no obliga a
+    cambiar las reglas del dominio. Hoy solo hay un esqueleto y el CLI ofrece
+    `--version`.
+  - **Pipeline:** specs (`sdd-architect`, puerta 1) → pruebas en rojo
+    (`sdd-test-writer`, puerta 2: que fallen por la razón correcta) →
+    implementación en verde (`sdd-executor`, sin tocar las pruebas) → auditoría
+    (`sdd-auditor`, puerta 3: aceptar o rechazar el veredicto) → documentación
+    (`sdd-documentation`, automática). `sdd-conductor` coordina el orden y las
+    pausas, pero no reemplaza mi criterio en las puertas.
+  - **Hooks y CI:** los hooks locales dan retroalimentación rápida (`ruff` y
+    `mypy` si `.venv` está en el `PATH`); GitHub Actions repite `ruff` y `mypy`
+    en `feedback`, escanea secretos y corre las pruebas con cobertura en
+    `Tests`. Los hooks ayudan durante el trabajo y el CI verifica el PR.
+  - **TDD (pendiente del Día 6):** una prueba debe fallar primero por la
+    funcionalidad que falta, para demostrar que de verdad detecta el
+    comportamiento esperado; si falla por un error de la prueba, su resultado no
+    valida nada.
+  - **Imports relativos (pendiente del Día 6):** `from ...application import
+    UseCase` desde `domain/models/user.py` es válido como sintaxis, porque sube
+    hasta `ec_procurement_quality`, pero no está permitido como regla de
+    arquitectura: importa una capa externa. Los puntos marcan una ruta, no
+    permisos.
+- **Retrospectiva de la semana 1:**
+  - **Lo que salió bien:** F0 quedó mergeado con `feedback` y `Tests` en verde y
+    obligatorios en `main`; el Día 2 dejó observaciones reales de SERCOP con
+    fecha; el ADR 0004 dejó el toolchain decidido; y las dos pendientes del Día 6
+    quedaron resueltas.
+  - **Lo que me costó:** no saber por dónde empezar cuando el paso es abierto
+    (Día 2: "explora el portal"; Día 5: criterios desde cero), el exceso de
+    vueltas del `init` de harny (Día 4) y el ejemplo de los puntos en los
+    imports relativos (Día 6).
+  - **Lo que funcionó mejor:** que cada paso traiga una técnica sugerida y una
+    pregunta de comprobación, que me pregunten solo lo estrictamente necesario y
+    que me den un ejemplo resuelto antes de pedirme algo.
+  - **Lo que haría distinto:** pedir ese ejemplo resuelto desde el inicio de cada
+    día y cerrar las preguntas de autoevaluación el mismo día, para no
+    arrastrarlas.
+- **Decisiones tomadas (ID del plan y resumen):** ninguna del registro D-01 a
+  D-13 hoy.
+- **Verificación (comando y resultado):**
+  - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`: 7
+    pasan, cobertura 100 % de 10 líneas.
+  - `uv run ruff check .`, `uv run ruff format --check .` y `uv run mypy .`: sin
+    errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio.
+- **Dudas abiertas (heredadas del Día 6):**
+  - No se probó en GitHub que un import sin usar o un test roto pongan el check
+    en rojo (reserva del auditor, F3, F4 y F7).
+  - Los hooks locales saltan `ruff` y `mypy` si `.venv` no está en el `PATH`.
+  - Un `harny init` o `update` puede borrar los tres pasos manuales de
+    `harny-feedback.yml`.
+  - Ver si el `_index.md` de `specs/current/` quedó con buena forma.
+- **Respuestas de autoevaluación:**
+  - *¿Por qué `domain` no puede importar `psycopg`?* Porque eso lo acoplaría a
+    PostgreSQL; las reglas del negocio deben poder funcionar aunque cambie la
+    base de datos.
+  - *¿Qué pasaría si sobrescribiera una respuesta cruda?* Perdería la evidencia
+    exacta que permite reproducir o investigar el procesamiento (ADR 0002).
+  - *Tres preguntas de cada puerta:* ¿qué cambia y por qué?, ¿cómo puede
+    fallar?, ¿qué prueba demuestra que funciona?
+  - *¿Por qué `main` exige `feedback` y `tests`?* `feedback` exige lint, tipos y
+    escaneo de secretos; `tests` exige que pasen las pruebas. Al ser checks
+    requeridos y estrictos, `main` no acepta el PR si alguno falla o si la rama
+    no está actualizada con `main`.
+  - *¿Qué significa que `Tests` reporte cobertura sin mínimo?* El CI muestra la
+    cobertura, pero no falla por estar debajo de un porcentaje. Las pruebas que
+    fallen sí hacen fallar el check.
+- **Siguiente paso:** Día 8, modelo de dominio: escribir a mano `docs/glossary.md`
+  (proceso de contratación, evidencia cruda, ejecución de ingesta, regla de
+  calidad y hallazgo de calidad).
