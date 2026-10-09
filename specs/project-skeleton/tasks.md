@@ -111,11 +111,12 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
     - AC8: probe `src/ec_procurement_quality/domain/probe.py` with `def f(x): return x` -> `uv run mypy .` exit 1: `src\ec_procurement_quality\domain\probe.py:1: error: Function is missing a type annotation  [no-untyped-def]`, "Found 1 error in 1 file (checked 9 source files)". Same file moved to `application/` -> exit 0 ("Success: no issues found in 9 source files"). Probe deleted; `uv run mypy .` -> exit 0 ("no issues found in 8 source files"); `git status --short` empty. Pass.
     - AC11: appended `import os` to `src/ec_procurement_quality/interfaces/cli.py`; the Baseline runner command printed `finding from `ruff` (exit 1):` followed by ``F401 [*] `os` imported but unused`` at `src\ec_procurement_quality\interfaces\cli.py:29:8`, then `harny-feedback: 2 of 2 command(s) ran, 0 skipped.`, exit 2. Reverted with `git checkout -- <file>`; `git status --short` empty. Pass.
     - AC12: `node .sdd/doctor/run-doctor.mjs` -> `29 ok, 2 skipped, 0 warned, 0 failed`; `uv run node .sdd/doctor/run-doctor.mjs` -> `OK pytest`, `30 ok, 1 skipped, 0 warned, 0 failed`. `.venv/Scripts/python.exe --version` -> `Python 3.13.9`. With the real diff form, `git diff --name-only main -- '*.py'` lists the 8 `.py` files; `uv run ruff check <those>` -> exit 0 and `uv run mypy <those>` -> exit 0 ("no issues found in 8 source files"). `git diff --check` -> exit 0. `git diff --name-only main -- .sdd .claude` -> empty. `src/ec_procurement_quality/` holds one file of its own (`__init__.py`). Same results as O5. Pass.
-- [ ] **O8** CI verification (AC1, AC10, AC11, AC12). The human pushes `feat/project-skeleton` and opens the F0 pull request. The human, or the conductor reading the run log with `gh`, records the evidence below.
+- [x] **O8** CI verification (AC1, AC10, AC11, AC12). The human pushes `feat/project-skeleton` and opens the F0 pull request. The human, or the conductor reading the run log with `gh`, records the evidence below.
   - AC10: the `harny feedback (Python)` step log ends with `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` and the `feedback` check is green.
   - AC1: the `uv sync --locked` step is green on the runner.
   - AC12: the `Secret scan (gitleaks)` step ran and passed.
   - AC11 (optional, human): the same unused-import change on a throwaway branch or draft pull request turns the `feedback` check red. Close it without merging. If skipped, record that only local evidence from O7 exists.
+  - Evidence (2026-10-09, PR #11 at `f13ac5d`, read with `gh run view --log`): `harny feedback` run `37884423074` is green. The `uv sync --locked` step resolved 16 packages and installed 15 (AC1). The `harny feedback (Python)` step ends with `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` (AC10). The `Secret scan (gitleaks)` step ran 8.30.1 and printed `4 commits scanned` and `no leaks found` (AC12). `Tests` run `37884423088` is green: `7 passed`, coverage `TOTAL 10 0 100%`. The `setup-uv` v10.2.0 pin worked with uv 0.12.23, so the checksum risk noted earlier did not occur. AC11 optional CI probe (unused import on a throwaway branch) was skipped: only the local evidence from O7 exists.
 - [ ] **O9** Broader suite vs baseline (AC9, AC12):
   - `uv run pytest` exits 0 with all tests passed. The baseline had no suite.
   - `uv run ruff check .`, `uv run ruff format --check .` and `uv run mypy .` exit 0.
@@ -124,8 +125,8 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
 
 ## Working state
 - Updated: 2026-10-08
-- Outcome: O1 to O7 done. O8 not started (needs the pull request). O9, O10 not started.
-- Phase: O1 to O6 committed (`8bb7d66`, `cbaefec`) on branch `feat/project-skeleton`; O7 local verification done and recorded. Next is the human push and pull request for O8.
+- Outcome: O1 to O8 done. O9, O10 not started.
+- Phase: O1 to O6 committed (`8bb7d66`, `cbaefec`) on branch `feat/project-skeleton`; O7 local verification done and recorded. O8 verified on PR #11 (both checks green). Next is O9 and the auditor's O10.
 - In progress: nothing
 - Deviation from Baseline: the branch was created from `f07c304`, not `699cae5` (see O1 notes). Use `main`/`f07c304` for the `git diff` checks.
 - Deviation from plan: `astral-sh/setup-uv` is pinned to `v10.2.0` (`c18668ad3cf93ea998bef934396af7bb5c839dc7`) because the re-check found it is the latest release, not `v10.1.0`. The step names also carry "(hand-maintained, restore after harny init or update)" next to the comment block.
@@ -143,11 +144,11 @@ Then the test-writer writes the red tests for O2 and O3 and fills their Tests an
   - `[tool.ruff]` and the bare `[tool.mypy]` table contain only comments (defaults). The mypy override has no `strict = true`.
 - Standards and feedback checks: `AGENTS.md` has no coding-standards section, so `harny-standards` found nothing binding beyond its boundaries, change restrictions and "run relevant verification" (done above). `src/feedback.ts` is not in this repo; the mapped commands were taken from `.sdd/git-hooks/commands.json` (ruff check, mypy), and both pass. Re-applied for O2 to O6 on 2026-10-08 with the same result.
 - Last command: O7 AC12 checks -> all exit 0 (`git status --short` clean after the probes)
-- Next step: the human pushes and opens the pull request for O8 (and writes `.github/workflows/tests.yml` by hand later), then O9 and the auditor's O10.
+- Next step: the auditor does O9 and O10. Note for the auditor: `pytest-cov` and `.github/workflows/tests.yml` (commit `f13ac5d`) go beyond the F0 intent § Out on purpose. The human decided to add them on Day 6 (hand-written workflow, approved dependency) to avoid deferring the CI test job.
 
 ## Finding responses
 | Finding | Response | Evidence |
 |---|---|---|
 
 ## Checkpoint
-O1 to O7 are done on branch `feat/project-skeleton` (created from `f07c304`). Resume at O8 after the human pushes and opens the pull request.
+O1 to O7 are done on branch `feat/project-skeleton` (created from `f07c304`). Resume at O9 (auditor).
