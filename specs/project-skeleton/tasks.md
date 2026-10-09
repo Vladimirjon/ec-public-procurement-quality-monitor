@@ -1,7 +1,7 @@
 # Tasks: Project skeleton (F0)
 
 ## Status
-Awaiting audit round 2
+Audit round 2: APPROVED WITH RESERVATIONS, accepted by the human on 2026-10-08. Next: documentation, then merge.
 
 ## Baseline
 - Base commit: `699cae5` (`main`, "Merge pull request #9 from Vladimirjon/chore/day-4-harny-full-install")
@@ -118,28 +118,29 @@ O11 and O12 were added on 2026-10-08 with intent Revision 3 (audit round 1, F1 a
   - AC1: the `uv sync --locked` step is green on the runner.
   - AC12: the `Secret scan (gitleaks)` step ran and passed.
   - AC11 (optional, human): the same unused-import change on a throwaway branch or draft pull request turns the `feedback` check red. Close it without merging. If skipped, record that only local evidence from O7 exists.
-  - Evidence (2026-10-09, PR #11 at `f13ac5d`, read with `gh run view --log`): `harny feedback` run `37884423074` is green. The `uv sync --locked` step resolved 16 packages and installed 15 (AC1). The `harny feedback (Python)` step ends with `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` (AC10). The `Secret scan (gitleaks)` step ran 8.30.1 and printed `4 commits scanned` and `no leaks found` (AC12). `Tests` run `37884423088` is green: `7 passed`, coverage `TOTAL 10 0 100%` (see O11). The `setup-uv` v10.2.0 pin worked; it has no uv version input, so it fell back to the latest uv and both runs installed uv 0.12.24 (log: `Successfully installed uv version 0.12.24`), not the local 0.12.23. `uv sync --locked` still passed, so the newer-uv drift risk did not occur. (Corrected on 2026-10-08 after audit F5; this line first said "worked with uv 0.12.23".) AC11 optional CI probe (unused import on a throwaway branch) was skipped: only the local evidence from O7 exists.
+  - Evidence (2026-10-08 local date; GitHub timestamps the runs 2026-10-09 UTC; PR #11 at `f13ac5d`, read with `gh run view --log`): `harny feedback` run `37884423074` is green. The `uv sync --locked` step resolved 16 packages and installed 15 (AC1). The `harny feedback (Python)` step ends with `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` (AC10). The `Secret scan (gitleaks)` step ran 8.30.1 and printed `4 commits scanned` and `no leaks found` (AC12). `Tests` run `37884423088` is green: `7 passed`, coverage `TOTAL 10 0 100%` (see O11). The `setup-uv` v10.2.0 pin worked; the step sets no `version` input, so it fell back to the latest uv and both runs installed uv 0.12.24 (log: `Successfully installed uv version 0.12.24`), not the local 0.12.23. `uv sync --locked` still passed, so the newer-uv drift risk did not occur. (Corrected on 2026-10-08 after audit F5; this line first said "worked with uv 0.12.23".) AC11 optional CI probe (unused import on a throwaway branch) was skipped: only the local evidence from O7 exists.
 - [x] **O11** (AC14, AC15): `pytest-cov` dev dependency and the `Tests` workflow. Done in commit `f13ac5d` before the specs named it; recorded here by intent Revision 3.
   - What it delivers: `pytest-cov>=7.1.0` in `[dependency-groups] dev` (locked 7.1.0, with `coverage` 7.16.2), and `.github/workflows/tests.yml` written by hand by the human: workflow `Tests`, job `tests`, on `pull_request` and `push` to `main`, `permissions: contents: read`, `setup-uv` at the same SHA as `harny-feedback.yml` (`c18668ad...` v10.2.0) with Python 3.13, `uv sync --locked`, `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`. No `--cov-fail-under`.
   - Tests: none new (CI configuration; it runs the existing unit tests).
   - Red: not applicable.
   - Evidence (PR #11 at `f13ac5d`, read with `gh run view 37884423088 --log`): `Tests` run `37884423088` green. `Install dependencies` ran `uv sync --locked` with CPython 3.13.16 (`Resolved 16 packages`, `Installed 15 packages`). `Run tests` printed the coverage table, `TOTAL 10 0 100%` and `7 passed`. Required checks on `main` are still `["feedback"]` (`gh api`).
-- [ ] **O12** Local verification (AC15, AC16). The auditor runs these in round 2 (or the executor before it). Changes are reverted, never committed.
+- [x] **O12** Local verification (AC15, AC16). The auditor runs these in round 2 (or the executor before it). Changes are reverted, never committed.
   - AC15: `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` exits 0 with `7 passed` and a `TOTAL` row; `pytest-cov` appears only in the dev group and `uv.lock`; `[project] dependencies` is `[]`.
   - AC16: add `assert False` to one test in `tests/unit/`, run the AC15 command, expect a non-zero exit and `1 failed`; revert and confirm `git status --short` is clean. Confirm no `cov-fail-under` in `tests.yml` or `pyproject.toml`. The CI-side probe on a throwaway PR is optional; if skipped, record that only local evidence exists.
+  - Evidence (2026-10-08, run by the auditor in round 2 at `765d3df`; `audit.md` § O9 and O12 results): AC15: `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` -> exit 0, `7 passed`, `TOTAL 10 0 100%`; `pytest-cov` only in the dev group and `uv.lock` (7.1.0, `coverage` 7.16.2); `[project] dependencies = []`. AC16: an untracked probe test with `assert False` -> same command exit 1, `1 failed, 7 passed`; probe deleted, `git status --short` empty, `uv run pytest -q` -> `7 passed`; `cov-fail-under` count 0 in `tests.yml` and `pyproject.toml`. The CI-side probe on a throwaway PR was not run (optional; only local evidence exists, see F7).
 - [x] **O9** Broader suite vs baseline (AC9, AC12):
   - `uv run pytest` exits 0 with all tests passed. The baseline had no suite.
   - `uv run ruff check .`, `uv run ruff format --check .` and `uv run mypy .` exit 0.
   - `node .sdd/doctor/run-doctor.mjs` reports `0 warned, 0 failed`, an improvement on the baseline's single `spec-state` failure. No new failure appears.
-  - Evidence: run by the auditor in round 1 at `f374dfd` (`audit.md` § O9 results): `uv run pytest` exit 0, `7 passed`; ruff check, ruff format check and mypy exit 0; doctor `29 ok, 2 skipped, 0 warned, 0 failed` (plain) and `30 ok, 1 skipped, 0 warned, 0 failed` (via `uv run`); `git diff --check` exit 0. The spec revision changes no code, so this still holds; round 2 re-runs it.
-- [ ] **O10** Independent audit (AC1 to AC16): the auditor writes `specs/project-skeleton/audit.md` with a verdict. The human accepts or rejects it at the post-audit gate.
+  - Evidence: run by the auditor in round 1 at `f374dfd` (`audit.md` § O9 results): `uv run pytest` exit 0, `7 passed`; ruff check, ruff format check and mypy exit 0; doctor `29 ok, 2 skipped, 0 warned, 0 failed` (plain) and `30 ok, 1 skipped, 0 warned, 0 failed` (via `uv run`); `git diff --check` exit 0. The spec revision changes no code, so this still holds. Round 2 re-ran it at `765d3df` (`audit.md` § O9 and O12 results) with the same results: `7 passed`, ruff and mypy exit 0, doctor `0 warned, 0 failed`.
+- [x] **O10** Independent audit (AC1 to AC16): the auditor writes `specs/project-skeleton/audit.md` with a verdict. The human accepts or rejects it at the post-audit gate.
   - Round 1 (2026-10-08): REJECTED. All 13 ACs passed; blocked by F1 (CRITICAL) and F2 (HIGH), the scope gap for `tests.yml` and `pytest-cov`. F3 to F5 LOW.
-  - Round 2: not started. The human approved intent Revision 3 and execution-plan Revision 2 on 2026-10-08.
+  - Round 2 (2026-10-08, head `765d3df`): APPROVED WITH RESERVATIONS (`audit.md` § Final verdict and Audit log), accepted by the human on 2026-10-08. AC1 to AC16 PASS and every binding constraint of execution-plan Revision 2 PASS; F1, F2 and F5 resolved. Open and non-blocking: F3, F7 (optional CI probes not run), F4 (accepted hook limitation), F6 (this bookkeeping, fixed here). CI on the final head is green: `harny feedback` 37885981577 and `Tests` 37885981515. The human approved intent Revision 3 and execution-plan Revision 2 on 2026-10-08.
 
 ## Working state
 - Updated: 2026-10-08
-- Outcome: O1 to O9 and O11 done. O12 and O10 (round 2) not started.
-- Phase: audit round 1 rejected (F1, F2). The architect revised the specs to match what exists: intent Revision 3 (adds AC14 to AC16) and execution-plan Revision 2, both approved by the human on 2026-10-08. No code changed.
+- Outcome: O1 to O12 done, including O10 (audit round 2).
+- Phase: audit round 2 APPROVED WITH RESERVATIONS, accepted by the human on 2026-10-08. Round 1 had rejected (F1, F2); the architect revised the specs to match what exists (intent Revision 3, adds AC14 to AC16, and execution-plan Revision 2, both approved on 2026-10-08), with no code change. Remaining work: documentation, then merge.
 - In progress: nothing
 - Deviation from Baseline: the branch was created from `f07c304`, not `699cae5` (see O1 notes). Use `main`/`f07c304` for the `git diff` checks.
 - Deviation from plan: `astral-sh/setup-uv` is pinned to `v10.2.0` (`c18668ad3cf93ea998bef934396af7bb5c839dc7`) because the re-check found it is the latest release, not `v10.1.0`. The step names also carry "(hand-maintained, restore after harny init or update)" next to the comment block.
@@ -156,21 +157,24 @@ O11 and O12 were added on 2026-10-08 with intent Revision 3 (audit round 1, F1 a
   - `src/ec_procurement_quality/` held one file of its own (`__init__.py`, empty). `pyproject.toml` has no `authors`, and `uv.lock` has no local path or email. `.venv` was reused (still Python 3.13.9, no "Creating virtual environment" message); no `.python-version` was created.
   - `[tool.ruff]` and the bare `[tool.mypy]` table contain only comments (defaults). The mypy override has no `strict = true`.
 - Standards and feedback checks: `AGENTS.md` has no coding-standards section, so `harny-standards` found nothing binding beyond its boundaries, change restrictions and "run relevant verification" (done above). `src/feedback.ts` is not in this repo; the mapped commands were taken from `.sdd/git-hooks/commands.json` (ruff check, mypy), and both pass. Re-applied for O2 to O6 on 2026-10-08 with the same result.
-- Last command: `gh run view 37884423088 --log` and `gh run view 37884423074 --log` (both installed uv 0.12.24; `Tests` printed `TOTAL 10 0 100%` and `7 passed`)
+- Last command: `gh run view 37885981577 --log` and `gh run view 37885981515 --log` (round 2 CI runs on PR #11 at `765d3df`, read by the auditor, both green and both installed uv 0.12.24; `harny feedback` printed `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` and gitleaks `no leaks found`; `Tests` printed `TOTAL 10 0 100%` and `7 passed`)
 - Next step:
   1. Done (2026-10-08): the human approved intent Revision 3 and execution-plan Revision 2.
   2. Done (2026-10-08): spec changes and `audit.md` committed and pushed, so PR #11 runs on the final head (F5).
-  3. The auditor does round 2: O12, a re-check of O9, and the verdict for O10.
+  3. Done (2026-10-08): the auditor did round 2 (O12, a re-check of O9, verdict for O10): APPROVED WITH RESERVATIONS, accepted by the human on 2026-10-08.
+  4. Next: documentation, then merge PR #11. Making `tests` a required check of `main` is a human settings action after the merge, out of F0 scope.
 - Earlier note, superseded by intent Revision 3: `pytest-cov` and `tests.yml` (commit `f13ac5d`) went beyond the F0 intent § Out on purpose; the human added them on Day 6 to avoid deferring the CI test job.
 
 ## Finding responses
 | Finding | Response | Evidence |
 |---|---|---|
-| F1 (CRITICAL) | Option (a), chosen by the human on 2026-10-08: specs revised to record `tests.yml` and `pytest-cov`. Closes only after the human re-approves and round 2 confirms. | intent Revision 3 (§ Scope, § Constraints, AC14 to AC16); execution-plan Revision 2 (Allowed dependencies, Tests workflow file, Scope) |
+| F1 (CRITICAL) | Option (a), chosen by the human on 2026-10-08: specs revised to record `tests.yml` and `pytest-cov`. Round 2 confirmed it: resolved (`audit.md` § Findings). | intent Revision 3 (§ Scope, § Constraints, AC14 to AC16); execution-plan Revision 2 (Allowed dependencies, Tests workflow file, Scope) |
 | F2 (HIGH) | § Validation now names the `pytest-cov` setup (AC9 row) and has rows for the `tests.yml` CI check (AC14 to AC16). | execution-plan Revision 2 § Validation |
-| F3 (LOW) | No change. The AC11 Example allows the local runner, and the auditor marked it acceptable. The human may still run the throwaway-PR probe. | O7, O8 |
-| F4 (LOW) | No change. The hook limitation is documented (AC13) and changing hooks is Out. | `README.md`, intent § Out |
-| F5 (LOW) | Fixed here: Status, Checkpoint, and the uv version in O8 (0.12.24). O9 ticked with the round 1 evidence. Pushing to PR #11 is the human's step (Next step 2). | this file; logs of runs `37884423074` and `37884423088` |
+| F3 (LOW) | Accepted, no change. The optional CI-side AC11 probe (unused import on a throwaway PR) was not run; only the local evidence from O7 exists. The AC11 Example allows the local runner. | O7, O8, `audit.md` F3 |
+| F4 (LOW) | Accepted, no change. The hook limitation (Stop and pre-commit hooks skip `ruff` and `mypy` when `.venv` is not on `PATH`) is documented (AC13) and changing hooks is Out. | `README.md`, intent § Out, `audit.md` F4 |
+| F5 (LOW) | Fixed here: Status, Checkpoint, and the uv version in O8 (0.12.24). O9 ticked with the round 1 evidence. The push is done: PR #11 head is `765d3df` and its runs are green (Next step 2). Round 2 confirmed it. | this file; logs of runs `37884423074`, `37884423088`, `37885981577` and `37885981515` |
+| F6 (LOW) | Fixed here, in the same words as the finding: Checkpoint rewritten with the real state; O12 ticked citing `audit.md` § O9 and O12 results; O10 ticked with the round 2 verdict; Status, Working state (Outcome, Phase, Last command, Next step) and the F5 row updated; O8 now uses the local date 2026-10-08 (the runs are 2026-10-09 UTC) and says the step sets no `version` input. | this file |
+| F7 (LOW) | Accepted, no change. The optional CI-side AC16 probe (failing assertion on a throwaway PR) was not run; the local probe in O12 shows exit 1 and `1 failed`, and the `tests` check going red is inferred from that. | O12, `audit.md` F7 |
 
 ## Checkpoint
-O1 to O9 and O11 are done on branch `feat/project-skeleton` (created from `f07c304`). Waiting for the human to re-approve intent Revision 3 and execution-plan Revision 2, then audit round 2 (O12, O10).
+O1 to O12 are done on branch `feat/project-skeleton` (created from `f07c304`). Audit round 2 verdict APPROVED WITH RESERVATIONS was accepted by the human on 2026-10-08 (head `765d3df`; CI green: `harny feedback` 37885981577, `Tests` 37885981515). Open and non-blocking: F3, F4, F7 accepted; F6 fixed here. Next: documentation, then merge.
