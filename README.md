@@ -33,8 +33,9 @@ The system is separated into `domain`, `application`, `infrastructure`, and
 on SERCOP, PostgreSQL, CLI frameworks, or local storage.
 
 The design prioritizes auditability, idempotency, traceability,
-reproducibility, resumability, and testability. No application functionality
-is claimed to exist yet.
+reproducibility, resumability, and testability. Only the project skeleton
+exists so far: the four layer packages are empty and the CLI only reports its
+version. No domain behavior is claimed to exist yet.
 
 See [the architecture](docs/architecture.md) and the accepted decisions:
 
@@ -47,15 +48,50 @@ See [the architecture](docs/architecture.md) and the accepted decisions:
 
 Implemented in the repository:
 
-- Python 3.13.9 is available in the local virtual environment.
+- Python 3.13 (`requires-python = ">=3.13"`), managed with `uv` and a
+  committed `uv.lock` ([ADR 0004](docs/adr/0004-python-toolchain.md)).
+- The `ec_procurement_quality` package under `src/` with the four empty layer
+  packages and the `ec-procurement-quality` CLI, which only supports
+  `--version`.
+- `ruff` (lint and format), `mypy` (strict in `domain` only), `pytest` and
+  `pytest-cov` as development-only dependencies.
+- Two GitHub Actions workflows on pull requests: `feedback` (`ruff` and `mypy`,
+  plus a secret scan) and `Tests` (unit tests with a coverage report).
 - Git-based source and documentation management.
 
-Planned, not implemented by this baseline:
+Planned, not implemented yet:
 
-- Python application modules and a CLI.
 - PostgreSQL for normalized records, audit, and quality results.
 - Docker Compose for local PostgreSQL execution.
 - A SERCOP adapter and storage adapters.
+- Real CLI commands beyond `--version`.
+
+## Development commands
+
+Run these from the repository root. They need [uv](https://docs.astral.sh/uv/).
+
+| Task | Command |
+|---|---|
+| Install from the lockfile | `uv sync --locked` |
+| Run the CLI | `uv run ec-procurement-quality --version` |
+| Lint | `uv run ruff check .` |
+| Check formatting | `uv run ruff format --check .` |
+| Apply formatting | `uv run ruff format .` |
+| Type check | `uv run mypy .` |
+| Test | `uv run pytest` |
+| Test with coverage report (what CI runs) | `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` |
+
+The `Tests` workflow runs the coverage command on every pull request and on
+every push to `main`. It reports coverage only: no minimum percentage is
+enforced, and a failing test fails the check. `tests` and `feedback` are both
+required checks of `main`.
+
+The Stop hook (after each agent turn) and the pre-commit hook run `ruff` and
+`mypy` on the touched or staged Python files only when `.venv` is on `PATH`.
+When it is not, they skip those checks without failing. Activate the
+environment (for example `.venv\Scripts\Activate.ps1` on PowerShell) or run
+the commands above through `uv run` to get the same checks locally. CI does
+not depend on this: the `feedback` workflow puts `.venv` on `PATH` itself.
 
 No real downloaded responses will be committed to this repository. Fixtures
 used for development must be minimal and deliberately selected.
