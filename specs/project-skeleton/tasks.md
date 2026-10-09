@@ -158,8 +158,8 @@ O11 and O12 were added on 2026-10-08 with intent Revision 3 (audit round 1, F1 a
 - Standards and feedback checks: `AGENTS.md` has no coding-standards section, so `harny-standards` found nothing binding beyond its boundaries, change restrictions and "run relevant verification" (done above). `src/feedback.ts` is not in this repo; the mapped commands were taken from `.sdd/git-hooks/commands.json` (ruff check, mypy), and both pass. Re-applied for O2 to O6 on 2026-10-08 with the same result.
 - Last command: `gh run view 37884423088 --log` and `gh run view 37884423074 --log` (both installed uv 0.12.24; `Tests` printed `TOTAL 10 0 100%` and `7 passed`)
 - Next step:
-  1. The human reads intent Revision 3 and execution-plan Revision 2 and, if they agree, writes the approval in the `Approval` line of `intent.md`.
-  2. The human commits the spec changes (with `audit.md`, still untracked) and pushes, so PR #11 runs on the final head (F5).
+  1. Done (2026-10-08): the human approved intent Revision 3 and execution-plan Revision 2.
+  2. Done (2026-10-08): spec changes and `audit.md` committed and pushed, so PR #11 runs on the final head (F5).
   3. The auditor does round 2: O12, a re-check of O9, and the verdict for O10.
 - Earlier note, superseded by intent Revision 3: `pytest-cov` and `tests.yml` (commit `f13ac5d`) went beyond the F0 intent § Out on purpose; the human added them on Day 6 to avoid deferring the CI test job.
 
