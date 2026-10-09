@@ -1,7 +1,10 @@
 # Execution Plan: Project skeleton (F0)
 
 ## Guidance consulted
-- `specs/project-skeleton/intent.md` Revision 2, approved by Vladimirjon on 2026-10-07. It is the only source of acceptance criteria (AC1 to AC13).
+- `specs/project-skeleton/intent.md` Revision 3, approved by Vladimirjon on 2026-10-08. It is the only source of acceptance criteria (AC1 to AC16). Revision 2 (AC1 to AC13) was approved by Vladimirjon on 2026-10-07.
+- `specs/project-skeleton/audit.md` round 1 (2026-10-08, REJECTED): findings F1 and F2 are why this revision exists.
+- `.github/workflows/tests.yml` and `pyproject.toml` at commit `f13ac5d`, `uv.lock` (`pytest-cov` 7.1.0, `coverage` 7.16.2), and the PR #11 logs of the `Tests` run `37884423088` (setup-uv installed uv 0.12.24, `uv sync --locked` resolved 16 packages, `TOTAL 10 0 100%`, `7 passed`) and the `harny feedback` run `37884423074`. Required checks on `main` read with `gh api`: `["feedback"]` only.
+- Feasibility check on 2026-10-08, local, uv 0.12.23: `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` printed the coverage table, `TOTAL 10 0 100%` and `7 passed`. `.coverage` is in `.gitignore`. This is a plan check, not outcome evidence.
 - `AGENTS.md` (layer boundaries, approval rule for dependencies, current commands), `README.md`, `docs/architecture.md`, `docs/ai-assisted-development.md`, `docs/repository-settings.md`, and ADR 0001 to ADR 0004, especially `docs/adr/0004-python-toolchain.md`.
 - `docs/learning/plan.md` section 4 (F0 row), section 6 (CI evolution) and the Day 5 and Day 6 entries.
 - `.github/workflows/harny-feedback.yml`: its header comment, the `# <!-- harny:begin ... -->` and `# <!-- harny:end ... -->` markers, and the generated step `harny feedback (Python)`.
@@ -24,6 +27,7 @@
 - `src/ec_procurement_quality/` (new): the package root and the four layer packages `domain`, `application`, `infrastructure` and `interfaces`. The CLI lives in `interfaces`.
 - `tests/unit/` (new): unit tests for AC4, AC5 and AC6.
 - `.github/workflows/harny-feedback.yml`: new steps only, outside the generated block.
+- `.github/workflows/tests.yml` (new): written by hand by the human (Day 6 learning step), not by the executor.
 - Documentation: `README.md`, the `AGENTS.md` § Current commands section, and `docs/repository-settings.md`.
 - Affected `specs/current` capabilities: none exist yet. This feature introduces two new capabilities that `harny-sync` archive creates: `cli` (the `ec-procurement-quality` command and its `--version` contract) and `project-toolchain` (install, lint, type check, test and the `feedback` CI gate).
 
@@ -32,10 +36,10 @@
 - **Reproducible installs.** `uv` manages the environment and `uv.lock` is committed. Every install in CI uses `uv sync --locked`, which errors when the lockfile is out of date instead of re-resolving (source: ADR 0004; intent AC1, AC2; uv sync docs).
 - **Allowed dependencies.**
   - There are no runtime dependencies (`[project] dependencies` stays empty).
-  - The only development dependencies are `ruff`, `mypy` and `pytest`.
+  - The only development dependencies are `ruff`, `mypy`, `pytest` and `pytest-cov`. `pytest-cov` (and its dependency `coverage`) was approved by the human on 2026-10-08.
   - The build backend is `uv_build`, with an upper bound below the next minor version of uv.
   - Anything else needs explicit approval first (source: `AGENTS.md`; intent § Constraints; ADR 0004).
-- **Approved versions.** Versions of `ruff`, `mypy` and `pytest` are not fixed in this plan. The executor resolves them at implementation time, and `uv.lock` records them (source: ADR 0004). No version is invented here.
+- **Approved versions.** Versions of `ruff`, `mypy` and `pytest` are not fixed in this plan. The executor resolves them at implementation time, and `uv.lock` records them (source: ADR 0004). `pytest-cov` is locked at 7.1.0 (`>=7.1.0` in the dev group), as the human approved. No version is invented here.
 - **Console script contract.** The command is `ec-procurement-quality` and the distribution version is `0.1.0`. The console script target is `ec_procurement_quality.interfaces.cli:main` (source: intent AC4 and § Scope; `AGENTS.md` puts entry points in `interfaces`).
   - `main` accepts an optional list of argument strings. When it gets none, it reads the process arguments.
   - `--version` and usage errors end through `SystemExit`, with code 0 and code 2 respectively.
@@ -58,14 +62,19 @@
   - The job id `feedback` does not change, because branch protection requires it (`docs/repository-settings.md`).
   - The new steps go after `Checkout` and before the generated block, so `ruff` and `mypy` are on `PATH` when the runner starts.
   - The `Secret scan (gitleaks)` step stays as it is (source: workflow header; intent AC10, AC12, § Out).
-- **setup-uv pinning.** `astral-sh/setup-uv` is pinned to an explicit release: a commit SHA with a version comment, or a full version tag. A major-only tag or `@main` is not allowed. This keeps the action visible to the existing Dependabot `github-actions` updates. `.github/dependabot.yml` does not change (source: intent § Constraints and § Out).
+- **Tests workflow file.** `.github/workflows/tests.yml` is a separate workflow named `Tests` with job id `tests`.
+  - Triggers: `pull_request`, and `push` to `main`. Permissions: `contents: read`.
+  - Steps: checkout, `astral-sh/setup-uv` with Python 3.13, `uv sync --locked`, then `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`.
+  - No `--cov-fail-under` and no coverage threshold anywhere, on purpose (intent § Out).
+  - `tests` is not added to the required checks of `main` in this feature (source: intent § Scope, § Out, AC14 to AC16).
+- **setup-uv pinning.** `astral-sh/setup-uv` is pinned to an explicit release: a commit SHA with a version comment, or a full version tag. A major-only tag or `@main` is not allowed. This keeps the action visible to the existing Dependabot `github-actions` updates. `tests.yml` uses the same SHA as `harny-feedback.yml`. `.github/dependabot.yml` does not change (source: intent § Constraints and § Out).
 - **Restore instructions.**
   - The new CI steps carry a comment saying they are hand-maintained and must be restored after `harny init` or `update`.
   - `docs/repository-settings.md` names those steps and explains how to restore them.
   - `README.md` documents that the Stop and pre-commit hooks run `ruff` and `mypy` only when `.venv` is on `PATH`.
   - The hooks themselves are not changed (source: intent AC13 and § Out).
 - **No sensitive data.** No secrets, credentials, personal contact data or raw procurement data go into any file. This includes the `authors` email that `uv init` fills in automatically (source: `AGENTS.md`).
-- **Scope.** There is no `tests.yml`, no coverage, no new test tier, and no sub-packages inside the layers (source: intent § Out).
+- **Scope.** The only CI additions are the `feedback` setup steps and `tests.yml`. There is no coverage threshold, no new test tier (`tests.yml` runs the same unit tier), no change to required checks, and no sub-packages inside the layers (source: intent § Scope and § Out).
 
 ## Proposed approach
 Revisable by the executor if it records why.
@@ -107,9 +116,17 @@ Revisable by the executor if it records why.
   - The AC4 test compares the output with the version read from `pyproject.toml` through the standard library `tomllib`. This proves the CLI follows the single source of truth.
   - Rationale: this stays in the unit tier with no subprocesses.
   - Rejected: running the console script in a subprocess, because that is end-to-end and the intent keeps `tests/unit` as the only tier. The console script itself is covered by the AC4 command check.
+- **Decision: run the tests in their own `tests.yml` workflow, not as a step in the `feedback` job.** (Already implemented in `f13ac5d`; recorded here so the plan matches it.)
+  - Rationale: `docs/learning/plan.md` Day 6 names `tests.yml`, and Day 17 extends it with integration tests. It keeps the harny-managed `feedback` job unchanged.
+  - Rejected: a pytest step in the `feedback` job, because it would be one more hand-maintained step that a `harny init` or `update` can drop.
+- **Decision: report coverage, but set no threshold yet.**
+  - Rationale: the package has 10 statements; any threshold now would be arbitrary.
+  - Rejected: `--cov-fail-under`, until real domain code exists.
 
 ## Consumers and migration
 - **`.github/workflows/harny-feedback.yml`.** The required check `feedback` keeps its job id. Its generated step starts finding `ruff` and `mypy` on `PATH`, so the summary line changes from `0 of 2` to `2 of 2`. The gitleaks step is unchanged.
+- **New `tests` check.** `tests.yml` adds a `tests` check to every pull request. It is not required on `main`; branch protection keeps `["feedback"]`. `docs/repository-settings.md` already tells the maintainer to add new job names to the required list, so it does not change.
+- **Dependabot.** The existing `github-actions` entry now tracks the `setup-uv` pin in both workflows. `.github/dependabot.yml` does not change.
 - **Local hooks.** These are the Stop and SubagentStop hooks in `.claude/settings.json` and the pre-commit hook through `.sdd/git-hooks/commands.json`. They start running `ruff` and `mypy` on touched or staged `.py` files whenever `.venv` is on `PATH`. The configuration must therefore make the per-file form pass on clean files. Without `.venv` on `PATH` they keep skipping, which AC13 documents. No hook file changes.
 - **`.sdd/doctor`.** The `pytest` readiness command goes from `SKIP` to `OK` when run through `uv run`. Component discovery now sees `src/ec_procurement_quality/`, so the file-count constraint above applies. No doctor file changes.
 - **Local `.venv`.** It was created by `python -m venv` with Python 3.13.9 at an earlier folder path. `uv sync` reuses it or recreates it. `.venv\Scripts\python.exe` must still exist afterwards (AC12). The executor reports whether it was recreated.
@@ -132,9 +149,11 @@ Revisable by the executor if it records why.
 | mypy run per-file on a test file cannot resolve `ec_procurement_quality` from the editable install | Low | Med | Check the per-file command in AC12. If it fails, add `mypy_path = "src"`. |
 | Formatting drift reaches `main`, because the `feedback` check runs `ruff check` but not `ruff format --check` | Low | Low | AC7 command before every PR. Adding the format check to CI is left to a later CI change. |
 | The AC3 check downloads Python 3.12 or touches the working `.venv` | Med | Low | Run AC3 only in a throwaway clone outside the repo folder |
+| The `setup-uv` pins in `tests.yml` and `harny-feedback.yml` drift apart after a Dependabot update | Low | Low | Same SHA in both today; when reviewing a Dependabot PR, check that both files moved |
+| `tests` stays a non-required check, so a red `tests` run does not block a merge | Med | Med | The human makes `tests` required after its first green run (intent § Out); until then, check the `Tests` result before merging |
 
 ## Validation
-One row per AC. "pytest" means a test in `tests/unit/`, the only test tier in this feature. ACs that pytest cannot check are marked command, manual or CI. AC1, AC2, AC3, AC7, AC8, AC10, AC11, AC12 and AC13 are checked by commands, CI logs or inspection, not by pytest. Commands are written for Git Bash; on PowerShell, use `.venv\Scripts\...` paths where noted. Cwd is the repository root unless stated.
+One row per AC. "pytest" means a test in `tests/unit/`, the only test tier in this feature. ACs that pytest cannot check are marked command, manual or CI. AC1, AC2, AC3, AC7, AC8, AC10, AC11, AC12, AC13, AC14, AC15 and AC16 are checked by commands, CI logs or inspection, not by new pytest tests. `uv sync --locked` installs the whole dev group, which now includes `pytest-cov`; plain `uv run pytest` does not need it, and the `--cov` commands do. Commands are written for Git Bash; on PowerShell, use `.venv\Scripts\...` paths where noted. Cwd is the repository root unless stated.
 
 | AC | Demonstrated by | Tests to write | Tier | Framework | Setup | Focused command | Broader command | Cwd |
 |---|---|---|---|---|---|---|---|---|
@@ -146,11 +165,15 @@ One row per AC. "pytest" means a test in `tests/unit/`, the only test tier in th
 | AC6 | the four layer packages import cleanly and are empty | `tests/unit/`: importing `ec_procurement_quality.domain`, `.application`, `.infrastructure` and `.interfaces` succeeds; emptiness and the `domain` import rule are checked by inspection at audit | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit -q -k layer` | `uv run python -c "import ec_procurement_quality.domain, ec_procurement_quality.application, ec_procurement_quality.infrastructure, ec_procurement_quality.interfaces"` (expect exit 0, no output) | repo root |
 | AC7 | lint and format checks pass on the whole repository | none (command check) | command | ruff | `uv sync --locked` | `uv run ruff check .` | `uv run ruff format --check .` | repo root |
 | AC8 | `mypy .` passes, and a probe file proves strict mode in `domain` only | none (manual probe; the probe file is never committed) | command, manual | mypy | `uv sync --locked`; create `src/ec_procurement_quality/domain/probe.py` with `def f(x): return x` | `uv run mypy .` with the probe in `domain` (expect non-zero and "missing a type annotation"), then with the probe moved to `application/` (expect 0), then delete it | `uv run mypy .` with no probe (expect 0) and `git status --short` (no probe file) | repo root |
-| AC9 | the suite passes, with the version test collected from `tests/unit/` | the tests listed for AC4, AC5 and AC6 | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit -q` | `uv run pytest` (expect exit 0 and at least 1 passed) | repo root |
+| AC9 | the suite passes, with the version test collected from `tests/unit/` | the tests listed for AC4, AC5 and AC6 | unit | pytest | `uv sync --locked` (dev group, including `pytest-cov`) | `uv run pytest tests/unit -q` | `uv run pytest` (expect exit 0 and at least 1 passed); in CI the same unit tier runs in the `tests` job (AC14) | repo root |
 | AC10 | the `feedback` job really runs both tools | none (CI log check) | CI | GitHub Actions, harny runner | the F0 pull request | locally, the same runner: `uv run node .sdd/feedback/run-feedback.mjs run --whole-project --commands "$(cat .sdd/git-hooks/commands.json)"` (expect `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` and exit 0) | the `harny feedback (Python)` step log on the F0 pull request ends with `harny-feedback: 2 of 2 command(s) ran, 0 skipped.`, and the `feedback` check is green | repo root |
 | AC11 (failure) | a lint error makes the runner, and therefore the `feedback` check, fail | none (manual; the change is reverted, never committed to `main`) | manual, CI | harny runner, ruff | temporarily add `import os` (unused) to a file under `src/` | the local runner command from AC10 (expect `finding from \`ruff\`` and exit 2), then revert the file | optional: push the same change on a throwaway branch or draft pull request and see the `feedback` check fail; close it without merging | repo root |
 | AC12 (compatibility) | the doctor, the gitleaks step, the AGENTS.md interpreter check and whitespace checks keep passing; per-file hook-style runs pass | none (command check) | command, CI | harny doctor, git, ruff, mypy | `uv sync --locked` | `node .sdd/doctor/run-doctor.mjs` (expect `0 warned, 0 failed`) and `uv run node .sdd/doctor/run-doctor.mjs` (expect `OK pytest`) | `.venv/Scripts/python.exe --version` (PowerShell: `.venv\Scripts\python.exe --version`, expect 3.13.x); `git diff --check`; after committing, `uv run ruff check $(git diff --name-only main -- '*.py')` and `uv run mypy $(git diff --name-only main -- '*.py')` (the per-file form the hooks use, expect exit 0); the F0 pull request log shows the `Secret scan (gitleaks)` step ran | repo root |
 | AC13 | the restore comment, the restore note and the hook limitation are documented where the intent says | none (inspection at audit) | manual | git | none | `git grep -n "setup-uv" -- .github/workflows/harny-feedback.yml docs/repository-settings.md` (expect the step with an adjacent restore comment, and a note naming it) | `git grep -n -i "PATH" -- README.md` (expect the statement that the Stop and pre-commit hooks run `ruff` and `mypy` only when `.venv` is on `PATH`); `git diff` shows no change between the harny markers | repo root |
+| AC14 | the `Tests` workflow runs the unit tier with coverage in CI, installing from the lockfile | none (CI log check) | CI | GitHub Actions, pytest, pytest-cov | the F0 pull request; `tests.yml` as described in Binding constraints | `gh run view <Tests run id> --log` on the F0 pull request: the `Install dependencies` step ran `uv sync --locked`, the `Run tests` step shows the coverage table with a `TOTAL` row and `7 passed`, and the run is green | inspect `.github/workflows/tests.yml`: job id `tests`, triggers `pull_request` and `push` to `main`, `permissions: contents: read`, the same `setup-uv` SHA as `harny-feedback.yml`, no `--cov-fail-under` | repo root |
+| AC15 | `pytest-cov` is dev-only and locked, and the CI test command works locally | none (command check) | command | pytest, pytest-cov, uv | `uv sync --locked` | `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` (expect exit 0, `7 passed`, a coverage table with a `TOTAL` row) | `git grep -n "pytest-cov" -- pyproject.toml uv.lock` (expect it in `[dependency-groups] dev` and in the lock at 7.1.0); `[project] dependencies` is `[]` | repo root |
+| AC16 (failure) | a failing test makes the CI test command, and so the `tests` check, fail; coverage alone never does | none (manual; the change is reverted, never committed) | manual, CI | pytest, pytest-cov | temporarily add `assert False` to one test in `tests/unit/` | the AC15 command (expect a non-zero exit and `1 failed`), then revert the file and confirm `git status --short` is clean | optional: push the same change on a throwaway branch or draft pull request and see the `tests` check fail; close it without merging. `grep -c "cov-fail-under" .github/workflows/tests.yml pyproject.toml` (expect 0 in both) | repo root |
 
 ## Revision log
 - Revision 1 (2026-10-07): First draft, based on intent Revision 2 as approved. Approved revision 1 by Vladimirjon on 2026-10-07.
+- Revision 2 (2026-10-08): Follows intent Revision 3, to close audit round 1 findings F1 and F2. Records what commit `f13ac5d` already added: `pytest-cov` in Allowed and Approved versions, a new "Tests workflow file" constraint, the Scope constraint rewritten, two new decisions (separate `tests.yml`, no coverage threshold), the new `tests` check and Dependabot under Consumers, two new risks, the AC9 Setup naming `pytest-cov`, and Validation rows for AC14 to AC16. No code changes. Approved by Vladimirjon on 2026-10-08.
