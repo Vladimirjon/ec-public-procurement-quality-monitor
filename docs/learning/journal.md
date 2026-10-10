@@ -615,3 +615,152 @@ Ver [plan.md](plan.md).
   pruebas en rojo (puerta 2); yo escribo el objeto de valor `ContentHash` y el
   puerto `RawEvidenceStore`; el executor implementa el resto y el adaptador de
   disco.
+
+## Día 10: F1, rojo y verde (2026-10-09)
+
+- **Objetivo:** pasar la puerta 2 con las pruebas en rojo de F1, escribir yo a
+  mano el objeto de valor `ContentHash` y el puerto `RawEvidenceStore`, y dejar
+  el resto de F1 en verde con el executor. Además, registrar mi respuesta de
+  entidad frente a objeto de valor, pendiente desde el Día 8.
+- **Qué hice:** el test-writer escribió 126 pruebas nuevas en tres archivos más
+  una prueba de capas, y todas fallaron por `ModuleNotFoundError` de los
+  nombres fijados en el plan. Revisé el resumen de la puerta 2 (qué cambia, cómo
+  puede fallar y qué lo prueba) y aprobé. Después de ver un ejemplo resuelto de
+  un caso parecido (un código postal y una libreta de direcciones), escribí a
+  mano `domain/content_hash.py` y `application/raw_evidence_store.py`. No pedí
+  pistas por niveles. Se revisaron y no tuvieron hallazgos. El executor escribió
+  `Observation` y los errores (O2), el adaptador de disco (O4), la migración
+  (O5), los documentos (O6) y la verificación (O7). Abrí la rama
+  `feat/raw-evidence-store` y el PR.
+- **Qué aprendí (con mis palabras):**
+  - **Entidad frente a objeto de valor:** "Una entidad se identifica por quién
+    es; un objeto de valor, por qué contiene. Dos `ContentHash` con el mismo
+    valor son iguales aunque sean instancias distintas; el hexdigest es
+    inmutable y si cambiara dejaría de darnos fiabilidad."
+  - **Lo que me costó:** hoy no expresé dificultades.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - Ninguna del registro D-01 a D-13 hoy.
+  - **Puerta 2:** aprobé las pruebas en rojo de F1.
+  - **Forma de trabajo:** ejemplo resuelto antes de escribir `ContentHash` y el
+    puerto, y revisión de lo que escribí antes de seguir con el executor.
+- **Verificación (comando y resultado):**
+  - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`: 133
+    pasan (7 de F0 y 126 nuevas), cobertura 93 % de 236 líneas.
+  - Pruebas clave: `duplicate` (el mismo contenido dos veces deja un objeto y dos
+    observaciones, sin reescribir el objeto) y `conflict` (contenido distinto
+    bajo la misma identidad es `EvidenceIntegrityError` y no sobrescribe).
+  - `uv run ruff check .`, `uv run ruff format --check .` (63 archivos) y
+    `uv run mypy .` (15 archivos): sin errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio. `pyproject.toml` y `uv.lock` sin cambios.
+    `data/raw/` sigue ignorado por git.
+- **Dudas abiertas:**
+  - El auditor (Día 11) debe revisar lo que el executor agregó sobre lo fijado:
+    `validate_execution_id` y `validate_sequence` públicas en `domain`,
+    `TypeError` para contenido que no es `bytes`, JSON solo ASCII y modo `0600`
+    de los archivos en POSIX.
+  - Las pruebas tratan como conflicto repetir la misma identidad con distinto
+    `status`, cabeceras u hora de captura, no solo con distinto contenido. Sale
+    de comparar la observación por sus bytes (plan, paso 3).
+  - Texto desactualizado en specs ya aprobadas: `intent.md` y
+    `execution-plan.md` dicen que el ADR 0005 está `Proposed` y que la intención
+    espera aprobación; `tasks.md` § Baseline describe la situación anterior. El
+    ADR está `Accepted`. Cambiar la intención exige re-aprobarla, así que lo
+    decido el Día 11 con el auditor.
+  - La ruta POSIX del adaptador (sincronizar el directorio) solo se probó en un
+    guion desechable bajo WSL; el CI de GitHub (Ubuntu) la ejecuta por primera
+    vez en este PR.
+  - Al archivar F1 hay que actualizar `project-toolchain` PT-3 y PT-6.
+  - F4 deberá generar ids de ejecución que no sean nombres reservados de
+    Windows (`con`, `nul`...), y el almacén necesita enlaces duros (`os.link`).
+  - Siguen abiertas las dudas heredadas del Día 7 (checks que fallan, hooks sin
+    `.venv` en el `PATH`, `harny init` o `update` y `_index.md` de
+    `specs/current/`).
+  - Cerrada: entidad frente a objeto de valor (heredada del Día 8).
+- **Respuestas de autoevaluación:**
+  - *¿Entidad u objeto de valor?* "Una entidad se identifica por quién es; un
+    objeto de valor, por qué contiene." `ContentHash` es un objeto de valor:
+    dos con el mismo valor son iguales aunque sean instancias distintas, y su
+    hexdigest es inmutable.
+- **Siguiente paso:** Día 11, F1: auditoría (puerta 3) y documentación. Leo
+  `audit.md` completo y explico cada hallazgo con mis palabras, decido qué hago
+  con el texto desactualizado de las specs y hago el merge de F1.
+
+## Día 11: F1, auditoría y documentación (2026-10-09)
+
+- **Objetivo:** pasar la puerta 3 de F1 (auditoría), cerrar los hallazgos del
+  auditor, archivar la feature con la documentación y dejar el PR #15 listo
+  para el merge.
+- **Qué hice:** antes de auditar pedí dejar las specs al día: la revisión 2
+  corrige que el ADR 0005 ya estaba `Accepted` y registra lo que el executor
+  agregó sobre lo fijado; la aprobé. El auditor aprobó con reservas en la
+  ronda 1 (A1 media; A2, A3 y A4 bajas). Pedí resolver A1 a A4: el architect
+  hizo la revisión 3, el test-writer escribió 4 pruebas `race` y se corrigió el
+  texto. La ronda 2 cerró A1 a A4 y encontró A5 (un descuido de texto en
+  `tasks.md`), que también se cerró. Aprobé la revisión 3, las pruebas nuevas y
+  el veredicto. Documentación archivó F1 en `specs/archived/` y actualizó
+  `specs/current/` (`project-toolchain` y la capacidad nueva `raw-evidence`).
+  Todo está en el PR #15, con `feedback` y `Tests` en verde en Ubuntu.
+- **Qué aprendí (con mis palabras):**
+  - **Formato de los bytes del registro:** "El contrato exigible es la
+    estructura y semántica del registro descritas en las specs; no se exigirán
+    el orden de claves, la indentación ni el salto de línea exactos.
+    `schema_version` permite distinguir formatos, pero no resuelve por sí solo
+    la compatibilidad: si el formato cambia, habrá que versionarlo y actualizar
+    cómo se leen las versiones anteriores."
+  - **Ramas sin prueba:** "Que una rama no esté probada no es automáticamente
+    un defecto; el auditor puede señalarla si ve un riesgo o un incumplimiento
+    concreto." Pedí evaluar por separado `0600` y la publicación atómica: son
+    aspectos de permisos e integridad, y el CI corre en Ubuntu, así que no
+    aplica la limitación de Windows para cubrirlos allí.
+  - **Hoy no expliqué cada hallazgo con mis palabras.** Pregunté si A1 a A4 se
+    habían resuelto y me lo explicaron en simple: A1 era que ninguna prueba
+    vigilaba que el almacén nunca sobrescribe (ahora hay 4 que fallan si se
+    rompe), y A2, A3 y A4 eran texto de las specs.
+  - **Lo que me costó:** no pude seguir la explicación de los hallazgos tal
+    como venía en la puerta 3 y tuve que pedir que me dijeran si estaban
+    resueltas.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - Ninguna del registro D-01 a D-13 hoy.
+  - **Revisión 2 de las specs:** aprobada. Es solo texto: ADR 0005 `Accepted` y
+    lo que el executor agregó.
+  - **Formato del registro:** "as built", no contrato (arriba).
+  - **Comportamientos sin prueba:** no requieren prueba en esta puerta salvo
+    riesgo concreto. `0600` se registra como incidental, no como garantía.
+  - **A1 a A4:** resolverlos todos antes de documentar, en lugar de aceptar las
+    reservas y dejarlas para F2. Motivo: que no dejemos deuda técnica.
+  - **Puerta 3:** aprobé la revisión 3, las pruebas `race` y el veredicto de la
+    ronda 2 (aprobado con reservas, sin hallazgos abiertos).
+- **Verificación (comando y resultado):**
+  - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`: 137
+    pasan (7 de F0 y 130 nuevas), cobertura 94 %.
+  - Con la versión rota a propósito (`os.replace` en lugar de `os.link`), las 4
+    pruebas `race` fallan. Con el código real pasan.
+  - `uv run ruff check .`, `uv run ruff format --check .` (65 archivos) y
+    `uv run mypy .` (15 archivos): sin errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio. `pyproject.toml` y `uv.lock` sin cambios.
+  - PR #15: `feedback` y `Tests` en verde en el commit `ba761b2`, incluidas las
+    pruebas `race` en Ubuntu.
+- **Dudas abiertas:**
+  - El auditor dejó reservas bajas que ahora viven en
+    `specs/current/raw-evidence.md`: comportamientos sin prueba (por ejemplo
+    las validaciones de lectura), escritores concurrentes reales (sin probar y
+    fuera de alcance) y la sincronización del directorio en POSIX.
+  - `audit.md` conserva A5 como "Open" en el historial de la ronda 2; está
+    cerrado en `tasks.md` y en mi aceptación.
+  - `specs/current/_index.md` lo regeneró la documentación con la forma de F0;
+    no lo revisé línea por línea.
+  - Si cambia el formato del registro de observaciones hay que versionarlo y
+    seguir leyendo las versiones anteriores (F3 y F5 lo leerán).
+  - F4 deberá generar ids de ejecución que no sean nombres reservados de
+    Windows (`con`, `nul`...), y el almacén necesita enlaces duros (`os.link`).
+  - Siguen abiertas las dudas heredadas del Día 7 (checks que fallan, hooks sin
+    `.venv` en el `PATH` y `harny init` o `update`).
+- **Respuestas de autoevaluación:** el plan trae para hoy leer `audit.md` y
+  explicar cada hallazgo con mis palabras. Pedí que me lo explicaran, así que
+  no lo respondí yo (ver "Qué aprendí").
+- **Siguiente paso:** merge de F1 (PR #15) y Día 12, F2 `sercop-source-adapter`:
+  decidir D-08 (cliente HTTP, recomendación `httpx`), preparar 2 o 3 fixtures
+  mínimos y sanitizados a partir de mis observaciones del Día 2, y revisar las
+  specs que citen solo `docs/sources/sercop-observations.md` en la puerta 1.

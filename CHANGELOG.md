@@ -23,6 +23,14 @@ The project has not been released yet, so every entry is under `Unreleased`.
   tests with a `pytest-cov` coverage report on pull requests and on pushes to
   `main`, installing with `uv sync --locked`. There is no coverage threshold.
 - `pytest-cov` as a development-only dependency.
+- Local raw evidence store (F1), following
+  [ADR 0005](docs/adr/0005-raw-evidence-store-layout.md): the `ContentHash`
+  value object, the `Observation` record and the evidence errors in `domain`;
+  the `RawEvidenceStore` port in `application`; and `LocalDiskRawEvidenceStore`
+  in `infrastructure`, which keeps response bytes once under their SHA-256 and
+  one JSON observation per response obtained, publishes files write-once and
+  atomically, never persists `Set-Cookie` headers, and verifies integrity on
+  read. No CLI command or use case calls it yet, and no dependency was added.
 
 ### Changed
 
@@ -36,6 +44,9 @@ The project has not been released yet, so every entry is under `Unreleased`.
   `mypy` only when `.venv` is on `PATH`.
 - `docs/architecture.md` no longer lists the Python compatibility range as an
   open question; it is answered by ADR 0004.
+- `README.md` and `docs/architecture.md` describe the raw evidence store and
+  link ADR 0005; the raw-storage paths and metadata question is answered there
+  for local storage, while compression and retention stay open.
 
 ### Known limitations
 

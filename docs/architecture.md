@@ -57,10 +57,16 @@ contract belong to the first vertical flow.
 
 Raw storage is append-only from the application's perspective. Original
 responses must remain recoverable, identifiable, associated with their
-source and execution context, and protected from silent replacement. The
-baseline does not prescribe paths, compression, retention, or a definitive
-metadata schema. Those decisions require evidence from the first vertical
-flow.
+source and execution context, and protected from silent replacement.
+
+[ADR 0005](adr/0005-raw-evidence-store-layout.md) fixes the layout of the
+local raw evidence store: the exact response bytes are kept once under their
+SHA-256 (an object), and each response obtained is recorded by a separate JSON
+observation. The ADR also defines the observation fields, the rule that
+`Set-Cookie` headers are never kept, and the integrity checks. The `domain`
+layer holds the content hash, observation, and evidence errors, the
+`application` layer holds the storage port, and the `infrastructure` layer
+holds the local-disk adapter. Compression and retention are not decided.
 
 ## Infrastructure boundary
 
@@ -78,7 +84,9 @@ reliability, or operational requirements demonstrate a need. See
 - Which SERCOP endpoints and response variants are required for the first
   E.E.Q. flow?
 - What are the minimum audit events and quality-rule contracts?
-- Which raw-storage paths, compression, retention policy, and metadata fields
-  are supported by observed usage and legal or operational requirements?
+- Which raw-storage compression and retention policies are supported by
+  observed usage and legal or operational requirements? (The paths and
+  metadata fields of the local store are answered by
+  [ADR 0005](adr/0005-raw-evidence-store-layout.md).)
 
-These questions are intentionally not resolved by this baseline.
+The open questions are intentionally not resolved by this baseline.
