@@ -1,7 +1,7 @@
 # Intent: Raw evidence store (F1)
 
-Revision: 1
-Approval: Approved revision 1 by Vladimirjon on 2026-10-09
+Revision: 2
+Approval: Approved revision 2 by Vladimirjon on 2026-10-09
 
 ## Outcome
 The system can preserve every source response it obtains as raw evidence on
@@ -70,7 +70,7 @@ All examples use synthetic data. `sha256(b"abc")` is
 - New dependencies of any kind.
 
 ## Constraints
-- ADR 0002 and ADR 0005 are binding: layout `objects/<xx>/<sha256>` and `observations/<execution-id>/<sequence>.json` under the store root; objects written once and published atomically only if absent; one observation per response obtained, written once and only after its object; error responses preserved with their status; response headers except `Set-Cookie`; no request headers; integrity verified on read; mismatch or different content under an existing identity is an explicit error; no compression or retention. ADR 0005 is `Proposed`; approving this spec does not change its status, which is the human's edit.
+- ADR 0002 and ADR 0005 are binding: layout `objects/<xx>/<sha256>` and `observations/<execution-id>/<sequence>.json` under the store root; objects written once and published atomically only if absent; one observation per response obtained, written once and only after its object; error responses preserved with their status; response headers except `Set-Cookie`; no request headers; integrity verified on read; mismatch or different content under an existing identity is an explicit error; no compression or retention. ADR 0005 is `Accepted` (accepted by the human on 2026-10-09).
 - Hashing uses `hashlib` from the standard library. No dependency is added (`[project] dependencies` stays empty and `uv.lock` does not change), per `AGENTS.md`.
 - Layer boundaries from `AGENTS.md` and `docs/architecture.md`; `domain` is checked by strict `mypy` (ADR 0004).
 - Human-written parts (`docs/learning/plan.md`, Day 10): the human writes the content hash value object and the port by hand; the executor writes the local-disk adapter. The names and signatures the adapter and the tests depend on are fixed in `execution-plan.md` § Binding constraints so the parts can be written separately.
@@ -82,4 +82,5 @@ All examples use synthetic data. `sha256(b"abc")` is
 - None
 
 ## Revision history
-- Revision 1 (2026-10-09): First draft, based on ADR 0005 (Proposed, decisions made by the human on Day 9) and the Day 10 split between hand-written and executor-written parts.
+- Revision 1 (2026-10-09): First draft, based on ADR 0005 (Proposed, decisions made by the human on Day 9) and the Day 10 split between hand-written and executor-written parts. Approved revision 1 by Vladimirjon on 2026-10-09.
+- Revision 2 (2026-10-09): Text-only refresh after the implementation, before the independent audit. § Constraints now says ADR 0005 is `Accepted` (the human accepted it on 2026-10-09) instead of `Proposed`. No acceptance criterion, example, scope item or constraint changed in substance. The implementation's additions beyond Revision 1 are recorded as built in `execution-plan.md` Revision 2; none of them changes an acceptance criterion. Approved revision 2 by Vladimirjon on 2026-10-09.

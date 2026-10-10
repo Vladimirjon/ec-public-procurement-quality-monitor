@@ -1,11 +1,11 @@
 # Tasks: Raw evidence store (F1)
 
 ## Status
-Implemented (O1 to O7 done; O8 independent audit pending). Completed 2026-10-09: 133 tests pass, `ruff`, `mypy` and the doctor are clean
+Needs audit (implemented: O1 to O7 done on 2026-10-09; O8 independent audit pending). 133 tests pass, `ruff`, `mypy` and the doctor are clean, and the PR #15 checks are green. Spec Revision 2 (a text-only refresh of `intent.md` and `execution-plan.md`) was approved by the human on 2026-10-09.
 
 ## Baseline
-- Base commit: `3f8f779` (`main`, "Merge pull request #13 from Vladimirjon/docs/day-8-glossary")
-- Branch: `docs/day-9-raw-evidence-store-adr-specs` when these specs were written (it also holds the untracked ADR 0005). Implementation happens on a new branch, `feat/raw-evidence-store`, created from `main` after the specs and ADR 0005 are merged or from this branch, as the human decides.
+- Base commit: `62afd18` (`main`, "Merge pull request #14 from Vladimirjon/docs/day-9-raw-evidence-store-adr-specs"), the base of the implementation branch. It differs from `3f8f779`, where the baseline below was measured, only in documentation and specs (ADR 0005 already `Accepted`, `docs/glossary.md`, `docs/learning/journal.md` and these three spec files); no code, test or configuration changed.
+- Branch: `feat/raw-evidence-store`, created from `62afd18`, holding the F1 commits `9d1f76c` (red tests) to `392145f`; pull request #15 to `main` (https://github.com/Vladimirjon/ec-public-procurement-quality-monitor/pull/15). These specs were written on `docs/day-9-raw-evidence-store-adr-specs`, merged by PR #14.
 - Interpreter: Python 3.13.9 (`uv run python --version`), uv 0.12.23
 - Cwd: the repository root, `ec-public-procurement-quality-monitor`
 - Commands:
@@ -49,18 +49,19 @@ Order and ownership:
   - Green: `git grep -n -i "raw evidence" -- README.md docs/architecture.md CHANGELOG.md` -> matches in all three (architecture links `adr/0005-raw-evidence-store-layout.md`); `git grep -n "four empty layer" -- README.md` -> no match (exit 1); the README "Planned" list no longer lists storage adapters as missing and says no CLI command calls the store; `git diff --check` clean.
 - [x] **O7** Broader suite vs baseline (AC12): `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` passes with the 7 baseline tests plus the new ones; `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy .` exit 0; `uv run node .sdd/doctor/run-doctor.mjs` reports `0 warned, 0 failed`; `git diff --check` is clean; `git grep -n -i -e datosabiertos -e compraspublicas -- tests` finds nothing. On the F1 pull request, the `feedback` and `Tests` checks are green.
   - Green (local, 2026-10-09): `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `133 passed` (7 baseline + 126 new), total coverage 93% (`raw_evidence.py` 96%, `local_disk_raw_evidence_store.py` 90%; uncovered lines are the concurrent-publish race branches, the best-effort cleanup failure, the POSIX-only directory sync, and the non-bytes `TypeError`); `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `63 files already formatted`; `uv run mypy .` -> `Success: no issues found in 15 source files`; `uv run node .sdd/doctor/run-doctor.mjs` -> `31 ok, 0 skipped, 0 warned, 0 failed`; `git diff --check` clean; `git grep -n -i -e datosabiertos -e compraspublicas -- tests` -> no match (exit 1). The `feedback` and `Tests` checks on the pull request are not available yet (no PR); to confirm after the PR is opened.
+  - Green (PR #15, head `392145f`): `gh pr view 15 --json statusCheckRollup` -> `tests` (workflow `Tests`, on Ubuntu) `SUCCESS` and `feedback` (workflow `harny feedback`) `SUCCESS`, both completed 2026-10-10 UTC.
 - [ ] **O8** Independent audit: [verdict from `specs/raw-evidence-store/audit.md`]
 
 ## Working state
 - Updated: 2026-10-09
 - Outcome: O1 to O7 done; O8 (independent audit) pending
-- Phase: implemented, awaiting the independent audit
+- Phase: implemented, awaiting the independent audit; spec Revision 2 awaiting the human's approval
 - In progress: nothing
-- Last command: `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `133 passed`, 93% coverage; `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy .` clean; `uv run node .sdd/doctor/run-doctor.mjs` -> `31 ok, 0 skipped, 0 warned, 0 failed`.
-- Notes for the next roles: see § Notes. Nothing is committed; the whole change is in the working tree of `feat/raw-evidence-store`.
+- Last command: `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `133 passed`, 93% coverage; `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy .` clean; `uv run node .sdd/doctor/run-doctor.mjs` -> `31 ok, 0 skipped, 0 warned, 0 failed`. Spec Revision 2 (text only): `uv run node .sdd/doctor/run-doctor.mjs --only spec-state` and `uv run ruff format --check .`, results in the architect's report.
+- Notes for the next roles: see § Notes. The implementation is committed on `feat/raw-evidence-store` and open as PR #15 (checks green); the spec Revision 2 edits to `intent.md`, `execution-plan.md` and this file are not committed yet.
 - Next step:
-  1. The auditor writes `audit.md` against the intent ACs and the binding constraints.
-  2. The human reviews, commits, opens the pull request, and refreshes the stale "Proposed" text in the specs (see § Notes).
+  1. Done: the human approved spec Revision 2 on 2026-10-09 (recorded in the `intent.md` `Approval` line).
+  2. The auditor writes `audit.md` against the intent ACs, the binding constraints and the as-built notes in `execution-plan.md` § Proposed approach.
 
 ## Finding responses
 | Finding | Response | Evidence |
@@ -75,6 +76,7 @@ Deviations from `execution-plan.md` § Proposed approach and additions (none cha
 - POSIX behavior was checked only by a throwaway smoke script on a copy of `src/` run under WSL Ubuntu with Python 3.12 (store, duplicate, interrupted `os.fsync`, tampered object): all behaved as expected. The suite itself ran on Windows only; the POSIX-only directory sync is not covered by it.
 
 Stale text found in the spec files (the executor does not edit specs other than `tasks.md`; the architect or the human should refresh it): `intent.md` § Constraints says "ADR 0005 is `Proposed`"; `execution-plan.md` § Guidance consulted says the intent is "pending approval" and ADR 0005 "Proposed"; `execution-plan.md` § Consumers says the ADR moves to `Accepted` only by the human (now done); this file's § Baseline still describes the branch situation before the implementation branch existed.
+- Resolved by spec Revision 2 (architect, 2026-10-09, text only): `intent.md` § Constraints and `execution-plan.md` § Guidance consulted and § Consumers and migration now say ADR 0005 is `Accepted`; `intent.md` is Revision 2, pending approval, with the Revision 1 approval kept in its history; this file's § Baseline describes `feat/raw-evidence-store` and PR #15. The deviations above are recorded as built in `execution-plan.md` § Proposed approach "Implementation notes (as built, Revision 2)".
 
 ## Checkpoint
-Implementation complete on branch `feat/raw-evidence-store` (base `62afd18`), uncommitted: O1 and O3 by the human, O2 and O4 to O7 by the executor; 133 tests pass, `ruff`, `mypy` and the doctor are clean. Created: `src/ec_procurement_quality/domain/raw_evidence.py`, `src/ec_procurement_quality/infrastructure/local_disk_raw_evidence_store.py`; edited: `README.md`, `docs/architecture.md`, `CHANGELOG.md`, this file. Resume at O8: the independent audit.
+Implementation complete on branch `feat/raw-evidence-store` (base `62afd18`), committed (`9d1f76c` to `392145f`) and open as PR #15 with green checks: O1 and O3 by the human, O2 and O4 to O7 by the executor; 133 tests pass, `ruff`, `mypy` and the doctor are clean. Created: `src/ec_procurement_quality/domain/raw_evidence.py`, `src/ec_procurement_quality/infrastructure/local_disk_raw_evidence_store.py`; edited: `README.md`, `docs/architecture.md`, `CHANGELOG.md`, this file. Spec Revision 2 (text only) is in the working tree, awaiting the human's approval. Resume at O8: the independent audit.
