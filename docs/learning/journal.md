@@ -862,3 +862,114 @@ Ver [plan.md](plan.md).
   (O1); el test-writer escribe las pruebas en rojo (puerta 2); el executor
   implementa; y yo reviso línea por línea cómo se manejan los errores HTTP. El PR
   de hoy sigue abierto hasta el merge de F2.
+
+## Día 13: F2 `sercop-source-adapter`, rojo y verde (2026-10-10)
+
+- **Objetivo:** agregar `httpx` (O1), pasar la puerta 2 con las pruebas en rojo,
+  implementar el adaptador hasta verde (O3 a O5) y revisar yo línea por línea
+  cómo se manejan los errores HTTP.
+- **Qué hice:**
+  - **Cierre del Día 12:** el PR #16 tenía `feedback` y `Tests` en verde y era
+    mergeable. La sesión no lo tenía enlazado y Auto-fix aparecía apagado:
+    lo enlacé y lo activé.
+  - **O1:** `uv add httpx`. Revisé el diff de `pyproject.toml` y `uv.lock` y la
+    versión resuelta (0.28.1) y aprobé antes de seguir.
+  - **Puerta 2:** pruebas en rojo con transporte simulado y guardia de red.
+    Fallaban por la razón correcta (`ModuleNotFoundError` de los módulos de F2
+    y el `AssertionError` del chequeo de capas). Aprobé.
+  - **O3 a O5:** `domain/source_response.py`, `application/procurement_source.py`
+    e `infrastructure/sercop_source.py`, sin tocar las pruebas.
+  - **Revisión de errores HTTP:** leí el adaptador completo con un mapa de las
+    cinco ramas. Mis hallazgos llevaron a la revisión 2 de la spec (abajo).
+  - **Revisión 2:** el architect revisó `intent`, `execution-plan` y `tasks`.
+    Aprobé la revisión 2, el test-writer escribió las pruebas nuevas en rojo
+    (O2b), aprobé la puerta 2 otra vez y el executor las pasó a verde (O5b).
+    Volví a leer los bloques que cambiaron.
+- **Qué aprendí (con mis palabras):**
+  - **Por qué no se amplía el almacén:** "RFC 9110 define los códigos fuera de
+    ese rango como inválidos, así que no se amplía el almacén para guardarlos."
+  - **Las cinco ramas (mis respuestas de comprobación):**
+    1. Si falla la conexión antes de recibir estado y cabeceras, no hay
+       respuesta que guardar: sale `SourceTransportError` con `response=None` y
+       F4 trata el error según su política de ejecución y reintentos.
+    2. Un corte durante el cuerpo da `SourceTransportError` con la respuesta
+       parcial (estado, cabeceras, bytes recibidos y hora de captura). No es
+       "incompleta" porque el corte se detecta antes de evaluar si un cuerpo
+       completo de estado 200 cumple el formato.
+    3. Solo el 200 llega a la validación. 204 y 302 son errores de estado y no
+       se siguen redirecciones. El adaptador conserva `Retry-After` pero no lo
+       interpreta: un 429 activa el enfriamiento configurado.
+    4. Un 200 con JSON válido pero otra página sale como
+       `IncompleteResponseError` con la respuesta completa. Como llegó completa,
+       F4 puede conservarla como evidencia.
+    5. Un `data` vacío es éxito. Quien llama consulta `is_beyond_last_page` y
+       `total`.
+  - **Cómo quedó el flujo tras mi relectura:** "se valida que el adaptador siga
+    abierto, se valida la entrada, se construye el request, se espera y se
+    envía. El hook captura estado, cabeceras y cuerpo antes de que HTTPX procese
+    Location; luego el mapeo de resultados ocurre fuera del except. El finally
+    registra el fin del intento y actualiza el ritmo también cuando se propaga
+    una excepción. Las seis ramas de `_outcome` corresponden al plan."
+  - **Hoy no anoté qué fue lo que más me costó.**
+- **Hallazgos de mi revisión del adaptador (se llevaron al architect):**
+  - Un estado fuera de 100 a 599 rompía la respuesta tipada: `RawResponse` lo
+    rechaza con un `ValueError` antes de que `_outcome` pueda mapearlo, y se
+    pierde la respuesta. Quedó cerrado en la revisión 2.
+  - `base_url` aceptaba usuario y contraseña: `httpx` los toma como Basic Auth y
+    quedan en la URL y en el log. Quedó cerrado: se rechaza al construir.
+  - `base_url` no validaba la autoridad ni el puerto, y el error de `httpx` se
+    posponía hasta construir el request, fuera del mapeo tipado. Quedó cerrado:
+    se valida al construir y da `ValueError`.
+  - Al cerrar la familia, el architect encontró cuatro más: un `Location` mal
+    formado en un 3xx perdía o rompía la respuesta; un comprador u `ocid` largo
+    fallaba después de esperar; llamar tras `close()` esperaba antes de fallar; y
+    una excepción que escapaba no contaba para el ritmo. Todos cerrados.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **D-08 (ejecución):** `httpx` 0.28.1, con `httpcore` 1.0.9, `h11` 0.16.0,
+    `anyio` 4.15.1, `certifi` 2026.7.22 e `idna` 3.20 como transitivas.
+    `pyproject.toml` solo gana `httpx>=0.28.1`.
+  - **Revisión 2 de la spec:** aprobada. Un estado fuera de 100 a 599 sale como
+    error de transporte sin respuesta y sin guardar sus bytes; el rango de F1 no
+    se amplía.
+  - **Puerta 2:** aprobada dos veces (pruebas de la revisión 1 y pruebas de la
+    revisión 2).
+  - **Mecanismo del `Location`:** un gancho de respuesta de `httpx` captura la
+    respuesta antes de que el cliente procese `Location`.
+  - **Seis ramas, no cinco:** el estado fuera de rango es una rama nueva; los
+    comentarios ya revisados conservan su texto y solo cambió el número.
+  - **Regla "no encadenar `InvalidURL`":** no tiene prueba; queda para la
+    revisión del auditor (O9).
+  - **Pendiente a propósito:** O6 a O9 (migración, documentación, suite y
+    auditoría) son del Día 14, según el plan.
+- **Verificación (comando y resultado):**
+  - `uv run pytest`: 453 pasan (137 de antes y 316 nuevas).
+  - `uv run ruff check .`, `uv run ruff format --check .` (75 archivos) y
+    `uv run mypy .` (20 archivos): sin errores.
+  - `uv lock --check`, `uv sync --locked` y
+    `uv run ec-procurement-quality --version` (0.1.0): bien.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos. Sin
+    `uv run` el doctor salta la comprobación de `pytest`.
+  - `git diff --check` limpio. Ninguna prueba nombra el host real.
+  - Los módulos de F1, `interfaces/cli.py` y los fixtures no cambiaron desde la
+    puerta 1; `pyproject.toml` solo agrega `httpx`.
+- **Dudas abiertas:**
+  - Si `httpx` pide distinto que mi `curl` y SERCOP responde distinto: sigue sin
+    verificarse; se verá en la primera ingesta real (Día 20).
+  - Los valores de ritmo (5 s, 20, 60 s) y los timeouts son decisiones del
+    proyecto, no observadas.
+  - Los bytes de un estado fuera de 100 a 599 no se guardan.
+  - F4 debe mantener el logger `httpcore` por debajo de `DEBUG`, y F5 debe
+    revalidar un 200 guardado porque puede estar truncado o inservible.
+  - El estado de la captura vive en la instancia: sirve para un cliente
+    sincrónico de un solo hilo; habría que revisarlo si aparece concurrencia.
+  - Al archivar F2 se modifican `project-toolchain` (PT-3, PT-11 y los conteos de
+    PT-6 y PT-10) y se crea la capacidad `source-access`.
+  - `specs/current/_index.md`: sigue sin revisarse línea por línea.
+  - Siguen abiertas las dudas heredadas del Día 7 (checks que fallan, hooks sin
+    `.venv` en el `PATH` y `harny init` o `update`).
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy; las
+  cinco de comprobación por rama están arriba.
+- **Siguiente paso:** Día 14, F2: el executor hace O6 a O8 (evidencia de
+  migración, documentación y suite contra la línea base), el auditor escribe
+  `audit.md` (O9), puerta 3, documentación y merge del PR #16. Retrospectiva de
+  la semana 2.
