@@ -542,3 +542,76 @@ Ver [plan.md](plan.md).
 - **Siguiente paso:** Día 9, F1 `raw-evidence-store`: decido D-07 y escribo el
   ADR sobre la disposición del almacén crudo, y reviso las specs de F1 en la
   puerta 1.
+
+## Día 9: F1 `raw-evidence-store`, decisiones y specs (2026-10-09)
+
+- **Objetivo:** decidir D-07 (disposición del almacén crudo), dejar el ADR
+  correspondiente y revisar en la puerta 1 las specs de F1. Entraban dos
+  preguntas del Día 8: si las respuestas de error (un `429`) se preservan como
+  evidencia cruda, y cómo se representa que dos ejecuciones obtuvieron el mismo
+  contenido sin duplicarlo.
+- **Qué hice:** vi el concepto con un ejemplo resuelto (contenido direccionado
+  por hash, escritura atómica y append-only) y decidí D-07 y las dos preguntas
+  eligiendo las opciones recomendadas. Pedí un borrador del ADR en lugar de
+  escribirlo desde cero, lo revisé y lo aprobé como ADR 0005. El architect
+  redactó las tres specs de F1; revisé el resumen de la puerta 1 (qué cambia,
+  cómo puede fallar y qué lo prueba) y aprobé `intent.md` y `execution-plan.md`
+  (revisión 1). Pedí formalizar en el glosario los términos del almacén.
+- **Qué aprendí (con mis palabras):**
+  - Hoy no expliqué el concepto con mis palabras: decidí a partir del ejemplo
+    resuelto y de la recomendación con su motivo.
+  - **Mi criterio sobre el glosario:** "formalízalos, si se pueden simplificar,
+    si es que ya cumplen dentro de otro término y si no, defínelos formalmente
+    y que ya sean utilizables."
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **D-07:** contenido por hash más observaciones aparte. Los bytes se
+    guardan una sola vez en `objects/<sha256>`, y cada respuesta obtenida deja
+    un registro JSON en `observations/<ejecución>/<secuencia>.json`. Mismo
+    contenido en dos ejecuciones son dos observaciones y un solo objeto.
+    Descarté una carpeta por ejecución con copia de los bytes, porque repite
+    contenido idéntico y no muestra que dos ejecuciones obtuvieron lo mismo.
+  - **Respuestas de error:** se preservan como evidencia cruda, con su status y
+    sus cabeceras de respuesta (sin `Set-Cookie`), y nunca se normalizan. Así
+    queda la evidencia que faltó el Día 2 para saber si el `429` trae
+    `Retry-After`. Descarté guardar solo las respuestas 2xx.
+  - **ADR 0005:** aceptado. Sin compresión ni retención en la v1 y sin
+    dependencias nuevas (`hashlib` es de la biblioteca estándar).
+  - **Puerta 1:** aprobada la revisión 1 de `intent.md` (13 criterios) y de
+    `execution-plan.md`. El `Approval` quedó en `intent.md`.
+  - **Glosario:** "observación" pasa a ser término propio. "Objeto" no se
+    agrega: queda dentro de evidencia cruda, como el contenido guardado. Se
+    ajustaron evidencia cruda e ejecución de ingesta para que concuerden.
+  - **Forma de trabajo:** el ADR llegó como borrador para aprobar, no escrito a
+    mano. Esto cambia la marca 🧑 que traía el plan para hoy, igual que el
+    glosario del Día 8.
+- **Verificación (comando y resultado):**
+  - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`: 7
+    pasan, cobertura 100 % de 10 líneas.
+  - `uv run ruff check .`, `uv run ruff format --check .` (56 archivos) y
+    `uv run mypy .`: sin errores. `ruff format` también revisa los bloques de
+    código de los `.md`: un bloque de `execution-plan.md` lo hacía fallar y el
+    architect lo corrigió.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio.
+- **Dudas abiertas:**
+  - Una "observación" también es el nombre de mis notas sobre la fuente
+    (`docs/sources/sercop-observations.md`). Se dejó el nombre porque el ADR y
+    las specs ya lo usan, y el glosario aclara la diferencia. Renombrarlo
+    obligaría a rehacer specs ya aprobadas.
+  - Al archivar F1 se retira de `project-toolchain` PT-3 la cláusula de que las
+    capas "solo contienen lo necesario para ser paquetes", y crece el conteo de
+    PT-6.
+  - F4 deberá generar ids de ejecución que no sean nombres reservados de
+    Windows (`con`, `nul`...).
+  - El almacén necesita un sistema de archivos con enlaces duros (`os.link`);
+    en NTFS y ext4 funciona.
+  - Explicar con mis palabras entidad vs objeto de valor antes de escribir el
+    objeto de valor del hash y el puerto (Día 10, heredada del Día 8).
+  - Siguen abiertas las dudas heredadas del Día 7 (checks que fallan, hooks sin
+    `.venv` en el `PATH`, `harny init` o `update` y `_index.md` de
+    `specs/current/`).
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
+- **Siguiente paso:** Día 10, F1 en rojo y verde: el test-writer escribe las
+  pruebas en rojo (puerta 2); yo escribo el objeto de valor `ContentHash` y el
+  puerto `RawEvidenceStore`; el executor implementa el resto y el adaptador de
+  disco.
