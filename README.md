@@ -22,9 +22,11 @@ Docker Compose is planned for local PostgreSQL infrastructure in a later
 task. Version 1 does not include microservices, Kafka, Redis, Kubernetes,
 authentication, or a load balancer.
 
-The first vertical flow will define concrete raw-storage paths, compression,
-retention, metadata schema, and source-specific contracts. Those details are
-intentionally not fixed by this baseline.
+The layout of the local raw evidence store (paths, observation metadata, and
+integrity rules) is fixed by
+[ADR 0005](docs/adr/0005-raw-evidence-store-layout.md). Compression, retention,
+and source-specific contracts are intentionally not fixed yet; the first
+vertical flow will define them.
 
 ## Architecture
 
@@ -33,9 +35,10 @@ The system is separated into `domain`, `application`, `infrastructure`, and
 on SERCOP, PostgreSQL, CLI frameworks, or local storage.
 
 The design prioritizes auditability, idempotency, traceability,
-reproducibility, resumability, and testability. Only the project skeleton
-exists so far: the four layer packages are empty and the CLI only reports its
-version. No domain behavior is claimed to exist yet.
+reproducibility, resumability, and testability. Development is at an early
+stage: the layers hold only the local raw evidence store described under
+Technologies, and the CLI only reports its version. No source access,
+ingestion, normalization, or quality behavior exists yet.
 
 See [the architecture](docs/architecture.md) and the accepted decisions:
 
@@ -43,6 +46,7 @@ See [the architecture](docs/architecture.md) and the accepted decisions:
 - [ADR 0002: Immutable raw storage](docs/adr/0002-immutable-raw-storage.md)
 - [ADR 0003: No distributed infrastructure in v1](docs/adr/0003-no-distributed-infrastructure-in-v1.md)
 - [ADR 0004: Python toolchain](docs/adr/0004-python-toolchain.md)
+- [ADR 0005: Raw evidence store layout](docs/adr/0005-raw-evidence-store-layout.md)
 
 ## Technologies
 
@@ -50,9 +54,17 @@ Implemented in the repository:
 
 - Python 3.13 (`requires-python = ">=3.13"`), managed with `uv` and a
   committed `uv.lock` ([ADR 0004](docs/adr/0004-python-toolchain.md)).
-- The `ec_procurement_quality` package under `src/` with the four empty layer
+- The `ec_procurement_quality` package under `src/` with the four layer
   packages and the `ec-procurement-quality` CLI, which only supports
   `--version`.
+- A local raw evidence store ([ADR 0005](docs/adr/0005-raw-evidence-store-layout.md)):
+  the content hash, observation, and evidence errors in `domain`; the storage
+  port in `application`; and a local-disk adapter in `infrastructure`. Under a
+  root directory it keeps each response's exact bytes once, named by their
+  SHA-256, plus one JSON observation record per response obtained, and it
+  verifies integrity on read. It is a library only: no CLI command or use case
+  calls it yet, and no default root path is wired in code (`data/raw/` is
+  git-ignored for this purpose).
 - `ruff` (lint and format), `mypy` (strict in `domain` only), `pytest` and
   `pytest-cov` as development-only dependencies.
 - Two GitHub Actions workflows on pull requests: `feedback` (`ruff` and `mypy`,
@@ -63,7 +75,7 @@ Planned, not implemented yet:
 
 - PostgreSQL for normalized records, audit, and quality results.
 - Docker Compose for local PostgreSQL execution.
-- A SERCOP adapter and storage adapters.
+- A SERCOP adapter and the ingestion that will call the raw evidence store.
 - Real CLI commands beyond `--version`.
 
 ## Development commands
