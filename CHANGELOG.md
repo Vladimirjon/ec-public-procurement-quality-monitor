@@ -31,6 +31,25 @@ The project has not been released yet, so every entry is under `Unreleased`.
   one JSON observation per response obtained, publishes files write-once and
   atomically, never persists `Set-Cookie` headers, and verifies integrity on
   read. No CLI command or use case calls it yet, and no dependency was added.
+- SERCOP source adapter (F2), following
+  [ADR 0006](docs/adr/0006-http-client-for-source-access.md): `RawResponse` and
+  the source errors (`SourceError`, `SourceTransportError`,
+  `SourceStatusError`, `IncompleteResponseError`) in `domain`; the
+  `ProcurementSource` port with `SearchPage` and `RecordResponse` in
+  `application`; and `SercopSource` in `infrastructure`, on a synchronous
+  `httpx.Client`. One call makes one request, to the buyer-name search
+  (`search_ocds`) or to `api/record`, and returns the response exactly as
+  received or raises a typed error that carries the valid response that arrived
+  (a status outside 100 to 599 is reported without a response), so that failed
+  and partial responses can be stored through the raw evidence store. It never
+  retries, spaces requests from the `X-RateLimit-Remaining`
+  header, sets explicit timeouts, and rejects a base URL with user
+  information. Its tests use `httpx.MockTransport` and a network guard, and
+  never reach the network. It is a library only: no CLI command or use case
+  calls it yet.
+- `httpx` as the first runtime dependency (`httpx>=0.28.1` in
+  `[project] dependencies`, resolved to 0.28.1 in `uv.lock`), imported only in
+  `infrastructure`. The development dependencies do not change.
 
 ### Changed
 

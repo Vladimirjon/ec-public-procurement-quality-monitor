@@ -82,7 +82,10 @@ reliability, or operational requirements demonstrate a need. See
 ## Open questions
 
 - Which SERCOP endpoints and response variants are required for the first
-  E.E.Q. flow?
+  E.E.Q. flow? (Answered for the endpoints: the first flow uses `search_ocds`
+  with the buyer-name query and `api/record`, as recorded in
+  [the source observations](sources/sercop-observations.md) and implemented by
+  the source adapter. Other response variants stay open until observed.)
 - What are the minimum audit events and quality-rule contracts?
 - Which raw-storage compression and retention policies are supported by
   observed usage and legal or operational requirements? (The paths and

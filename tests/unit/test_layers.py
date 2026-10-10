@@ -112,3 +112,77 @@ def test_layer_application_imports_only_stdlib_domain_and_itself() -> None:
                 offenders.append(f"{path.name}: {name}")
 
     assert offenders == []
+
+
+INFRASTRUCTURE_PACKAGE = f"{ROOT_PACKAGE}.infrastructure"
+SERCOP_ADAPTER_MODULE = "sercop_source.py"
+HTTP_CLIENT_LIBRARY = "httpx"
+
+
+def _names_http_client_library(source: str) -> bool:
+    """True when `source` imports `httpx` in any form.
+
+    Covers `import httpx`, `import httpx.x`, `from httpx import x`,
+    `from httpx.x import y` (also relative), `from package import httpx` and a
+    string-literal dynamic import (`__import__("httpx")`,
+    `importlib.import_module("httpx")`).
+    """
+    for name, _level in _imported_modules(source):
+        if name.split(".")[0] == HTTP_CLIENT_LIBRARY:
+            return True
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and any(
+            alias.name.split(".")[0] == HTTP_CLIENT_LIBRARY for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.Call) and node.args:
+            function = node.func
+            called = (
+                function.id
+                if isinstance(function, ast.Name)
+                else function.attr
+                if isinstance(function, ast.Attribute)
+                else ""
+            )
+            first = node.args[0]
+            if (
+                called in {"__import__", "import_module"}
+                and isinstance(first, ast.Constant)
+                and isinstance(first.value, str)
+                and first.value.split(".")[0] == HTTP_CLIENT_LIBRARY
+            ):
+                return True
+    return False
+
+
+def test_layer_only_infrastructure_imports_httpx() -> None:
+    """Feature sercop-source-adapter (F2), AC12 and ADR 0006: the HTTP client
+    library is imported only in `infrastructure`; `domain`, `application`,
+    `interfaces` and the root package never import it, in any form.
+    """
+    root_package = importlib.import_module(ROOT_PACKAGE)
+    assert root_package.__file__ is not None, "the root package needs an __init__.py"
+    root = Path(root_package.__file__).parent
+
+    # The check must not pass vacuously: the adapter is the one module that is
+    # supposed to import the library.
+    adapter = root / "infrastructure" / SERCOP_ADAPTER_MODULE
+    assert adapter.is_file(), (
+        f"infrastructure needs {SERCOP_ADAPTER_MODULE} ({adapter} is missing)"
+    )
+    assert _names_http_client_library(adapter.read_text(encoding="utf-8")), (
+        f"infrastructure/{SERCOP_ADAPTER_MODULE} must import {HTTP_CLIENT_LIBRARY}"
+    )
+
+    guarded = sorted(root.glob("*.py"))
+    for layer in ("domain", "application", "interfaces"):
+        guarded.extend(sorted((root / layer).rglob("*.py")))
+    assert guarded, "no module was checked"
+
+    offenders = [
+        str(path.relative_to(root))
+        for path in guarded
+        if _names_http_client_library(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == []
