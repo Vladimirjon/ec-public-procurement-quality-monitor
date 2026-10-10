@@ -764,3 +764,101 @@ Ver [plan.md](plan.md).
   decidir D-08 (cliente HTTP, recomendación `httpx`), preparar 2 o 3 fixtures
   mínimos y sanitizados a partir de mis observaciones del Día 2, y revisar las
   specs que citen solo `docs/sources/sercop-observations.md` en la puerta 1.
+
+## Día 12: F2 `sercop-source-adapter`, specs (2026-10-10)
+
+- **Objetivo:** decidir D-08 (cliente HTTP), revisar la decisión sobre
+  `.mcp.json` (Context7), tener fixtures mínimos y sanitizados, y pasar la puerta
+  1 con las specs de F2 basadas solo en `docs/sources/sercop-observations.md`.
+- **Qué hice:**
+  - **Cierre del Día 11:** el "Siguiente paso" de esa entrada era el merge del
+    PR #15. Está hecho: `main` quedó en el commit `fff0f2d`, con `feedback` y
+    `Tests` en verde, la rama borrada y F1 archivado.
+  - **Fuente:** pregunté si bastaba con lo observado el Día 2 o si convenía
+    volver a pedir, porque "esto no se trata de cuando yo pierda la paciencia,
+    sino de cómo funciona la página y cómo es en la vida real". Aprobé 7 pedidos
+    acotados. Se enviaron 6 (el #6 se reemplazó por el #5, 29 minutos después).
+    Se detuvieron a mitad por la regla de parada (`Remaining` bajó de 20) y se
+    retomaron después de una pausa que yo avisé que había pasado.
+  - **Decisiones:** apruebo `httpx`, incluyo `record` en F2 y dejo `.mcp.json`
+    fuera. Pregunté qué hacía y qué quitaba excluirlo antes de decidir.
+  - **Specs:** el architect redactó `intent`, `execution-plan` y `tasks` de F2
+    (14 criterios). Revisé el resumen de la puerta 1 (qué cambia, cómo puede
+    fallar y qué lo prueba) y aprobé la revisión 1.
+- **Qué aprendí (con mis palabras):**
+  - **Criterio para observar la fuente:** lo que importa es cómo funciona la
+    página en la vida real, no cuánta paciencia tenga yo ni lo que alcance a
+    reconstruir de mis notas.
+  - **`.mcp.json`:** "habíamos dejado eso afuera para no crear una
+    dependencia".
+  - **Hoy no expliqué el concepto con mis palabras** (timeouts, reintentos con
+    backoff, límites de tasa y pruebas sin red): lo vi con un ejemplo resuelto.
+    No respondí la pregunta opcional del final (qué pasa con un 429 que provocó
+    un reintento).
+  - **Lo que me costó:** pedí que me explicaran qué hacía el servidor MCP y qué
+    quitaba excluirlo, y la primera explicación tenía un error que se corrigió.
+- **Lo observado hoy de la fuente (con ayuda; quedó en
+  `docs/sources/sercop-observations.md`, sección del 2026-10-10):**
+  - La respuesta de búsqueda trae `total`, `page`, `pages` y `data` en la raíz;
+    `amount` y `budget` vienen como texto y `suppliers` y `budget` pueden ser
+    `null`.
+  - Una página fuera de rango (`page=30` con `pages=29`) devuelve 200 con
+    `data` vacío, no un error.
+  - Sin `local=1` la página 1 salió byte por byte igual: no cambió nada en esa
+    consulta.
+  - `api/record` respondió 200 con un paquete OCDS; los montos ahí son números.
+  - El contador de uso bajó cerca de 1 punto por segundo entre pedidos, no por
+    cantidad de pedidos. Una primera hipótesis ("unas 13 unidades por pedido")
+    resultó equivocada. Encaja con un cupo compartido con otros, pero es una
+    inferencia.
+  - Cada pedido tardó entre 5,9 y 12 s.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **D-08:** `httpx`, cliente sincrónico, importado solo en `infrastructure`,
+    con `MockTransport` en las pruebas. Es la primera dependencia de ejecución;
+    la agrega la primera tarea del executor (`uv add`), no el PR de hoy.
+    **ADR 0006** aceptado.
+  - **`.mcp.json` (Context7):** se mantiene excluido (decisión del Día 4
+    confirmada).
+  - **Alcance de F2:** `search_ocds` y `api/record`. Sin filtro por RUC ni
+    `buyerId` y sin darle significado a `local=1`.
+  - **Reintentos:** el adaptador hace un pedido por llamada y no reintenta.
+    Reintentar y esperar le toca a F4, para guardar cada respuesta antes de
+    cualquier espera.
+  - **Comprobación de `page`:** se rechaza una respuesta cuyo `page` no coincide
+    con el pedido (la respuesta igual se guarda como evidencia).
+  - **Ritmo y timeouts por defecto** (decisión del proyecto, no observados,
+    configurables): 5 s entre pedidos; 60 s de enfriamiento tras un 429 o con
+    `Remaining` menor que 20; timeouts de 10 s y 30 s de lectura.
+  - **Fixtures:** 4 archivos en `tests/fixtures/sercop/` con su procedencia;
+    `search_no_results.json` está marcado como inferido.
+  - **Puerta 1:** aprobada la revisión 1 de `intent.md` (14 criterios), del plan
+    y de las tareas.
+- **Verificación (comando y resultado):**
+  - `uv run pytest`: 137 pasan (sin pruebas nuevas hoy).
+  - `uv run ruff check .`, `uv run ruff format --check .` (70 archivos) y
+    `uv run mypy .` (15 archivos): sin errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio. `pyproject.toml` y `uv.lock` sin cambios.
+- **Dudas abiertas:**
+  - Qué significa `local=1`, la ventana exacta y a quién se le cuenta el límite
+    (solo se sabe que se renueva en 29 minutos o menos), el cuerpo del 429 y
+    si trae `Retry-After` (no se provocó), qué devuelve `record` para un `ocid`
+    inexistente, si su estructura varía entre registros y el filtro por RUC o
+    `buyerId`.
+  - Si `httpx` pide distinto que mi `curl` y SERCOP responde distinto: no está
+    verificado; se verá en la primera ingesta real (Día 20).
+  - Un 200 guardado puede tener el cuerpo truncado: F5 deberá revalidarlo.
+  - F4 deberá mantener el logger `httpcore` por debajo de `DEBUG`, porque con el
+    transporte real registra cabeceras.
+  - Al archivar F2 se modifica `project-toolchain` PT-11 ("dependencias
+    vacías") y crece el conteo de PT-6, PT-10 y PT-11.
+  - `specs/current/_index.md`: se comprobó que los rangos de requisitos (CLI 3,
+    PT 12, RE 12) y las fechas coinciden con los documentos de capacidad; no lo
+    revisé línea por línea. Queda decidir si se cierra.
+  - Siguen abiertas las dudas heredadas del Día 7 (checks que fallan, hooks sin
+    `.venv` en el `PATH` y `harny init` o `update`).
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
+- **Siguiente paso:** Día 13, F2 en rojo y verde: el executor agrega `httpx`
+  (O1); el test-writer escribe las pruebas en rojo (puerta 2); el executor
+  implementa; y yo reviso línea por línea cómo se manejan los errores HTTP. El PR
+  de hoy sigue abierto hasta el merge de F2.
