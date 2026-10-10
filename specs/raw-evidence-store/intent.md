@@ -1,7 +1,7 @@
 # Intent: Raw evidence store (F1)
 
-Revision: 2
-Approval: Approved revision 2 by Vladimirjon on 2026-10-09
+Revision: 3
+Approval: Approved revision 3 by Vladimirjon on 2026-10-09
 
 ## Outcome
 The system can preserve every source response it obtains as raw evidence on
@@ -84,3 +84,4 @@ All examples use synthetic data. `sha256(b"abc")` is
 ## Revision history
 - Revision 1 (2026-10-09): First draft, based on ADR 0005 (Proposed, decisions made by the human on Day 9) and the Day 10 split between hand-written and executor-written parts. Approved revision 1 by Vladimirjon on 2026-10-09.
 - Revision 2 (2026-10-09): Text-only refresh after the implementation, before the independent audit. § Constraints now says ADR 0005 is `Accepted` (the human accepted it on 2026-10-09) instead of `Proposed`. No acceptance criterion, example, scope item or constraint changed in substance. The implementation's additions beyond Revision 1 are recorded as built in `execution-plan.md` Revision 2; none of them changes an acceptance criterion. Approved revision 2 by Vladimirjon on 2026-10-09.
+- Revision 3 (2026-10-09): Response to the independent audit, round 1 (`audit.md`, APPROVED WITH RESERVATIONS, findings A1 to A4). No acceptance criterion, example, scope item or constraint changed. `execution-plan.md` Revision 3 adds a unit test to § Validation AC7 that makes the final name appear between the absence check and publication, so the "fails when the final name exists" part of write-once publication is guarded (A1); records the POSIX file mode `0600` as an incidental, untested result of `tempfile`, not a guarantee of the store (A2); and completes the list of behaviors not asserted by any test (A3). `tasks.md` gains outcome O9 for the new test and its records are made consistent (A3, A4). Approved revision 3 by Vladimirjon on 2026-10-09.
