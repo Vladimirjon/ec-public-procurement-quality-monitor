@@ -64,3 +64,51 @@ def test_layer_domain_imports_only_stdlib_and_itself() -> None:
                 offenders.append(f"{path.name}: {name}")
 
     assert offenders == []
+
+
+APPLICATION_PACKAGE = f"{ROOT_PACKAGE}.application"
+RAW_EVIDENCE_PORT_MODULE = "raw_evidence_store.py"
+
+
+def _inside(name: str, package: str) -> bool:
+    return name == package or name.startswith(f"{package}.")
+
+
+def test_layer_application_imports_only_stdlib_domain_and_itself() -> None:
+    """Feature raw-evidence-store (F1), AC11: `application` may import the
+    standard library, `domain` and itself, never `infrastructure` or
+    `interfaces`.
+    """
+    application = importlib.import_module(APPLICATION_PACKAGE)
+    assert application.__file__ is not None, "application needs an __init__.py"
+    application_root = Path(next(iter(application.__path__)))
+
+    # The check must not pass on an empty package: the storage port is the
+    # module this boundary exists to guard.
+    port_module = application_root / RAW_EVIDENCE_PORT_MODULE
+    assert port_module.is_file(), f"application needs {RAW_EVIDENCE_PORT_MODULE}"
+
+    offenders: list[str] = []
+    for path in sorted(application_root.rglob("*.py")):
+        depth = len(path.relative_to(application_root).parts) - 1
+        source = path.read_text(encoding="utf-8")
+        for name, level in _imported_modules(source):
+            if level > 0:
+                # How many packages above `application` the relative import
+                # reaches: 0 or less stays inside `application`; 1 reaches the
+                # root package, where only `domain` is allowed.
+                climb = level - 1 - depth
+                if climb <= 0:
+                    continue
+                if climb == 1 and _inside(name, "domain"):
+                    continue
+                offenders.append(f"{path.name}: {'.' * level}{name}")
+                continue
+            top = name.split(".")[0]
+            allowed = _inside(name, APPLICATION_PACKAGE) or _inside(
+                name, DOMAIN_PACKAGE
+            )
+            if top not in sys.stdlib_module_names and not allowed:
+                offenders.append(f"{path.name}: {name}")
+
+    assert offenders == []
