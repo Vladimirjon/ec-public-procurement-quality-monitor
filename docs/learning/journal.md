@@ -615,3 +615,73 @@ Ver [plan.md](plan.md).
   pruebas en rojo (puerta 2); yo escribo el objeto de valor `ContentHash` y el
   puerto `RawEvidenceStore`; el executor implementa el resto y el adaptador de
   disco.
+
+## Día 10: F1, rojo y verde (2026-10-09)
+
+- **Objetivo:** pasar la puerta 2 con las pruebas en rojo de F1, escribir yo a
+  mano el objeto de valor `ContentHash` y el puerto `RawEvidenceStore`, y dejar
+  el resto de F1 en verde con el executor. Además, registrar mi respuesta de
+  entidad frente a objeto de valor, pendiente desde el Día 8.
+- **Qué hice:** el test-writer escribió 126 pruebas nuevas en tres archivos más
+  una prueba de capas, y todas fallaron por `ModuleNotFoundError` de los
+  nombres fijados en el plan. Revisé el resumen de la puerta 2 (qué cambia, cómo
+  puede fallar y qué lo prueba) y aprobé. Después de ver un ejemplo resuelto de
+  un caso parecido (un código postal y una libreta de direcciones), escribí a
+  mano `domain/content_hash.py` y `application/raw_evidence_store.py`. No pedí
+  pistas por niveles. Se revisaron y no tuvieron hallazgos. El executor escribió
+  `Observation` y los errores (O2), el adaptador de disco (O4), la migración
+  (O5), los documentos (O6) y la verificación (O7). Abrí la rama
+  `feat/raw-evidence-store` y el PR.
+- **Qué aprendí (con mis palabras):**
+  - **Entidad frente a objeto de valor:** "Una entidad se identifica por quién
+    es; un objeto de valor, por qué contiene. Dos `ContentHash` con el mismo
+    valor son iguales aunque sean instancias distintas; el hexdigest es
+    inmutable y si cambiara dejaría de darnos fiabilidad."
+  - **Lo que me costó:** hoy no expresé dificultades.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - Ninguna del registro D-01 a D-13 hoy.
+  - **Puerta 2:** aprobé las pruebas en rojo de F1.
+  - **Forma de trabajo:** ejemplo resuelto antes de escribir `ContentHash` y el
+    puerto, y revisión de lo que escribí antes de seguir con el executor.
+- **Verificación (comando y resultado):**
+  - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`: 133
+    pasan (7 de F0 y 126 nuevas), cobertura 93 % de 236 líneas.
+  - Pruebas clave: `duplicate` (el mismo contenido dos veces deja un objeto y dos
+    observaciones, sin reescribir el objeto) y `conflict` (contenido distinto
+    bajo la misma identidad es `EvidenceIntegrityError` y no sobrescribe).
+  - `uv run ruff check .`, `uv run ruff format --check .` (63 archivos) y
+    `uv run mypy .` (15 archivos): sin errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio. `pyproject.toml` y `uv.lock` sin cambios.
+    `data/raw/` sigue ignorado por git.
+- **Dudas abiertas:**
+  - El auditor (Día 11) debe revisar lo que el executor agregó sobre lo fijado:
+    `validate_execution_id` y `validate_sequence` públicas en `domain`,
+    `TypeError` para contenido que no es `bytes`, JSON solo ASCII y modo `0600`
+    de los archivos en POSIX.
+  - Las pruebas tratan como conflicto repetir la misma identidad con distinto
+    `status`, cabeceras u hora de captura, no solo con distinto contenido. Sale
+    de comparar la observación por sus bytes (plan, paso 3).
+  - Texto desactualizado en specs ya aprobadas: `intent.md` y
+    `execution-plan.md` dicen que el ADR 0005 está `Proposed` y que la intención
+    espera aprobación; `tasks.md` § Baseline describe la situación anterior. El
+    ADR está `Accepted`. Cambiar la intención exige re-aprobarla, así que lo
+    decido el Día 11 con el auditor.
+  - La ruta POSIX del adaptador (sincronizar el directorio) solo se probó en un
+    guion desechable bajo WSL; el CI de GitHub (Ubuntu) la ejecuta por primera
+    vez en este PR.
+  - Al archivar F1 hay que actualizar `project-toolchain` PT-3 y PT-6.
+  - F4 deberá generar ids de ejecución que no sean nombres reservados de
+    Windows (`con`, `nul`...), y el almacén necesita enlaces duros (`os.link`).
+  - Siguen abiertas las dudas heredadas del Día 7 (checks que fallan, hooks sin
+    `.venv` en el `PATH`, `harny init` o `update` y `_index.md` de
+    `specs/current/`).
+  - Cerrada: entidad frente a objeto de valor (heredada del Día 8).
+- **Respuestas de autoevaluación:**
+  - *¿Entidad u objeto de valor?* "Una entidad se identifica por quién es; un
+    objeto de valor, por qué contiene." `ContentHash` es un objeto de valor:
+    dos con el mismo valor son iguales aunque sean instancias distintas, y su
+    hexdigest es inmutable.
+- **Siguiente paso:** Día 11, F1: auditoría (puerta 3) y documentación. Leo
+  `audit.md` completo y explico cada hallazgo con mis palabras, decido qué hago
+  con el texto desactualizado de las specs y hago el merge de F1.
