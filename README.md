@@ -36,9 +36,10 @@ on SERCOP, PostgreSQL, CLI frameworks, or local storage.
 
 The design prioritizes auditability, idempotency, traceability,
 reproducibility, resumability, and testability. Development is at an early
-stage: the layers hold only the local raw evidence store described under
-Technologies, and the CLI only reports its version. No source access,
-ingestion, normalization, or quality behavior exists yet.
+stage: the layers hold only the local raw evidence store and the SERCOP
+source adapter described under Technologies, and the CLI only reports its
+version. Nothing calls the adapter yet, and no ingestion, normalization, or
+quality behavior exists.
 
 See [the architecture](docs/architecture.md) and the accepted decisions:
 
@@ -47,6 +48,7 @@ See [the architecture](docs/architecture.md) and the accepted decisions:
 - [ADR 0003: No distributed infrastructure in v1](docs/adr/0003-no-distributed-infrastructure-in-v1.md)
 - [ADR 0004: Python toolchain](docs/adr/0004-python-toolchain.md)
 - [ADR 0005: Raw evidence store layout](docs/adr/0005-raw-evidence-store-layout.md)
+- [ADR 0006: HTTP client for source access](docs/adr/0006-http-client-for-source-access.md)
 
 ## Technologies
 
@@ -65,8 +67,19 @@ Implemented in the repository:
   verifies integrity on read. It is a library only: no CLI command or use case
   calls it yet, and no default root path is wired in code (`data/raw/` is
   git-ignored for this purpose).
-- `ruff` (lint and format), `mypy` (strict in `domain` only), `pytest` and
-  `pytest-cov` as development-only dependencies.
+- A SERCOP source adapter ([ADR 0006](docs/adr/0006-http-client-for-source-access.md)):
+  the raw response and the source errors in `domain`; the source port and its
+  two result types in `application`; and the `httpx` adapter in
+  `infrastructure`. It makes one request per call, either the buyer-name
+  search (`search_ocds`) or one record by `ocid` (`api/record`), and returns
+  the response as received or raises a typed error that carries whatever
+  response arrived, so that every response can be stored as evidence. It does
+  not retry and only spaces its requests. It is a library only: it has no CLI
+  command, nothing calls it yet, and its tests use simulated transports and
+  never reach the network.
+- `httpx`, the first runtime dependency, used only in `infrastructure`
+  (ADR 0006). The other dependencies are development-only: `ruff` (lint and
+  format), `mypy` (strict in `domain` only), `pytest` and `pytest-cov`.
 - Two GitHub Actions workflows on pull requests: `feedback` (`ruff` and `mypy`,
   plus a secret scan) and `Tests` (unit tests with a coverage report).
 - Git-based source and documentation management.
@@ -75,7 +88,7 @@ Planned, not implemented yet:
 
 - PostgreSQL for normalized records, audit, and quality results.
 - Docker Compose for local PostgreSQL execution.
-- A SERCOP adapter and the ingestion that will call the raw evidence store.
+- The ingestion that will call the SERCOP adapter and the raw evidence store.
 - Real CLI commands beyond `--version`.
 
 ## Development commands
