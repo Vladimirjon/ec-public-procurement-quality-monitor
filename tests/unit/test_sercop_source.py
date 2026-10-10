@@ -24,12 +24,22 @@ the checks of the base URL authority, a request URL that is too long, a call
 after `close()`, and an injected-transport defect that must propagate unchanged.
 Its credentials, defects and bodies are SYNTHETIC; hosts are `.invalid` or
 numeric and are never contacted.
+
+Revision 3 (outcome O2c; AC3, AC5, AC7, AC8, AC9, AC10 and AC15) adds, to the
+same sections, a `Location` host the library cannot decode, a `Set-Cookie` value
+that is never parsed, JSON constants, huge integers and deep nesting in a body, a
+repeated name, the no-chaining rule for the library's exceptions, long and
+unusual `Remaining` values, the host, length and numeric rules of the
+constructor, years and pages too long to write, lone surrogates and `SystemExit`.
+Every body, header value and defect is SYNTHETIC, labelled where it is built.
+Non-ASCII header values reach the response as bytes (`Reply` encodes Latin-1).
 """
 
 import gzip
 import json
 import logging
 import socket
+import warnings
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
@@ -724,6 +734,57 @@ def test_cookie_is_never_sent_after_a_response_that_set_one(
         assert "cookie" not in request.headers
 
 
+# Revision 3 (AC3, project decision): the adapter keeps no cookies, so nothing
+# parses a `Set-Cookie`. SYNTHETIC value whose `expires` year has 5,000 digits:
+# the client's cookie jar issued a `UserWarning` with a traceback for it (stderr
+# outside tests).
+HUGE_YEAR_SET_COOKIE = "synthetic=1; expires=01-Jan-" + "9" * 5000 + " 00:00:00 GMT"
+
+
+def _summary(result: SearchPage | RecordResponse) -> tuple[object, ...]:
+    """What a result says, apart from the headers that came with it."""
+    response = result.response
+    shape: tuple[object, ...]
+    if isinstance(result, SearchPage):
+        shape = (result.total, result.page, result.pages, result.record_count)
+    else:
+        shape = (result.ocid, result.release_count)
+    return (
+        *shape,
+        response.method,
+        response.url,
+        response.status,
+        response.content,
+        response.captured_at,
+    )
+
+
+@pytest.mark.parametrize("operation", OPERATIONS, ids=lambda o: o.name)
+def test_cookie_set_cookie_is_never_parsed_and_raises_no_warning(
+    make_rig: Callable[..., Rig], operation: Operation
+) -> None:
+    plain = make_rig(_reply(operation.valid_body))
+    expected = _summary(operation.call(plain.source))
+    headers = (*JSON_HEADERS, ("Set-Cookie", HUGE_YEAR_SET_COOKIE))
+    rig = make_rig(
+        _reply(operation.valid_body, headers=headers), _reply(operation.valid_body)
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = operation.call(rig.source)
+    operation.call(rig.source)
+
+    # Only the category and a prefix are shown if this fails: the warning text
+    # of the cookie jar carries a traceback.
+    assert [(w.category.__name__, str(w.message)[:40]) for w in caught] == []
+    assert _summary(result) == expected
+    assert result.response.headers == headers
+    assert len(rig.script.requests) == 2
+    for request in rig.script.requests:
+        assert "cookie" not in request.headers
+
+
 # --- AC4: out-of-range and no-results pages are valid -----------------------
 
 
@@ -848,6 +909,22 @@ STATUS_CASES = [
         b"synthetic redirect body",
         (("Location", "/" + "a" * 65_530),),
         id="301-location-longer-than-the-url-limit",
+    ),
+    # Revision 3, SYNTHETIC: a `Location` host that the HTTP library cannot
+    # decode from IDNA (`xn--` is no valid A-label) made its redirect step raise
+    # an `idna.IDNAError`, which escaped the call. Like every other value, it
+    # never changes the outcome: same status, body and header, one request.
+    pytest.param(
+        302,
+        b"synthetic redirect body",
+        (("Location", "http://xn--/"),),
+        id="302-location-host-not-decodable",
+    ),
+    pytest.param(
+        308,
+        b"synthetic redirect body",
+        (("Location", "//xn--/"),),
+        id="308-location-scheme-relative-host-not-decodable",
     ),
 ]
 
@@ -1068,6 +1145,36 @@ def test_transport_defect_from_an_injected_transport_propagates_unchanged(
     assert len(rig.script.requests) == 1
 
 
+@pytest.mark.parametrize("operation", OPERATIONS, ids=lambda o: o.name)
+@pytest.mark.parametrize(
+    "where",
+    [
+        pytest.param("before-the-status", id="before-the-status"),
+        pytest.param(
+            "from-the-body-after-one-chunk", id="from-the-body-after-one-chunk"
+        ),
+    ],
+)
+def test_transport_defect_system_exit_propagates_unchanged(
+    make_rig: Callable[..., Rig], operation: Operation, where: str
+) -> None:
+    # Revision 3 (audit R-3), SYNTHETIC: `SystemExit` is not a source outcome,
+    # so it must reach the caller as the same object, next to `KeyboardInterrupt`.
+    exit_request = SystemExit("synthetic system exit")
+    outcome: Reply | Failure
+    if where == "before-the-status":
+        outcome = Failure(lambda request: exit_request)
+    else:
+        outcome = _reply(chunks=(operation.valid_body[:50],), error=exit_request)
+    rig = make_rig(outcome)
+
+    with pytest.raises(SystemExit) as info:
+        operation.call(rig.source)
+
+    assert info.value is exit_request
+    assert len(rig.script.requests) == 1
+
+
 # --- AC7: a complete 200 whose body is unusable -----------------------------
 
 # Every body below is SYNTHETIC, built from the fixtures or from small JSON
@@ -1076,6 +1183,15 @@ _GZIP_HEADERS: Headers = (
     ("Content-Type", "application/json"),
     ("Content-Encoding", "gzip"),
 )
+
+# Revision 3 (AC7), SYNTHETIC bodies built as bytes: `json.dumps` cannot write an
+# integer of more than 4,300 digits. RFC 8259 allows neither `NaN`, `Infinity`
+# nor `-Infinity`, and the standard parser reads neither an integer of more than
+# 4,300 digits nor nesting deeper than the recursion limit (default settings).
+_SEARCH_BODY_START = b'{"total":3,"page":1,"pages":1,"data":'
+_RECORD_BODY_START = b'{"releases":[{"ocid":"' + OCID.encode("ascii") + b'","amount":'
+_HUGE_INTEGER = b"1" * 5001
+_DEEP_NESTING = b"[" * 100_000 + b"]" * 100_000
 
 INCOMPLETE_SEARCH_CASES = [
     pytest.param(
@@ -1114,6 +1230,35 @@ INCOMPLETE_SEARCH_CASES = [
     pytest.param(2, SEARCH_SINGLE_PAGE, JSON_HEADERS, id="page-1-answers-page-2"),
     pytest.param(
         1, gzip.compress(SEARCH_SINGLE_PAGE), _GZIP_HEADERS, id="gzip-kept-raw"
+    ),
+    # Revision 3 (AC7): each body is valid except for the one thing named.
+    pytest.param(1, _SEARCH_BODY_START + b"[NaN]}", JSON_HEADERS, id="nan-in-data"),
+    pytest.param(
+        1, _SEARCH_BODY_START + b"[Infinity]}", JSON_HEADERS, id="infinity-in-data"
+    ),
+    pytest.param(
+        1,
+        _SEARCH_BODY_START + b"[-Infinity]}",
+        JSON_HEADERS,
+        id="negative-infinity-in-data",
+    ),
+    pytest.param(
+        1,
+        _SEARCH_BODY_START + b"[" + _HUGE_INTEGER + b"]}",
+        JSON_HEADERS,
+        id="integer-of-5001-digits-in-data",
+    ),
+    pytest.param(
+        1,
+        b'{"total":1' + b"0" * 4300 + b',"page":1,"pages":1,"data":[]}',
+        JSON_HEADERS,
+        id="total-of-4301-digits",
+    ),
+    pytest.param(
+        1,
+        _SEARCH_BODY_START + _DEEP_NESTING + b"}",
+        JSON_HEADERS,
+        id="nested-too-deep",
     ),
 ]
 
@@ -1177,6 +1322,24 @@ INCOMPLETE_RECORD_CASES = [
     pytest.param(
         gzip.compress(RECORD_SINGLE_RELEASE), _GZIP_HEADERS, id="gzip-kept-raw"
     ),
+    # Revision 3 (AC7): the single release matches the `ocid`; only the value of
+    # `amount` (or the nesting) makes the body unusable.
+    pytest.param(
+        _RECORD_BODY_START + b"Infinity}]}",
+        JSON_HEADERS,
+        id="infinity-in-a-release",
+    ),
+    pytest.param(_RECORD_BODY_START + b"NaN}]}", JSON_HEADERS, id="nan-in-a-release"),
+    pytest.param(
+        _RECORD_BODY_START + _HUGE_INTEGER + b"}]}",
+        JSON_HEADERS,
+        id="integer-of-5001-digits-in-a-release",
+    ),
+    pytest.param(
+        _RECORD_BODY_START + _DEEP_NESTING + b"}]}",
+        JSON_HEADERS,
+        id="nested-too-deep",
+    ),
 ]
 
 
@@ -1196,6 +1359,21 @@ def test_incomplete_record_200_raises_with_the_exact_bytes(
     assert response.headers == headers
     assert response.captured_at == NOW
     assert len(rig.script.requests) == 1
+
+
+def test_search_success_takes_the_last_value_of_a_repeated_name(
+    make_rig: Callable[..., Rig],
+) -> None:
+    # Revision 3 (AC7, project decision), SYNTHETIC: RFC 8259 § 4 leaves a repeated
+    # name open; the value the parser keeps, the last, is the one that counts.
+    body = b'{"total": 3, "page": 2, "page": 1, "pages": 1, "data": []}'
+    rig = make_rig(_reply(body))
+
+    result = rig.source.search_page(year=YEAR, buyer=BUYER, page=1)
+
+    assert (result.total, result.page, result.pages) == (3, 1, 1)
+    assert result.record_count == 0
+    assert result.response.content == body
 
 
 # --- AC8: nothing leaks response content ------------------------------------
@@ -1519,6 +1697,56 @@ PACING_CASES = [
         ),
         id="an-invalid-status-without-a-rate-limit-header-waits-the-minimum-interval",
     ),
+    # Revision 3 (audit F-1, family check), SYNTHETIC. A valid `Remaining` is one
+    # or more ASCII digits between spaces and tabs only; its number is compared
+    # exactly with the threshold, however many digits it has. Any other byte
+    # makes the value invalid and ignored. Header values reach the response as
+    # Latin-1 bytes (`Reply`), so "\xa0" is the byte 0xA0 and "\xb2" is 0xB2.
+    pytest.param(
+        {},
+        (Step(_ok("0" * 4999 + "5")), Step(_ok("47"), (58.0,))),
+        id="remaining-of-4999-zeros-and-a-5-waits-the-cool-down",
+    ),
+    pytest.param(
+        {},
+        (Step(_ok("0" * 4300 + "5")), Step(_ok("47"), (58.0,))),
+        id="remaining-of-4301-digits-below-the-threshold-waits-the-cool-down",
+    ),
+    pytest.param(
+        {},
+        (Step(_ok("0" * 4299 + "5")), Step(_ok("47"), (58.0,))),
+        id="remaining-of-4300-digits-below-the-threshold-waits-the-cool-down",
+    ),
+    pytest.param(
+        {},
+        (Step(_ok("0" * 5000 + "20")), Step(_ok("47"), (3.0,))),
+        id="remaining-of-5002-digits-equal-to-the-threshold-waits-the-minimum",
+    ),
+    pytest.param(
+        {},
+        (Step(_ok("9" * 5000)), Step(_ok("47"), (3.0,))),
+        id="remaining-of-5000-nines-waits-the-minimum-interval",
+    ),
+    pytest.param(
+        {"low_remaining_threshold": 10**5000},
+        (Step(_ok("9" * 4400)), Step(_ok("47"), (58.0,))),
+        id="a-threshold-of-5001-digits-is-compared-exactly",
+    ),
+    pytest.param(
+        {},
+        (Step(_ok("\xa05")), Step(_ok("47"), (3.0,))),
+        id="a-non-breaking-space-makes-remaining-invalid",
+    ),
+    pytest.param(
+        {},
+        (Step(_ok("\xb2")), Step(_ok("47"), (3.0,))),
+        id="a-superscript-digit-makes-remaining-invalid",
+    ),
+    pytest.param(
+        {},
+        (Step(_ok("\t19\t")), Step(_ok("47"), (58.0,))),
+        id="remaining-between-tabs-counts",
+    ),
 ]
 
 
@@ -1587,6 +1815,19 @@ UNMAPPED_EXCEPTION_CASES: list[Any] = [
         _body_read_interrupted_after_a_low_remaining,
         (58.0,),
         id="keyboard-interrupt-while-reading-a-200-with-low-remaining",
+    ),
+    # Revision 3 (audit R-3): `SystemExit` is not a source outcome either.
+    pytest.param(
+        SystemExit,
+        _raised_by_the_transport,
+        (3.0,),
+        id="system-exit-before-the-status",
+    ),
+    pytest.param(
+        SystemExit,
+        _body_read_interrupted_after_a_429,
+        (58.0,),
+        id="system-exit-while-reading-a-429",
     ),
 ]
 
@@ -1722,6 +1963,18 @@ INVALID_SEARCH_ARGUMENTS = [
     pytest.param({"year": YEAR, "buyer": "", "page": 1}, id="buyer-empty"),
     pytest.param({"year": YEAR, "buyer": 123, "page": 1}, id="buyer-number"),
     pytest.param({"year": YEAR, "buyer": None, "page": 1}, id="buyer-none"),
+    # Revision 3 (pinned, AC10): a year or page whose decimal text the interpreter
+    # will not write (more than 4,300 digits), and a buyer that cannot be encoded
+    # as UTF-8 (a lone surrogate). Explicit ids: writing 10**5000 raises.
+    pytest.param(
+        {"year": 10**5000, "buyer": BUYER, "page": 1}, id="year-of-5001-digits"
+    ),
+    pytest.param(
+        {"year": YEAR, "buyer": BUYER, "page": 10**5000}, id="page-of-5001-digits"
+    ),
+    pytest.param(
+        {"year": YEAR, "buyer": "\ud800", "page": 1}, id="buyer-lone-surrogate"
+    ),
 ]
 
 
@@ -1751,6 +2004,8 @@ def test_invalid_search_input_raises_value_error_before_any_request_or_wait(
         pytest.param("", id="ocid-empty"),
         pytest.param(None, id="ocid-none"),
         pytest.param(5, id="ocid-number"),
+        # Revision 3 (pinned, AC10): a lone surrogate cannot be encoded as UTF-8.
+        pytest.param("\ud800", id="ocid-lone-surrogate"),
     ],
 )
 def test_invalid_record_input_raises_value_error_before_any_request_or_wait(
@@ -1766,6 +2021,12 @@ def test_invalid_record_input_raises_value_error_before_any_request_or_wait(
     assert len(rig.script.requests) == 1
     assert rig.clock.sleeps == []
 
+
+# Revision 3 (AC10), SYNTHETIC hosts of exactly 254 and 253 characters, with
+# labels of 63 characters at most (RFC 1035 § 2.3.4 allows 253 without the
+# trailing dot). They are never resolved: construction decides first.
+_HOST_OF_254 = ".".join(("a" * 63, "a" * 63, "a" * 63, "a" * 62))
+_HOST_OF_253 = ".".join(("a" * 63, "a" * 63, "a" * 63, "a" * 61))
 
 # Revision 2: base URLs that construction must reject, as (id suffix, URL). The
 # user names and secrets are SYNTHETIC. Numeric hosts are never contacted:
@@ -1787,6 +2048,19 @@ REJECTED_BASE_URLS: tuple[tuple[str, str], ...] = (
     ("port-non-ascii-digit", "https://source.invalid:٣/PLATAFORMA"),
     ("invalid-ipv4-host", "https://999.1.1.1/PLATAFORMA"),
     ("control-character", "https://source.invalid/PLAT\nAFORMA"),
+    # Revision 3 (audit F-2, family check): the host as name resolution and TLS
+    # receive it, and the room left for the shortest request URL. None of them
+    # may reach a call, where each would fail with an unmapped library error.
+    ("label-of-64", "https://" + "a" * 64 + ".invalid/PLATAFORMA"),
+    ("empty-label", "https://a..invalid/PLATAFORMA"),
+    ("leading-dot", "https://.source.invalid/PLATAFORMA"),
+    ("two-trailing-dots", "https://source.invalid../PLATAFORMA"),
+    ("host-of-254", f"https://{_HOST_OF_254}/PLATAFORMA"),
+    ("a-label-malformed", "https://xn--.invalid/PLATAFORMA"),
+    ("a-label-disallowed", "https://xn--ls8h.invalid/PLATAFORMA"),
+    ("ipv6-zone", "https://[fe80::1%25eth0]/PLATAFORMA"),
+    ("ipv6-zone-not-encoded", "https://[fe80::1%eth0]/PLATAFORMA"),
+    ("no-room-for-the-request", "https://source.invalid/" + "p" * 65_500),
 )
 
 
@@ -1818,6 +2092,21 @@ REJECTED_BASE_URLS: tuple[tuple[str, str], ...] = (
             pytest.param({"base_url": url}, id=f"base-url-{name}")
             for name, url in REJECTED_BASE_URLS
         ),
+        # Revision 3 (AC10, project decision): a number that is finite and at
+        # most one day (86,400 s). `nan` switched pacing off, `inf` and very
+        # large values made every call fail in the socket layer or `time.sleep`.
+        pytest.param({"connect_timeout": float("nan")}, id="connect-timeout-nan"),
+        pytest.param({"connect_timeout": float("inf")}, id="connect-timeout-inf"),
+        pytest.param({"connect_timeout": 86_401}, id="connect-timeout-86401"),
+        pytest.param({"connect_timeout": True}, id="connect-timeout-true"),
+        pytest.param({"read_timeout": float("nan")}, id="read-timeout-nan"),
+        pytest.param({"read_timeout": 1e10}, id="read-timeout-1e10"),
+        pytest.param({"min_interval": float("nan")}, id="min-interval-nan"),
+        pytest.param({"min_interval": float("inf")}, id="min-interval-inf"),
+        pytest.param({"min_interval": 86_401}, id="min-interval-86401"),
+        pytest.param({"cooldown": float("nan")}, id="cooldown-nan"),
+        pytest.param({"cooldown": float("inf")}, id="cooldown-inf"),
+        pytest.param({"cooldown": "60"}, id="cooldown-text"),
     ],
 )
 def test_invalid_construction_options_raise_value_error(
@@ -1896,6 +2185,44 @@ def test_invalid_base_url_with_userinfo_is_rejected_without_echoing_it(
         pytest.param(
             {"base_url": "https://source.invalid:65535/PLATAFORMA"}, id="port-65535"
         ),
+        # Revision 3 (AC10): the edges of the new rules, and pinned behavior.
+        pytest.param(
+            {"base_url": "https://" + "a" * 63 + ".invalid/PLATAFORMA"},
+            id="label-of-63",
+        ),
+        pytest.param(
+            {"base_url": f"https://{_HOST_OF_253}/PLATAFORMA"}, id="host-of-253"
+        ),
+        pytest.param(
+            {"base_url": f"https://{_HOST_OF_253}./PLATAFORMA"},
+            id="host-of-253-with-a-trailing-dot",
+        ),
+        pytest.param(
+            {"base_url": "https://source.invalid./PLATAFORMA"}, id="trailing-dot"
+        ),
+        pytest.param(
+            {"base_url": "https://[::1]:8443/PLATAFORMA"}, id="ipv6-with-a-port"
+        ),
+        pytest.param(
+            {"base_url": "https://source.invalid/PLATAFORMÁ"},
+            id="non-ascii-in-the-path",
+        ),
+        pytest.param(
+            {"base_url": "https://source.invalid/P%zz"}, id="percent-in-the-path"
+        ),
+        pytest.param(
+            {
+                "connect_timeout": 86_400,
+                "read_timeout": 86_400,
+                "min_interval": 86_400,
+                "cooldown": 86_400,
+            },
+            id="all-four-numbers-at-one-day",
+        ),
+        pytest.param(
+            {"connect_timeout": 0.5, "read_timeout": 0.5},
+            id="timeouts-of-half-a-second",
+        ),
     ],
 )
 def test_construction_accepts_the_documented_boundaries(
@@ -1911,6 +2238,26 @@ def test_construction_close_may_be_called_directly() -> None:
     source = SercopSource(base_url=BASE_URL, transport=httpx.MockTransport(Script()))
 
     source.close()
+
+
+def test_record_query_sends_a_non_ascii_base_path_percent_encoded() -> None:
+    # Revision 3 (pinned, AC1 and AC10): the library percent-encodes the path, and
+    # the raw response holds the URL as sent. No adapter test double is involved.
+    script = Script(_reply(RECORD_SINGLE_RELEASE))
+    clock = FakeClock()
+    with SercopSource(
+        base_url="https://source.invalid/PLATAFORMÁ",
+        transport=httpx.MockTransport(script),
+        now=FakeWallClock(),
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    ) as source:
+        result = source.fetch_record(OCID)
+
+    expected = f"https://source.invalid/PLATAFORM%C3%81/api/record?ocid={OCID}"
+    assert len(script.requests) == 1
+    assert str(script.requests[0].url) == expected
+    assert result.response.url == expected
 
 
 # Revision 2: an input that makes the request URL longer than the HTTP library
@@ -1957,6 +2304,39 @@ def test_invalid_input_too_long_for_a_url_raises_value_error_before_any_request_
     # no pacing state, so the wait is 5 - 2 and not 5 - 1.
     assert rig.clock.sleeps == [3.0]
     assert len(rig.script.requests) == 2
+
+
+def test_invalid_input_too_long_year_on_a_long_base_url_raises_value_error() -> None:
+    # Revision 3 (AC10): construction accepts this base URL (65,023 characters)
+    # and leaves room for the shortest request. A year of 4,000 digits, which the
+    # interpreter writes, makes the URL too long: that is invalid input, raised
+    # before any request or wait and with no change to pacing. It cannot go
+    # through `make_rig`, which fixes the base URL, so the adapter is built here.
+    long_base_url = "https://source.invalid/" + "p" * 65_000
+    script = Script(_ok("47"), _ok("47"))
+    clock = FakeClock()
+    with SercopSource(
+        base_url=long_base_url,
+        transport=httpx.MockTransport(script),
+        now=FakeWallClock(),
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    ) as source:
+        source.search_page(year=YEAR, buyer=BUYER, page=1)
+        clock.advance(1.0)  # a wait of 4 s would now be due
+
+        with pytest.raises(ValueError):
+            source.search_page(year=10**3999, buyer=BUYER, page=1)
+
+        assert len(script.requests) == 1
+        assert clock.sleeps == []
+        clock.advance(1.0)
+        source.search_page(year=YEAR, buyer=BUYER, page=1)
+
+    # 2 s have passed since the first attempt ended: the rejected call changed
+    # no pacing state, so the wait is 5 - 2 and not 5 - 1.
+    assert clock.sleeps == [3.0]
+    assert len(script.requests) == 2
 
 
 def _close_directly(source: SercopSource) -> None:
@@ -2022,6 +2402,84 @@ def test_invalid_input_after_close_raises_runtime_error_not_value_error(
 
     assert len(rig.script.requests) == 1
     assert rig.clock.sleeps == []
+
+
+# --- AC8, Revision 3: no exception of the HTTP library is chained -----------
+
+# The six malformed-`Location` cases of `STATUS_CASES` (four of Revision 2 and
+# two of Revision 3), all SYNTHETIC. They are selected by id, so the cases that
+# `test_status_error_carries_the_complete_response` runs are the ones used here.
+MALFORMED_LOCATION_IDS = (
+    "302-location-not-starting-with-slash",
+    "302-location-with-a-tab",
+    "307-location-with-an-invalid-ipv4-host",
+    "301-location-longer-than-the-url-limit",
+    "302-location-host-not-decodable",
+    "308-location-scheme-relative-host-not-decodable",
+)
+MALFORMED_LOCATION_CASES = [
+    case for case in STATUS_CASES if case.id in MALFORMED_LOCATION_IDS
+]
+assert len(MALFORMED_LOCATION_CASES) == len(MALFORMED_LOCATION_IDS)
+
+NO_LIBRARY_EXCEPTION_CASES = [
+    # Group 1: every rejected base URL, at construction.
+    *(
+        pytest.param("base-url", url, id=f"base-url-{name}")
+        for name, url in REJECTED_BASE_URLS
+    ),
+    # Group 2: an input too long for a request URL.
+    pytest.param("too-long-input", SEARCH, id="too-long-search-buyer"),
+    pytest.param("too-long-input", RECORD, id="too-long-record-ocid"),
+    # Group 3: a redirect status whose `Location` the library cannot use.
+    *(
+        pytest.param(
+            "malformed-location",
+            (operation, *case.values),
+            id=f"location-{case.id}-{operation.name}",
+        )
+        for case in MALFORMED_LOCATION_CASES
+        for operation in OPERATIONS
+    ),
+]
+
+
+@pytest.mark.parametrize(("kind", "subject"), NO_LIBRARY_EXCEPTION_CASES)
+def test_no_leak_rejections_chain_no_library_exception(
+    make_rig: Callable[..., Rig], kind: str, subject: Any
+) -> None:
+    # The library's own exceptions repeat parts of the URL they rejected or of the
+    # `Location` value (a header value). None may be reachable through
+    # `__cause__` or `__context__`, and the first two groups have neither.
+    error: BaseException
+    if kind == "base-url":
+        with pytest.raises(ValueError) as value_error:
+            SercopSource(base_url=subject, transport=httpx.MockTransport(Script()))
+        error = value_error.value
+    elif kind == "too-long-input":
+        rig = make_rig(_reply(subject.valid_body))
+        with pytest.raises(ValueError) as value_error:
+            if subject is SEARCH:
+                rig.source.search_page(year=YEAR, buyer=TOO_LONG_FOR_A_URL, page=1)
+            else:
+                rig.source.fetch_record(TOO_LONG_FOR_A_URL)
+        error = value_error.value
+        assert rig.script.requests == []
+    else:
+        assert kind == "malformed-location"
+        operation, status, body, headers = subject
+        rig = make_rig(_reply(body, status=status, headers=headers))
+        error = _raise_through(operation, rig)
+        assert isinstance(error, SourceStatusError)
+        assert len(rig.script.requests) == 1
+
+    if kind != "malformed-location":
+        assert error.__cause__ is None
+        assert error.__context__ is None
+    for raised in _exception_chain(error):
+        assert not isinstance(raised, httpx.InvalidURL | httpx.HTTPError), repr(
+            type(raised)
+        )
 
 
 # --- AC11: no test reaches the network --------------------------------------

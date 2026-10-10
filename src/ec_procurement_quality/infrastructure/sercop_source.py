@@ -11,17 +11,24 @@ logger and prints nothing, and no message holds body bytes or header values.
 Anything that is not a source outcome (an interrupt, a defect of an injected
 transport or clock) propagates unchanged and is never wrapped.
 
-File order: defaults, input validation, the class (constructor, public calls,
-URL building, pacing, the single request, close), then the outcome mapping and
-the completeness checks as plain functions.
+The HTTP client is kept from processing anything the source sends beyond the
+status, the headers and the body: no cookie is parsed or replayed and `Location`
+is never read by the client (see `_NoCookieJar` and `_capture_response`).
+
+File order: defaults, input validation, request URLs and the base URL checks,
+the class (constructor, public calls, URL building, pacing, the single request,
+close), then the outcome mapping and the completeness checks as plain functions.
 """
 
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Self
+from decimal import Decimal
+from http.cookiejar import CookieJar
+from typing import Any, Never, Self
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -50,6 +57,13 @@ _STATUS_TOO_MANY_REQUESTS = 429
 _MIN_STATUS = 100
 _MAX_STATUS = 599
 _REMAINING_HEADER = "x-ratelimit-remaining"
+# The largest number of seconds a timeout, interval or cool-down may be (project
+# decision, one day). A socket accepts less than 2,147,483.647 s on Windows.
+_MAX_SECONDS = 86_400
+# RFC 1035 section 2.3.4: a label of 63 characters at most, a name of 253
+# without its trailing dot.
+_MAX_HOST_LABEL = 63
+_MAX_HOST_NAME = 253
 
 
 def _local_now() -> datetime:
@@ -71,12 +85,79 @@ def _require_text(value: object, name: str) -> None:
         raise ValueError(f"{name} must be a non-empty string")
 
 
+def _require_seconds(value: object, name: str, *, positive: bool) -> None:
+    """A number of seconds: an `int` or `float`, finite, at most one day.
+
+    `nan` switches pacing off, and `inf` or a very large value fails every call
+    in the socket layer or in `time.sleep` with an error nothing maps.
+    """
+    if (
+        isinstance(value, bool)  # a flag is not a number of seconds
+        or not isinstance(value, int | float)
+        or (isinstance(value, float) and not math.isfinite(value))
+    ):
+        raise ValueError(f"{name} must be a finite number")
+    if value > _MAX_SECONDS:
+        raise ValueError(f"{name} must not be more than {_MAX_SECONDS} seconds")
+    if positive and value <= 0:
+        raise ValueError(f"{name} must be positive")
+    if not positive and value < 0:
+        raise ValueError(f"{name} must not be negative")
+
+
 def _is_port(text: str) -> bool:
     # 1 to 5 ASCII digits with a value of 1 to 65535. `isdigit` alone would
     # accept "٣", which the HTTP library reads as port 3.
     return (
         text.isascii() and text.isdigit() and len(text) <= 5 and 1 <= int(text) <= 65535
     )
+
+
+# --- (c) Request URLs and the checks of the base URL ------------------------
+# The URL is a literal string, sent unchanged. `params=` would write spaces as
+# `+`, and the observed query uses `%20`.
+
+
+def _search_url(base_url: str, year: int, buyer: str, page: int) -> str:
+    """The observed query: `local=1`, `year`, `page`, `buyer`, in this order."""
+    encoded_buyer = quote(buyer, safe="")
+    return (
+        f"{base_url}/api/search_ocds"
+        f"?local=1&year={year}&page={page}&buyer={encoded_buyer}"
+    )
+
+
+def _record_url(base_url: str, ocid: str) -> str:
+    return f"{base_url}/api/record?ocid={quote(ocid, safe='')}"
+
+
+def _host_problem(host: str) -> str | None:
+    """Why `host`, as name resolution and TLS receive it, is not acceptable.
+
+    `host` is the library's ASCII form (IDNA-encoded for a non-ASCII host, an
+    IPv6 literal without its brackets). Python's `idna` codec, which
+    `getaddrinfo` and `ssl` apply to it, raises an error that nothing maps for an
+    empty label or one of 64 characters or more.
+    """
+    if ":" in host and "%" in host:
+        # A zone names a local network interface (RFC 6874), and its text would
+        # reach name resolution and TLS unchanged.
+        return "must not hold an IPv6 zone identifier"
+    name = host.removesuffix(".")  # one trailing dot is allowed
+    if len(name) > _MAX_HOST_NAME:
+        return "must have a host of at most 253 characters"
+    for label in name.split("."):
+        if not label or len(label) > _MAX_HOST_LABEL:
+            return "must have host labels of 1 to 63 characters"
+    return None
+
+
+def _library_accepts(url: str) -> bool:
+    try:
+        httpx.URL(url)
+    except (httpx.InvalidURL, ValueError):
+        return False
+    return True
 
 
 def _base_url_problem(base_url: str) -> str | None:
@@ -107,9 +188,21 @@ def _base_url_problem(base_url: str) -> str | None:
         return "must have a port from 1 to 65535"
     # Last, the HTTP library's own parse, so that no call fails on the URL later.
     try:
-        httpx.URL(base_url)
+        url = httpx.URL(base_url)
     except (httpx.InvalidURL, ValueError):
         return "is not accepted by the HTTP library"
+    try:
+        _ = url.host  # decodes a first label `xn--` (every request reads it)
+    except ValueError:  # `idna.IDNAError`, which is not an `httpx` exception
+        return "must have a host that the HTTP library can decode"
+    problem = _host_problem(url.raw_host.decode("ascii"))
+    if problem is not None:
+        return problem
+    # Room for the shortest request of each operation, checked by the library
+    # so that the rule follows its own limit on the length of a URL.
+    shortest = (_search_url(base_url, 1, "a", 1), _record_url(base_url, "a"))
+    if not all(_library_accepts(request_url) for request_url in shortest):
+        return "must leave room for the request URL"
     return None
 
 
@@ -151,6 +244,19 @@ class _Attempt:
     failure: httpx.HTTPError | None
 
 
+class _NoCookieJar(CookieJar):
+    """A cookie jar that takes nothing from a response and so stays empty.
+
+    The client calls `extract_cookies` on every response, which parses each
+    `Set-Cookie` value and, when `http.cookiejar` fails on one, issues a
+    warning with a traceback. Here nothing is parsed and no `Cookie` header is
+    ever built. `Set-Cookie` stays in the raw headers exactly as received.
+    """
+
+    def extract_cookies(self, response: object, request: object) -> None:
+        return None
+
+
 class SercopSource:
     """Reads search pages and records from the SERCOP portal."""
 
@@ -171,10 +277,10 @@ class SercopSource:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         _require_base_url(base_url)
-        if connect_timeout <= 0 or read_timeout <= 0:
-            raise ValueError("timeouts must be positive")
-        if min_interval < 0 or cooldown < 0:
-            raise ValueError("min_interval and cooldown must not be negative")
+        _require_seconds(connect_timeout, "connect_timeout", positive=True)
+        _require_seconds(read_timeout, "read_timeout", positive=True)
+        _require_seconds(min_interval, "min_interval", positive=False)
+        _require_seconds(cooldown, "cooldown", positive=False)
         if (
             not isinstance(low_remaining_threshold, int)
             or isinstance(low_remaining_threshold, bool)
@@ -204,6 +310,8 @@ class SercopSource:
             ),
             headers={"Accept-Encoding": "identity"},
             follow_redirects=False,
+            # Never stores a cookie, so none is parsed and none is sent.
+            cookies=_NoCookieJar(),
             # The client calls this hook as soon as a response arrives, before it
             # looks at `Location` (see `_capture_response`).
             event_hooks={"response": [self._capture_response]},
@@ -219,7 +327,7 @@ class SercopSource:
         _require_positive_int(page, "page")
         _require_text(buyer, "buyer")
         request = self._build_request(
-            self._search_url(year, buyer, page), _SEARCH_OPERATION
+            _search_url(self._base_url, year, buyer, page), _SEARCH_OPERATION
         )
         attempt = self._attempt(request)
         return _outcome(
@@ -232,7 +340,9 @@ class SercopSource:
         """Ask for one record by `ocid` (one request)."""
         self._require_open()
         _require_text(ocid, "ocid")
-        request = self._build_request(self._record_url(ocid), _RECORD_OPERATION)
+        request = self._build_request(
+            _record_url(self._base_url, ocid), _RECORD_OPERATION
+        )
         attempt = self._attempt(request)
         return _outcome(
             attempt,
@@ -240,24 +350,10 @@ class SercopSource:
             lambda response: _record_if_complete(response, ocid),
         )
 
-    # --- (c) URL building ----------------------------------------------------
-    # The URL is a literal string, sent unchanged. `params=` would write spaces
-    # as `+`, and the observed query uses `%20`.
-
-    def _search_url(self, year: int, buyer: str, page: int) -> str:
-        """The observed query: `local=1`, `year`, `page`, `buyer`, in this order."""
-        encoded_buyer = quote(buyer, safe="")
-        return (
-            f"{self._base_url}/api/search_ocds"
-            f"?local=1&year={year}&page={page}&buyer={encoded_buyer}"
-        )
-
-    def _record_url(self, ocid: str) -> str:
-        return f"{self._base_url}/api/record?ocid={quote(ocid, safe='')}"
+    # --- (c) Building the request --------------------------------------------
 
     def _build_request(self, url: str, operation: str) -> httpx.Request:
         """Build the GET, before any wait. A URL the library rejects is invalid input."""
-        self._client.cookies.clear()  # project decision: never send a cookie
         try:
             return self._client.build_request("GET", url)
         except httpx.InvalidURL:
@@ -304,14 +400,14 @@ class SercopSource:
         for name, value in capture.headers:
             if name.lower() != _REMAINING_HEADER:
                 continue
-            text = value.strip()
+            # HTTP's optional whitespace is a space or a tab. `str.strip()`
+            # would also remove `0xA0` and `0x85`, which a field value may hold.
+            text = value.strip(" \t")
             if not (text.isascii() and text.isdigit()):
                 continue  # not a plain number: ignored
-            try:
-                remaining = int(text)
-            except ValueError:  # more digits than `int` converts: not low
-                continue
-            if remaining < self._low_remaining_threshold:
+            # `Decimal` compares exactly for any number of digits and any
+            # threshold, where `int()` refuses more than 4,300 digits by default.
+            if Decimal(text) < self._low_remaining_threshold:
                 return True
         return False
 
@@ -325,18 +421,18 @@ class SercopSource:
         except httpx.HTTPError as error:
             if capture.status is None:
                 capture.failure = error  # no status arrived
-            # Otherwise the client's redirect step failed after the capture, and
-            # the outcome is decided from the capture: the error is dropped.
-        except httpx.InvalidURL:
-            if capture.status is None:
-                raise  # not from the redirect step, so not a source outcome
+            # Otherwise the response was captured and the outcome is decided
+            # from the capture: the library's error is dropped, not chained.
 
     def _capture_response(self, response: httpx.Response) -> None:
-        """Response hook: keep the status, headers and body before any redirect step.
+        """Response hook: keep the status, headers and body, and hide `Location`.
 
         With `follow_redirects=False` the client still parses `Location` for a
-        3xx right after this hook, and fails on some values, closing the
-        response and losing its body. By then everything is kept.
+        3xx right after this hook, and fails on some values (an invalid URL, a
+        host that `idna` cannot decode), closing the response and losing its
+        body. The headers are kept first, then `Location` is removed from the
+        client's own copy, so the client has nothing to parse: no value of it
+        can run or leave the call. `RawResponse.headers` keeps it as received.
         """
         capture = self._capture
         capture.status = response.status_code
@@ -344,6 +440,8 @@ class SercopSource:
             (name.decode("latin-1"), value.decode("latin-1"))
             for name, value in response.headers.raw
         )
+        if "location" in response.headers:
+            del response.headers["location"]  # every `Location`, any case
         try:
             for chunk in response.iter_raw():  # raw bytes: no content decoding
                 capture.body += chunk
@@ -438,6 +536,12 @@ def _outcome[Result](
 # else is checked: not the record keys, page sizes or other OCDS sections.
 
 
+def _reject_json_constant(name: str) -> Never:
+    # `NaN`, `Infinity` and `-Infinity` are not JSON (RFC 8259 section 6), but
+    # Python's parser reads them unless it is told not to.
+    raise ValueError("a constant that RFC 8259 does not allow")
+
+
 def _decode_json_object(content: bytes) -> dict[str, Any] | None:
     """The body as strict UTF-8 JSON with an object at the top level, else `None`.
 
@@ -446,8 +550,12 @@ def _decode_json_object(content: bytes) -> dict[str, Any] | None:
     (both keep the body text) ends up in the chain of a raised error.
     """
     try:
-        value = json.loads(content.decode("utf-8"))
-    except (ValueError, RecursionError):  # not UTF-8, not JSON, or too deeply nested
+        value = json.loads(
+            content.decode("utf-8"), parse_constant=_reject_json_constant
+        )
+    except (ValueError, RecursionError):
+        # Not UTF-8, not JSON, a non-standard constant, an integer of more than
+        # 4,300 digits, or nesting that is too deep.
         return None
     return value if isinstance(value, dict) else None
 

@@ -72,9 +72,10 @@ Implemented in the repository:
   two result types in `application`; and the `httpx` adapter in
   `infrastructure`. It makes one request per call, either the buyer-name
   search (`search_ocds`) or one record by `ocid` (`api/record`), and returns
-  the response as received or raises a typed error that carries whatever
-  response arrived, so that every response can be stored as evidence. It does
-  not retry and only spaces its requests. It is a library only: it has no CLI
+  the response as received or raises a typed error that carries the valid
+  response that arrived, so that it can be stored as evidence; a status
+  outside 100 to 599 is reported without a response. It does not retry and
+  only spaces its requests. It is a library only: it has no CLI
   command, nothing calls it yet, and its tests use simulated transports and
   never reach the network.
 - `httpx`, the first runtime dependency, used only in `infrastructure`
