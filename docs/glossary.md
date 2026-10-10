@@ -50,7 +50,12 @@ The exact, unmodified response the system received from the source in one
 request, preserved before any transformation. In data-lifecycle terms, it is
 the output of the ingestion stage stored as-is, so every later result
 (normalized record, quality finding) can be traced back to it and
-reproduced.
+reproduced. Its identity is the hash of its content: the stored bytes are
+kept once (the *object* in the storage layout of
+[ADR 0005](adr/0005-raw-evidence-store-layout.md)), and each time the system
+obtains them, an [observation](#observation-observación) records it.
+Responses that are errors (for example a `429`) or incomplete are raw
+evidence too: it is what was received, whatever its status.
 
 ### Invariants
 
@@ -62,11 +67,18 @@ reproduced.
   cleaned, retyped, or reformatted.
 - It is integrity-checkable: it carries a hash of its content, so anyone can
   verify later that it has not changed.
-- It is traceable to its origin: it is always associated with the source
-  request that produced it, the ingestion execution that obtained it, and
-  the time it was captured.
+- It is traceable to its origin: every time it is obtained, an observation
+  records the source request that produced it, the ingestion execution that
+  obtained it, and the time it was captured. Obtaining the same content
+  again is the same evidence with one more observation.
+- It is not judged by the store: it is preserved whatever its status, and
+  whether it is usable is decided later (by the source adapter or by
+  normalization), never by discarding it.
 
 ### Synthetic example
+
+The source, execution, and capture time below belong to the first
+observation of this evidence.
 
 ```text
 evidence:     sha256:0000...0001 (synthetic hash)
@@ -82,6 +94,61 @@ Normalization later stores `amount` as `1000.00`, but the evidence still
 says `"1000.000000"`. If the next day the source returns `1200.000000` for
 the same `ocid`, that is a second piece of evidence; the first one stays
 untouched.
+
+## Observation (observación)
+
+### Definition
+
+The record of one retrieval: the fact that one ingestion execution obtained
+one response, from one source request, at one time, with one status, and
+which raw evidence that response yielded. Raw evidence is identified by its
+content; the observation is what ties that content to each time it was
+obtained. This is what lets the same content be obtained many times without
+being stored again, and what keeps error responses on record.
+
+Do not confuse it with the source observations in
+[sercop-observations.md](sources/sercop-observations.md). Those are notes
+people wrote about how the source behaves. In code, specs, and this
+glossary, "observation" alone always means this retrieval record.
+
+### Invariants
+
+- It exists once per response obtained: every response an execution obtains
+  produces exactly one observation, even when its content was already
+  stored. It is identified by its execution and a sequence number within it.
+- It points to exactly one raw evidence (by content hash and size) and to
+  the ingestion execution that obtained it. It never points to content that
+  is not stored.
+- It records the response as received: status and response headers, except
+  `Set-Cookie`, which is never persisted. Request headers are not recorded;
+  only the method, URL, and query parameters are.
+- It is immutable and append-only: it is written once, after its content is
+  stored. Presenting the identical observation again changes nothing; a
+  different one under the same identity is an integrity error, never an
+  overwrite.
+- It records errors too: a `429`, a `5xx`, or a truncated body each has its
+  observation, with its status unchanged. Only observations of successful
+  responses are inputs to normalization.
+- Content may exist without an observation only when a write was interrupted
+  between the two steps. That content is valid evidence and is not deleted.
+
+### Synthetic example
+
+```text
+observation:  synthetic-exec-001 / 1
+request:      GET synthetic search endpoint, query year=2025&page=1
+status:       200
+captured_at:  2026-10-09T10:15:00-05:00
+evidence:     sha256:0000...0001 (synthetic hash)
+```
+
+`synthetic-exec-003` repeats the request and receives the same content. It
+produces `synthetic-exec-003 / 1` with the same evidence
+`sha256:0000...0001`: two observations, one stored content.
+`synthetic-exec-004 / 7` receives a `429` with a short HTML body: it
+produces its own evidence (`sha256:0000...0429`, synthetic hash) and an
+observation with status `429`. Both are preserved, and the `429` is not an
+input to normalization.
 
 ## Ingestion execution (ejecución de ingesta)
 
@@ -108,8 +175,9 @@ was obtained, and it is what lets a run be repeated or resumed safely.
   obtained.
 - It is resumable: after an interruption, a later execution continues from
   the recorded progress without redoing finished work.
-- It is traceable: every response it obtains is recorded as obtained by it,
-  even when that content was already stored by an earlier execution.
+- It is traceable: every response it obtains is recorded as an observation
+  obtained by it, even when that content was already stored by an earlier
+  execution.
 
 ### Synthetic example
 
