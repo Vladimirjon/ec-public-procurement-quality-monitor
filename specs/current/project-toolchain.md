@@ -1,6 +1,6 @@
 # Project Toolchain Specification
 
-> Last synced: 2026-10-08. Owned artifacts: `pyproject.toml`, `uv.lock`, `src/ec_procurement_quality/`, `tests/unit/`, `.github/workflows/harny-feedback.yml` (hand-maintained steps), `.github/workflows/tests.yml`.
+> Last synced: 2026-10-09. Owned artifacts: `pyproject.toml`, `uv.lock`, `src/ec_procurement_quality/`, `tests/unit/`, `.github/workflows/harny-feedback.yml` (hand-maintained steps), `.github/workflows/tests.yml`.
 
 ## Purpose
 
@@ -40,15 +40,23 @@ versions.
 ### Requirement: PT-3 — Four importable layer packages
 
 The system SHALL provide `domain`, `application`, `infrastructure` and
-`interfaces` as importable packages under `src/ec_procurement_quality/`, where
-`domain`, `application` and `infrastructure` hold only what makes them
-packages, and `domain` imports nothing outside the standard library and itself.
+`interfaces` as importable packages under `src/ec_procurement_quality/`,
+where `domain` imports nothing outside the standard library and itself, and
+`application` imports nothing outside the standard library, `domain` and
+itself. Both rules are enforced by tests in `tests/unit/test_layers.py`. (The
+clause that `domain`, `application` and `infrastructure` hold only what makes
+them packages was retired at F1; modules live inside the layer packages, never
+directly in `src/ec_procurement_quality/`, see invariant 3.)
 
-**Source:** project-skeleton · intent.md § AC6; execution-plan.md § Binding constraints "Layer boundaries"
+**Source:** project-skeleton · intent.md § AC6; execution-plan.md § Binding constraints "Layer boundaries"; raw-evidence-store · intent.md § AC11, § Constraints "Current-truth note"; execution-plan.md § Binding constraints "Layer imports"
 
 #### Scenario: Import the layers
 - **WHEN** the four layer packages are imported in one `python -c` command
 - **THEN** it exits 0 with no output
+
+#### Scenario: Layer import rules
+- **WHEN** `uv run pytest tests/unit -q -k layer` is run
+- **THEN** it passes, including the check that every module in `domain` imports only the standard library and `domain`, and the check that every module in `application` imports only the standard library, `domain` and `application`
 
 ### Requirement: PT-4 — Lint and format pass on the whole repository
 
@@ -86,7 +94,7 @@ including a unit test that proves the version command output (CLI-1).
 
 #### Scenario: Run the suite
 - **WHEN** `uv run pytest` is run
-- **THEN** it exits 0 with 7 tests passed at F0, including the version test in `tests/unit/test_cli.py`
+- **THEN** it exits 0 with every test passed (7 at F0; 137 at F1, the 7 F0 tests plus 130 raw evidence tests), including the version test in `tests/unit/test_cli.py`
 
 ### Requirement: PT-7 — The `feedback` CI check really runs ruff and mypy
 
@@ -117,7 +125,7 @@ failed, keep the `Secret scan (gitleaks)` step in the `feedback` job, keep
 
 #### Scenario: Doctor
 - **WHEN** `node .sdd/doctor/run-doctor.mjs` is run
-- **THEN** the summary shows `0 warned, 0 failed` (`30 ok, 1 skipped, 0 warned, 0 failed` once archived; the `pytest` readiness line is `OK` when run through `uv run`)
+- **THEN** the summary shows `0 warned, 0 failed` (once archived, `31 ok, 0 skipped, 0 warned, 0 failed` when run through `uv run`, where the `pytest` readiness line is `OK`; `30 ok, 1 skipped, 0 warned, 0 failed` without `uv run`, where that line is skipped)
 
 ### Requirement: PT-9 — Hand-maintained CI steps and hook limitation are documented
 
@@ -144,7 +152,7 @@ The system SHALL run the unit tests with a coverage report in a separate
 
 #### Scenario: Pull request
 - **WHEN** a pull request is opened
-- **THEN** the `Tests` job is green, its `Install dependencies` step ran `uv sync --locked`, and its `Run tests` log shows a `TOTAL` coverage row and `7 passed` (at F0). The push-to-`main` trigger is verified by inspection only
+- **THEN** the `Tests` job is green, its `Install dependencies` step ran `uv sync --locked`, and its `Run tests` log shows a `TOTAL` coverage row and every test passed (`7 passed` at F0, `133 passed` on the F1 head `392145f`; 137 locally at F1 with the `race` tests). The push-to-`main` trigger is verified by inspection only
 
 ### Requirement: PT-11 — `pytest-cov` is a development-only dependency
 
@@ -156,7 +164,7 @@ dependencies` empty, and make the CI test command work locally.
 
 #### Scenario: Local coverage run
 - **WHEN** `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` is run
-- **THEN** it exits 0 with `7 passed` and a coverage table with a `TOTAL` row
+- **THEN** it exits 0 with every test passed (`7 passed` at F0, 137 at F1) and a coverage table with a `TOTAL` row
 
 ### Requirement: PT-12 — A failing test fails `tests`; coverage alone never does
 
@@ -201,6 +209,7 @@ audit, as a human GitHub settings action outside F0 scope (see
 | Feature | Shipped | What it established |
 |---|---|---|
 | project-skeleton (F0) | 2026-10-08 | The `uv` package and lockfile, Python floor, four layer packages, ruff, mypy and pytest configuration, the `feedback` CI setup steps and the `Tests` workflow with `pytest-cov` (PT-1 to PT-12) |
+| raw-evidence-store (F1) | 2026-10-09 | Modified PT-3 (the layers may hold modules; `application` imports only the standard library, `domain` and itself, enforced by a layer test) and PT-6, PT-10 and PT-11 (test counts restated: 137 at F1). Invariants 3 and 4 kept |
 
 ## Related ADRs
 

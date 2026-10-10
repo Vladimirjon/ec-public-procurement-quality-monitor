@@ -1,5 +1,6 @@
 # Intent: Raw evidence store (F1)
 
+Shipped: 2026-10-09
 Revision: 3
 Approval: Approved revision 3 by Vladimirjon on 2026-10-09
 
