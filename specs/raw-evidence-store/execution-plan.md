@@ -1,0 +1,149 @@
+# Execution Plan: Raw evidence store (F1)
+
+## Guidance consulted
+- `specs/raw-evidence-store/intent.md` Revision 1 (AC1 to AC13), pending approval.
+- `AGENTS.md` (layer boundaries, raw responses are evidence and never overwritten, no new dependencies without approval, minimal synthetic fixtures, run verification after every change).
+- `docs/adr/0002-immutable-raw-storage.md` (Accepted) and `docs/adr/0005-raw-evidence-store-layout.md` (Proposed on 2026-10-09; its decisions were made by the human and are treated as binding here).
+- `docs/glossary.md` § Raw evidence and § Ingestion execution (byte-faithful, immutable, integrity-checkable, traceable; every response obtained is recorded as obtained by its execution, even when the content already exists).
+- `docs/architecture.md` (layers, raw evidence boundary), `docs/sources/sercop-observations.md` (the unpreserved `429`, `X-RateLimit-*` headers, decimal strings that must stay as received), `docs/adr/0004-python-toolchain.md` (Python 3.13, strict `mypy` in `domain`, `pytest`).
+- `docs/learning/plan.md` § 4 (F1 row), D-07 and the Day 9 to Day 11 entries: the human hand-writes the port and the hash value object on Day 10; the executor writes the local-disk adapter.
+- `harny-sync` lookup: `specs/current/_index.md`, `cli.md`, `project-toolchain.md`. Relevant current truth: PT-3 ("`domain`, `application` and `infrastructure` hold only what makes them packages", "`domain` imports nothing outside the standard library and itself"), PT-5 (strict `mypy` in `domain` via explicit per-module flags), PT-6 ("7 tests passed at F0"), PT-11 and invariant 4 (`[project] dependencies` stays empty), invariant 3 (at most 2 files directly in `src/ec_procurement_quality/`). No raw-evidence capability exists yet.
+- Code read: `pyproject.toml`, `.gitignore` (`data/raw/*` ignored), `src/ec_procurement_quality/**` (four layer packages, only `interfaces/cli.py` has code), `tests/unit/test_layers.py` (AST check that `domain` imports only the standard library and itself), `tests/unit/test_cli.py`, `.sdd/shared/components.mjs` and `.sdd/doctor/checks.json` (component rule (c) counts only files directly inside a child of `src/`, so modules inside layer packages do not create a component).
+- Baseline on 2026-10-09 at `3f8f779`: `uv run pytest -q` -> `7 passed`; `ruff check`, `ruff format --check` (53 files) and `mypy .` (8 source files) clean; `uv run node .sdd/doctor/run-doctor.mjs` -> `31 ok, 0 skipped, 0 warned, 0 failed`; `git check-ignore -v` confirms `data/raw/objects/...` and `data/raw/observations/...` are ignored by `.gitignore:22`.
+- Feasibility check on 2026-10-09 (scratch folder outside the repo, local Python 3.13.9 on Windows/NTFS; plan evidence, not outcome evidence): `os.link(temp, final)` raised `FileExistsError` when `final` existed and left it unchanged; `Path.mkdir(parents=True, exist_ok=True)` under a path whose parent is a regular file raised `FileExistsError` (an `OSError`).
+
+## Ownership
+- `src/ec_procurement_quality/domain/`: the content hash value object and the observation record with the evidence errors (new modules).
+- `src/ec_procurement_quality/application/`: the raw evidence storage port (new module).
+- `src/ec_procurement_quality/infrastructure/`: the local-disk adapter (new module).
+- `tests/unit/`: new unit tests, and one new check in `tests/unit/test_layers.py`.
+- Documentation: `README.md`, `docs/architecture.md`, `CHANGELOG.md`.
+- Affected `specs/current` capabilities: `project-toolchain` (PT-3's emptiness clause is retired for `domain`, `application` and `infrastructure`; PT-6's test count grows), and a new capability for the raw evidence store (suggested name `raw-evidence`, prefix `RE-`) that `harny-sync` archive creates. `cli`: none.
+
+## Binding constraints
+- **Public names and signatures.** Fixed because the human-written parts, the adapter and the tests are written separately and import each other (source: intent § Constraints; `docs/learning/plan.md` Day 10). Every type annotation is required; in `domain` it is enforced by strict `mypy`.
+  - `ec_procurement_quality.domain.content_hash.ContentHash` (written by the human):
+    - built as `ContentHash(hexdigest)` from a `str`; it raises `ValueError` unless the value is exactly 64 characters from `0123456789abcdef`;
+    - `ContentHash.of(content: bytes) -> ContentHash` computes SHA-256 with `hashlib`;
+    - attribute `hexdigest: str`;
+    - immutable (assigning to `hexdigest` raises), and equal and hashable by value.
+  - `ec_procurement_quality.domain.raw_evidence`:
+    - `RawEvidenceError(Exception)`, `EvidenceIntegrityError(RawEvidenceError)`, `EvidenceNotFoundError(RawEvidenceError)`.
+    - `Observation`, an immutable record built with keyword arguments and equal by value, with exactly these attributes: `execution_id: str`, `sequence: int`, `method: str`, `url: str`, `status: int`, `headers: tuple[tuple[str, str], ...]`, `captured_at: datetime.datetime`, `content_hash: ContentHash`, `size: int`. Construction raises `ValueError` when: `execution_id` does not match `[a-z0-9][a-z0-9-]{0,63}` (1 to 64 characters, lowercase letters, digits and hyphens, not starting with a hyphen); `sequence` is not an `int` (a `bool` is rejected) or is negative; `method` or `url` is empty; `status` is outside 100 to 599; `captured_at` has no UTC offset (`utcoffset()` is `None`); `size` is negative; any header name equals `set-cookie` ignoring case.
+  - `ec_procurement_quality.application.raw_evidence_store.RawEvidenceStore` (written by the human), a `typing.Protocol` (it need not be `runtime_checkable`) with exactly these methods:
+    ```python
+    def store(
+        self,
+        *,
+        execution_id: str,
+        sequence: int,
+        method: str,
+        url: str,
+        status: int,
+        headers: Sequence[tuple[str, str]],
+        captured_at: datetime,
+        content: bytes,
+    ) -> Observation: ...
+
+
+    def read_content(self, content_hash: ContentHash) -> bytes: ...
+
+
+    def read_observation(self, execution_id: str, sequence: int) -> Observation: ...
+    ```
+    `Sequence` is `collections.abc.Sequence`; `datetime` is `datetime.datetime`.
+  - `ec_procurement_quality.infrastructure.local_disk_raw_evidence_store.LocalDiskRawEvidenceStore`, built as `LocalDiskRawEvidenceStore(root: pathlib.Path)`. It satisfies `RawEvidenceStore` structurally; subclassing the protocol is allowed but not required. The root need not exist; directories are created on the first write. Nothing outside the root is read or written.
+- **On-disk layout** under the root (source: ADR 0005):
+  - object: `objects/<first two characters of the hexdigest>/<hexdigest>`, no extension, holding exactly the content bytes;
+  - observation: `observations/<execution_id>/<sequence>.json`, where `<sequence>` is the decimal number with no sign and no leading zeros (`1.json`, `12.json`);
+  - temporary files live under the root but outside `objects/` and `observations/` (suggested: `tmp/`), so they are never read as evidence.
+- **Observation record format.** Fixed because F3 and F5 will read these files (source: ADR 0005 field list; glossary "traceable"). A UTF-8 JSON object with exactly these keys:
+  ```json
+  {
+    "schema_version": 1,
+    "execution_id": "synthetic-exec-001",
+    "sequence": 1,
+    "captured_at": "2026-10-09T10:15:00-05:00",
+    "request": {"method": "GET", "url": "https://source.invalid/api/search?year=2025&page=1"},
+    "response": {"status": 200, "headers": [["Content-Type", "application/json"]]},
+    "content": {"sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size": 3}
+  }
+  ```
+  - `captured_at` is `datetime.isoformat()` output and keeps the UTC offset it was given; `url` and `method` are recorded exactly as given (no normalization); `headers` is a list of two-element `[name, value]` lists in the order received, names as received, repeats kept.
+  - `schema_version` is an addition to the ADR 0005 field list, not a change to it: it lets F3 and F5 recognize the format.
+  - Key order and whitespace are left to the executor, but the same `Observation` always serializes to the same bytes on every platform: the file is written in binary, with no newline translation.
+- **Order of `store`** (source: ADR 0005 "written once, after its object"; intent AC7 to AC10):
+  1. Filter out every header whose name is `set-cookie` ignoring case, compute the hash and size, and build the `Observation`. Invalid input raises `ValueError` here, before any file or directory is created.
+  2. Publish the object only if absent. If an object file already exists under that name, its bytes are read and hashed: if they match, it is reused untouched; if not, `EvidenceIntegrityError` is raised and nothing else is written.
+  3. Publish the observation only if absent. If one already exists for that execution and sequence and its bytes equal the bytes this call would write, `store` returns the observation and changes nothing; otherwise `EvidenceIntegrityError` is raised and the existing file is untouched. An object published in step 2 stays as a harmless orphan.
+  4. Return the `Observation` (with the filtered headers).
+- **Atomic, write-once publication** (source: ADR 0005; intent AC8, AC9). Each file is first written completely to a temporary file in the same store, flushed, and synced with `os.fsync`, called through the `os` module (the AC9 test injects a failure at that call), and only then made visible under its final name with an operation that fails when the final name exists. No code path replaces, truncates, appends to or deletes a file under `objects/` or `observations/`. On any exception, the temporary file is removed when possible and the exception propagates.
+- **Errors** (source: ADR 0005 "explicit integrity error"; intent AC6, AC7):
+  - `read_content`: missing object -> `EvidenceNotFoundError`; bytes whose SHA-256 is not the requested hash -> `EvidenceIntegrityError`.
+  - `read_observation`: validates `execution_id` and `sequence` with the same rules as `Observation` (`ValueError`); missing file -> `EvidenceNotFoundError`; a file that is not valid JSON, lacks or adds a key, has a `schema_version` other than `1`, fails `Observation` validation, or names a different execution or sequence than its path -> `EvidenceIntegrityError`.
+  - File-system failures (`OSError`) propagate unwrapped.
+  - Messages name hashes, execution ids, sequences and paths only; they never contain content bytes or header values.
+- **No logging and no secrets.** The adapter writes no log output in F1. Tests use invented bodies, URLs under the reserved `.invalid` domain and fake cookie values such as `synthetic-session=s1`; no real SERCOP record or response is copied (source: `AGENTS.md`; ADR 0005 consequences).
+- **Layer imports** (source: `AGENTS.md`; `docs/architecture.md`; PT-3): `domain` imports only the standard library and itself; `application` imports only the standard library, `domain` and itself; `infrastructure` may import `domain` and `application`. Nothing in F1 imports `interfaces`.
+- **No new dependency.** `pyproject.toml` and `uv.lock` do not change; hashing uses `hashlib` (source: `AGENTS.md`; ADR 0005; PT-11, invariant 4).
+- **Package root.** No new file directly in `src/ec_procurement_quality/` (source: `project-toolchain` invariant 3).
+- **No compression, no retention, no deletion** of evidence (source: ADR 0005).
+- **Tests stay in the unit tier.** They use `tmp_path`, never the network, and never the real `data/raw/` (source: intent AC12).
+
+## Proposed approach
+Revisable by the executor if it records why.
+- Decision: publish with `os.link(temp, final)` and treat `FileExistsError` as "already exists, go to verification"; then remove the temporary file in a `finally` block — rationale: on POSIX and Windows it is atomic and refuses to replace an existing name, which is exactly write-once (confirmed locally on NTFS); rejected: `os.replace`, because it overwrites an existing file on every platform; `os.rename`, because it overwrites on POSIX; `open(final, "xb")` followed by writing, because a crash mid-write leaves a partial file under the final name.
+- Decision: temporary files in `<root>/tmp/` with names from `tempfile.NamedTemporaryFile(dir=..., delete=False)` or `tempfile.mkstemp` — rationale: same file system as the final names (required for a hard link), unique names, and outside the evidence folders; rejected: the system temp folder, because it can be on another volume.
+- Decision: `ContentHash` and `Observation` as `@dataclass(frozen=True)` with validation in `__post_init__` — rationale: immutability, value equality and hashing come for free and pass strict `mypy`; it is also the simplest shape to write by hand; rejected: `typing.NamedTuple`, because it is also a tuple and compares equal to plain tuples.
+- Decision: the `Set-Cookie` filter lives in the adapter's `store` (step 1), and `Observation` only rejects such a header — rationale: the domain states the invariant, the adapter applies the policy at the boundary; rejected: silently dropping headers inside `Observation`, because a constructor that changes its input is surprising.
+- Decision: compare an existing observation by its bytes, not by parsing it — rationale: serialization is deterministic, so equal bytes means the same record, and any edit of the file from outside counts as a conflict; rejected: comparing parsed `Observation` objects, because `datetime` equality ignores a changed UTC offset.
+- Decision: on POSIX, also `fsync` the containing directory after publishing (suggestion only) — rationale: makes the new name durable after power loss; Windows cannot open directories for `fsync`, so it is skipped there.
+- Suggested test files and names (the `-k` tokens are used by the focused commands below, so test names must contain them):
+  - `tests/unit/test_content_hash.py` (AC1);
+  - `tests/unit/test_raw_evidence.py` for `Observation` validation (AC5 domain part, AC10), names containing `set_cookie` or `invalid`;
+  - `tests/unit/test_local_disk_raw_evidence_store.py` for the adapter, names containing `round_trip` (AC2), `duplicate` (AC3), `error_response` (AC4), `set_cookie` (AC5), `corrupt` or `missing` (AC6), `conflict` (AC7), `orphan` (AC8), `interrupted` (AC9), `invalid` (AC10), `satisfies_port` (AC11);
+  - `tests/unit/test_layers.py`: add `test_layer_application_imports_only_stdlib_domain_and_itself`, reusing the existing AST helper.
+
+## Consumers and migration
+- **Existing tests.** `tests/unit/test_cli.py` and `tests/unit/test_layers.py` keep passing unchanged; `test_layers.py` gains one test (above). The `domain` import test now has real files to check, which is its purpose.
+- **Callers of the store.** None in F1. F2 (source adapter) will produce the response parts, F4 (`ingest`) will create execution ids and sequence numbers and call `store`, F3 may index observations, and F5 will read only observations with a successful status. The record format and the port are fixed now for them.
+- **`specs/current`.** At archive, `harny-sync` modifies `project-toolchain` PT-3 (the emptiness clause no longer applies to `domain`, `application` and `infrastructure`) and PT-6 (the count was "at F0"), and creates the raw evidence capability. No `cli` change.
+- **Docs.** `README.md` (§ Architecture says the layer packages are empty; § Technologies lists storage adapters as planned), `docs/architecture.md` § Raw evidence boundary and § Open questions (the paths, compression, retention and metadata question is now answered by ADR 0005 for local storage), and `CHANGELOG.md` § Unreleased. `AGENTS.md` commands do not change.
+- **ADR 0005.** Its status moves from `Proposed` to `Accepted` only by the human, outside the roles' writes.
+- **Glossary (optional, human).** ADR 0005 introduces "object" and "observation" as store terms; `docs/sources/sercop-observations.md` uses "observation" for notes about source behavior. Adding the two store terms to `docs/glossary.md` would keep "one term, one meaning"; F1 does not require it.
+- **`.gitignore`.** Already ignores `data/raw/*`; no change.
+
+## Risks
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| The store root is on a file system without hard links (FAT, exFAT, some network or synced folders), so `os.link` fails | Low | High | It fails loudly with `OSError` and never falls back to replacing files; the root used in operation is `data/raw/` inside the repo on NTFS or ext4, where the check passed |
+| Case-insensitive file systems (Windows, macOS) merge names that differ only in case | Low | High | Hexdigests and execution ids are lowercase only (binding) |
+| An execution id equal to a Windows reserved device name (`con`, `nul`, `aux`, `prn`, `com1`...) cannot be a folder on Windows | Low | Med | F4 generates ids (for example a timestamp or UUID with a prefix) rather than accepting free names; record this when F4 is specified |
+| The hand-written `ContentHash` or port drifts from the pinned names | Med | Med | The red tests import the pinned names, and `mypy .` checks the adapter against the port through the `satisfies_port` test; both fail at once on a mismatch |
+| A power loss leaves temporary files in `<root>/tmp/` that are never cleaned | Low | Low | They are never read as evidence; cleanup is out of scope (ADR 0005: no automatic deletion) and can be done by hand |
+| Antivirus or indexer locks on Windows make removing a temporary file fail | Low | Low | Cleanup is best effort and must not hide the original exception; the evidence folders are not affected |
+| The AC9 test is coupled to `os.fsync` | Med | Low | Calling `os.fsync` through the `os` module is a binding constraint, recorded as the test seam |
+| A duplicate store reads the whole existing object to verify it | Low | Low | Observed responses are a few KB (`sercop-observations.md`); revisit with ADR 0005 if volume grows |
+| Observations hold URLs with query strings; a future caller could put a credential in a URL | Low | Med | SERCOP queries carry no credentials today; F2 must not put secrets in URLs, and `data/raw/` stays out of git and logs |
+
+## Validation
+One row per AC. Every test is unit tier (pytest, `tmp_path`, no network, no real `data/raw/`). Setup for every row: `uv sync --locked`, nothing else. Cwd: the repository root. Commands are written for Git Bash; they also work in PowerShell except where noted. Broader command for the test rows: `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` (what the `Tests` workflow runs).
+
+| AC | Demonstrated by | Tests to write | Tier | Framework | Setup | Focused command | Broader command | Cwd |
+|---|---|---|---|---|---|---|---|---|
+| AC1 | `ContentHash` hashes, validates, and behaves as a value | `tests/unit/test_content_hash.py`: `ContentHash.of(b"abc").hexdigest` and `ContentHash.of(b"").hexdigest` equal the known vectors; two hashes of the same bytes are equal, have the same `hash()` and collapse to one set or dict entry; uppercase, 63-character, 65-character and non-hex values raise `ValueError`; assigning to `hexdigest` raises | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_content_hash.py -q` | the coverage command; `uv run mypy .` (strict on `domain`) | repo root |
+| AC2 | storing a response writes the object and the observation at the pinned paths, with the pinned record, and both read back | `test_local_disk_raw_evidence_store.py`, `round_trip`: the object file holds exactly the content; `json.loads` of `observations/synthetic-exec-001/1.json` has exactly the pinned keys and values (including `schema_version` `1`, `captured_at` with `-05:00`, the URL with its query string, `size`); `read_content` returns the bytes; `read_observation` equals the returned `Observation`; walking the root finds only those two files | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_local_disk_raw_evidence_store.py -q -k round_trip` | the coverage command | repo root |
+| AC3 | identical content from two executions: one object, two observations, object untouched | `duplicate`: two stores of the same bytes under `synthetic-exec-001`/1 and `synthetic-exec-002`/1; one file under `objects/`, two under `observations/`, same `sha256`; the object's bytes and `stat().st_mtime_ns` are equal before and after the second store | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_local_disk_raw_evidence_store.py -q -k duplicate` | the coverage command | repo root |
+| AC4 | `429`, `503` with empty body, and a truncated `200` body are preserved with their status | `error_response`: each stores without error; each observation's `status` and the file's `response.status` equal the input; `read_content` returns the exact bytes; the empty body gives `size` `0` and the `e3b0c442...b855` object | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_local_disk_raw_evidence_store.py -q -k error_response` | the coverage command | repo root |
+| AC5 | `Set-Cookie` never persisted, other headers kept in order with repeats; the domain refuses `Set-Cookie` | `set_cookie` in the adapter file: the AC5 header list; returned and persisted headers are exactly the three non-cookie pairs in order; the observation file bytes contain neither cookie value. `set_cookie` in `test_raw_evidence.py`: building an `Observation` with a `SET-COOKIE` header raises `ValueError` | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_local_disk_raw_evidence_store.py tests/unit/test_raw_evidence.py -q -k set_cookie` | the coverage command | repo root |
+| AC6 (failure) | a corrupted object is detected on read; a missing one is reported | `corrupt`: store `b"synthetic-original-body"`, overwrite the object file from the test with `b"synthetic-tampered-body"`, `read_content` raises `EvidenceIntegrityError` whose message names the hexdigest and contains neither body. `missing`: `read_content` of an unstored hash and `read_observation` of an unstored identity raise `EvidenceNotFoundError`. `corrupt`: an observation file replaced by invalid JSON, or by a record naming another sequence, makes `read_observation` raise `EvidenceIntegrityError` | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_local_disk_raw_evidence_store.py -q -k "corrupt or missing"` | the coverage command | repo root |
+| AC7 (failure) | different content under an existing identity is an error and never overwrites; the identical observation is a no-op | `conflict`: (object) plant `b"tampered"` at the `b"abc"` object path, `store(content=b"abc")` raises `EvidenceIntegrityError`, the file still holds `b"tampered"`, and `observations/` is empty; (observation) re-store `synthetic-exec-001`/1 with other content, and with the same content but status `500`, each raises `EvidenceIntegrityError` and `1.json` bytes are unchanged; (idempotent) the identical call returns an equal `Observation` and the bytes and `st_mtime_ns` of `1.json` and the object are unchanged | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_local_disk_raw_evidence_store.py -q -k conflict` | the coverage command | repo root |
+| AC8 (failure) | a failure between object and observation leaves no observation without its object | `orphan`: with a regular file created at `tmp_path / "observations"`, `store` raises `OSError`, the object exists with the exact bytes, and no `.json` file exists anywhere under the root; with a regular file at `tmp_path / "objects"` (fresh root), `store` raises `OSError` and nothing exists under `observations/` | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_local_disk_raw_evidence_store.py -q -k orphan` | the coverage command | repo root |
+| AC9 (failure) | an interrupted write leaves no partial file under a final name, and a retry succeeds | `interrupted`: `monkeypatch.setattr(os, "fsync", <raises OSError>)`; `store` raises `OSError`; the final object path does not exist, `observations/` has no file, and walking the root finds no file at all; after `monkeypatch.undo()`, the same `store` succeeds and the object holds exactly the content | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_local_disk_raw_evidence_store.py -q -k interrupted` | the coverage command | repo root |
+| AC10 (failure) | invalid input is rejected before anything is written | `invalid` in `test_raw_evidence.py`: each invalid value from AC10 (and `sequence=True`, empty `method`, empty `url`, negative `size`) raises `ValueError` when building an `Observation`. `invalid` in the adapter file: `store` with execution id `../escape` and with a naive `captured_at` raises `ValueError` and the root has no file (and does not need to exist); `read_observation("../escape", 1)` raises `ValueError` | unit | pytest | `uv sync --locked` | `uv run pytest tests/unit/test_raw_evidence.py tests/unit/test_local_disk_raw_evidence_store.py -q -k invalid` | the coverage command | repo root |
+| AC11 | layers keep their boundaries; the adapter satisfies the port; `domain` is strictly typed | `test_layers.py`: the existing `domain` test now covers real modules; new `test_layer_application_imports_only_stdlib_domain_and_itself`. `satisfies_port` in the adapter file: `store: RawEvidenceStore = LocalDiskRawEvidenceStore(tmp_path)` in an annotated test, checked by `mypy .` | unit | pytest, mypy | `uv sync --locked` | `uv run pytest tests/unit -q -k "layer or satisfies_port"` | `uv run mypy .` (exit 0; strict `domain` flags apply to the new modules) | repo root |
+| AC12 (compatibility) | existing behavior, tools and ignore rules still hold; no new dependency | none new (command checks); the 7 F0 tests run unchanged | unit, command | pytest, ruff, mypy, harny doctor, git | `uv sync --locked` | `uv run pytest -q` (all pass, including the 7 F0 tests) | `uv run ruff check .`; `uv run ruff format --check .`; `uv run mypy .`; `uv run node .sdd/doctor/run-doctor.mjs` (`0 warned, 0 failed`); `uv run ec-procurement-quality --version` (`ec-procurement-quality 0.1.0`); `git diff main -- pyproject.toml uv.lock` (empty); `git check-ignore data/raw/objects/ab/x data/raw/observations/e/1.json` (both printed); `git diff --check`; `git grep -n -i -e datosabiertos -e compraspublicas -- tests` (no match, exit 1) | repo root |
+| AC13 (documentation) | the docs describe what exists | none (inspection at audit) | manual | git | none | `git grep -n -i "raw evidence" -- README.md docs/architecture.md CHANGELOG.md` (the store is named in all three; `docs/architecture.md` links ADR 0005) | `git grep -n "four empty layer" -- README.md` (no match), and by inspection the README "Planned" list no longer presents local raw storage as missing | repo root |
+
+## Revision log
+- Revision 1 (2026-10-09): First draft, based on intent Revision 1.
