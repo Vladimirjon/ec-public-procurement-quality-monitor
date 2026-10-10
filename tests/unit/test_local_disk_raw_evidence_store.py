@@ -9,6 +9,7 @@ never touch the network or the real `data/raw/`.
 import hashlib
 import json
 import os
+import stat
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -517,6 +518,117 @@ def test_store_same_response_again_is_not_a_conflict_and_changes_nothing(
     assert object_path.read_bytes() == b"abc"
     assert object_path.stat().st_mtime_ns == object_mtime
     assert _files_under(root) == files_before
+
+
+# --- A name appears between the absence check and publication (AC7, race) ---
+
+
+def _plant_when_publishing(
+    monkeypatch: pytest.MonkeyPatch, path: Path, content: bytes
+) -> list[Path]:
+    """Make `path` appear (aged) while `store` publishes its first file.
+
+    Another writer creating `path` after `store` saw it absent and before
+    `store` gives it a name is simulated at the `os.fsync` of the first
+    temporary file `store` publishes. The directory sync that follows a
+    publication on POSIX is a directory descriptor and is never acted on.
+    Returns the paths planted, so a test can assert that the wrapper acted.
+    """
+    real_fsync = os.fsync
+    acted: list[Path] = []
+
+    def planting_fsync(fd: int) -> None:
+        if not acted and stat.S_ISREG(os.fstat(fd).st_mode):
+            if path.exists():
+                raise AssertionError("the name existed before the race")
+            _plant(path, content)
+            _age(path)
+            acted.append(path)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", planting_fsync)
+    return acted
+
+
+def _reference_observation(tmp_path: Path) -> tuple[Observation, bytes]:
+    """The observation and record bytes `_store_response` produces by default."""
+    reference_root = tmp_path / "reference"
+    observation = _store_response(LocalDiskRawEvidenceStore(reference_root))
+    record = _observation_path(reference_root, EXECUTION_ID, 1).read_bytes()
+    return observation, record
+
+
+def test_store_race_object_appearing_with_other_bytes_is_integrity_error(
+    root: Path, store: LocalDiskRawEvidenceStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    object_path = _object_path(root, ABC_HEXDIGEST)
+    acted = _plant_when_publishing(monkeypatch, object_path, b"tampered")
+
+    with pytest.raises(EvidenceIntegrityError) as error_info:
+        _store_response(store, content=b"abc")
+
+    assert acted == [object_path]
+    assert ABC_HEXDIGEST in str(error_info.value)
+    assert "tampered" not in str(error_info.value)
+    assert object_path.read_bytes() == b"tampered"
+    assert object_path.stat().st_mtime_ns == LONG_AGO_NS
+    assert _files_under(root / "observations") == []
+
+
+def test_store_race_observation_appearing_with_other_bytes_is_integrity_error(
+    root: Path, store: LocalDiskRawEvidenceStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _plant(_object_path(root, ABC_HEXDIGEST), b"abc")
+    observation_path = _observation_path(root, EXECUTION_ID, 1)
+    planted = b"synthetic-other-record"
+    acted = _plant_when_publishing(monkeypatch, observation_path, planted)
+
+    with pytest.raises(EvidenceIntegrityError):
+        _store_response(store)
+
+    assert acted == [observation_path]
+    assert observation_path.read_bytes() == planted
+    assert observation_path.stat().st_mtime_ns == LONG_AGO_NS
+    assert _object_path(root, ABC_HEXDIGEST).read_bytes() == b"abc"
+
+
+def test_store_race_object_appearing_with_the_same_bytes_is_not_a_conflict(
+    tmp_path: Path,
+    root: Path,
+    store: LocalDiskRawEvidenceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected, _ = _reference_observation(tmp_path)
+    object_path = _object_path(root, ABC_HEXDIGEST)
+    acted = _plant_when_publishing(monkeypatch, object_path, b"abc")
+
+    stored = _store_response(store)
+
+    assert acted == [object_path]
+    assert stored == expected
+    assert object_path.read_bytes() == b"abc"
+    assert object_path.stat().st_mtime_ns == LONG_AGO_NS
+    assert store.read_observation(EXECUTION_ID, 1) == expected
+
+
+def test_store_race_observation_appearing_with_the_same_bytes_is_not_a_conflict(
+    tmp_path: Path,
+    root: Path,
+    store: LocalDiskRawEvidenceStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected, record = _reference_observation(tmp_path)
+    _plant(_object_path(root, ABC_HEXDIGEST), b"abc")
+    observation_path = _observation_path(root, EXECUTION_ID, 1)
+    acted = _plant_when_publishing(monkeypatch, observation_path, record)
+
+    stored = _store_response(store)
+
+    assert acted == [observation_path]
+    assert stored == expected
+    assert observation_path.read_bytes() == record
+    assert observation_path.stat().st_mtime_ns == LONG_AGO_NS
+    assert store.read_observation(EXECUTION_ID, 1) == expected
 
 
 # --- Failure between object and observation (AC8) ---------------------------
