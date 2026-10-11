@@ -11,6 +11,13 @@ logger and prints nothing, and no message holds body bytes or header values.
 Anything that is not a source outcome (an interrupt, a defect of an injected
 transport or clock) propagates unchanged and is never wrapped.
 
+Every exception the adapter raises itself is exactly one of the source errors,
+`ValueError` or `RuntimeError`, has fixed ASCII text that starts with the
+operation or the parameter, and has no `__cause__` and no `__context__`: the
+libraries' own messages quote the bytes they reject, so none is ever chained.
+A reason found inside an `except` block is returned or flagged, and raised after
+the block.
+
 The HTTP client is kept from processing anything the source sends beyond the
 status, the headers and the body: no cookie is parsed or replayed and `Location`
 is never read by the client (see `_NoCookieJar` and `_capture_response`).
@@ -78,11 +85,42 @@ def _require_positive_int(value: object, name: str) -> None:
     # `bool` is a subclass of `int`; a flag is never a valid year or page.
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{name} must be an integer of 1 or more")
+    # The interpreter will not write more than 4,300 digits as text by default.
+    # Its own `ValueError` does not name the parameter, so try the conversion
+    # here and raise ours after the `try`, with nothing chained.
+    try:
+        str(value)
+    except ValueError:
+        pass
+    else:
+        return
+    raise ValueError(f"{name} has too many digits to be written as text")
 
 
 def _require_text(value: object, name: str) -> None:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} must be a non-empty string")
+    # `quote` raises `UnicodeEncodeError` for a lone surrogate, and that error
+    # holds the caller's text in its arguments. Try the encoding here instead.
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    else:
+        return
+    raise ValueError(f"{name} must be text that UTF-8 can encode")
+
+
+def _require_callable(value: object, name: str) -> None:
+    # `ValueError`, not `TypeError`: every construction rejection has one type
+    # (intent AC10), and callers catch that one.
+    if not callable(value):
+        raise ValueError(f"{name} must be callable")  # noqa: TRY004
+
+
+def _require_transport(value: object) -> None:
+    if value is not None and not isinstance(value, httpx.BaseTransport):
+        raise ValueError("transport must be None or an httpx.BaseTransport")
 
 
 def _require_seconds(value: object, name: str, *, positive: bool) -> None:
@@ -135,14 +173,11 @@ def _host_problem(host: str) -> str | None:
     """Why `host`, as name resolution and TLS receive it, is not acceptable.
 
     `host` is the library's ASCII form (IDNA-encoded for a non-ASCII host, an
-    IPv6 literal without its brackets). Python's `idna` codec, which
-    `getaddrinfo` and `ssl` apply to it, raises an error that nothing maps for an
-    empty label or one of 64 characters or more.
+    IPv6 literal without its brackets, which holds no zone: see
+    `_base_url_problem`). Python's `idna` codec, which `getaddrinfo` and `ssl`
+    apply to it, raises an error that nothing maps for an empty label or one of
+    64 characters or more.
     """
-    if ":" in host and "%" in host:
-        # A zone names a local network interface (RFC 6874), and its text would
-        # reach name resolution and TLS unchanged.
-        return "must not hold an IPv6 zone identifier"
     name = host.removesuffix(".")  # one trailing dot is allowed
     if len(name) > _MAX_HOST_NAME:
         return "must have a host of at most 253 characters"
@@ -192,9 +227,17 @@ def _base_url_problem(base_url: str) -> str | None:
     except (httpx.InvalidURL, ValueError):
         return "is not accepted by the HTTP library"
     try:
-        _ = url.host  # decodes a first label `xn--` (every request reads it)
+        # The host as parsed, before any ASCII encoding. It decodes a first
+        # label `xn--` (every request reads it).
+        host = url.host
     except ValueError:  # `idna.IDNAError`, which is not an `httpx` exception
         return "must have a host that the HTTP library can decode"
+    if ":" in host and "%" in host:
+        # A zone names a local network interface (RFC 6874), and its text would
+        # reach name resolution and TLS unchanged. This runs before `raw_host`,
+        # which raises `UnicodeEncodeError` (holding the host) for a zone with a
+        # non-ASCII character, and only for one.
+        return "must not hold an IPv6 zone identifier"
     problem = _host_problem(url.raw_host.decode("ascii"))
     if problem is not None:
         return problem
@@ -206,7 +249,12 @@ def _base_url_problem(base_url: str) -> str | None:
     return None
 
 
-def _require_base_url(base_url: str) -> None:
+def _require_base_url(base_url: object) -> None:
+    # Before `urlsplit`, which raises `AttributeError` or `TypeError` for a
+    # value that is not text.
+    # `ValueError`, not `TypeError`, as for every construction rejection.
+    if not isinstance(base_url, str):
+        raise ValueError("base_url must be a string")  # noqa: TRY004
     problem = _base_url_problem(base_url)
     if problem is not None:
         raise ValueError(f"base_url {problem}")
@@ -287,6 +335,12 @@ class SercopSource:
             or low_remaining_threshold < 0
         ):
             raise ValueError("low_remaining_threshold must be a non-negative integer")
+        # What an injected callable returns is not checked: a defect there is
+        # the caller's, and the error where the value is used propagates.
+        _require_transport(transport)
+        _require_callable(now, "now")
+        _require_callable(monotonic, "monotonic")
+        _require_callable(sleep, "sleep")
         self._base_url = base_url
         self._min_interval = min_interval
         self._low_remaining_threshold = low_remaining_threshold
@@ -487,6 +541,13 @@ class SercopSource:
 # --- (f) Outcome mapping ----------------------------------------------------
 
 
+def _failure_class(failure: httpx.HTTPError | None) -> str:
+    """` (ReadTimeout)`: the class of the library's failure, and nothing of it."""
+    if failure is None:
+        return ""
+    return f" ({type(failure).__name__})"
+
+
 def _outcome[Result](
     attempt: _Attempt,
     operation: str,
@@ -499,11 +560,14 @@ def _outcome[Result](
     outcomes; the error messages hold no body bytes and no header values.
     """
     response = attempt.response
+    # Nothing below is chained: the library's exception text quotes the bytes it
+    # rejected (a header line, a chunk header), so only its class name is used.
     # 1. failure before the response (no response)
     if attempt.status is None:
         raise SourceTransportError(
             f"{operation}: the request failed before a response arrived"
-        ) from attempt.failure
+            f"{_failure_class(attempt.failure)}"
+        )
     # 2. status outside 100 to 599 (invalid HTTP status, no response)
     if response is None:
         raise SourceTransportError(
@@ -512,9 +576,10 @@ def _outcome[Result](
     # 3. cut off during the body (partial response)
     if attempt.failure is not None:
         raise SourceTransportError(
-            f"{operation}: the body was cut off (status {response.status})",
+            f"{operation}: the body was cut off (status {response.status})"
+            f"{_failure_class(attempt.failure)}",
             response=response,
-        ) from attempt.failure
+        )
     # 4. status other than 200 (status error)
     if response.status != _STATUS_OK:
         raise SourceStatusError(

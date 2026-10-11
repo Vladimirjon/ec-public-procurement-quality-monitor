@@ -33,12 +33,22 @@ unusual `Remaining` values, the host, length and numeric rules of the
 constructor, years and pages too long to write, lone surrogates and `SystemExit`.
 Every body, header value and defect is SYNTHETIC, labelled where it is built.
 Non-ASCII header values reach the response as bytes (`Reply` encodes Latin-1).
+
+Revision 4 (outcome O2d; AC8, AC10, AC13 and AC15) adds, to the same sections,
+the output invariant that every exception the adapter raises itself must
+satisfy (type, nothing chained, fixed text, no input text), checked over three
+finite sweeps (base URLs, call inputs, what the source sends); the exact type of
+every construction rejection; the type rules for the options; the zone and
+bracket cases of the base URL; and `MemoryError`. Every marker, body, header,
+host and defect is SYNTHETIC; hosts are `.invalid` or numeric and never
+contacted, and the IPv6 literals are never contacted either.
 """
 
 import gzip
 import json
 import logging
 import socket
+import traceback
 import warnings
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -1175,6 +1185,37 @@ def test_transport_defect_system_exit_propagates_unchanged(
     assert len(rig.script.requests) == 1
 
 
+@pytest.mark.parametrize("operation", OPERATIONS, ids=lambda o: o.name)
+@pytest.mark.parametrize(
+    "where",
+    [
+        pytest.param("before-the-status", id="before-the-status"),
+        pytest.param(
+            "from-the-body-after-one-chunk", id="from-the-body-after-one-chunk"
+        ),
+    ],
+)
+def test_transport_defect_memory_error_propagates_unchanged(
+    make_rig: Callable[..., Rig], operation: Operation, where: str
+) -> None:
+    # Revision 4 (audit R-9), SYNTHETIC: no limit on the size of a body was
+    # observed or is set, so exhausting memory is not a source outcome. It
+    # reaches the caller as the same object, and is not a `SourceError`.
+    memory_error = MemoryError("synthetic memory error")
+    outcome: Reply | Failure
+    if where == "before-the-status":
+        outcome = Failure(lambda request: memory_error)
+    else:
+        outcome = _reply(chunks=(operation.valid_body[:50],), error=memory_error)
+    rig = make_rig(outcome)
+
+    with pytest.raises(MemoryError) as info:
+        operation.call(rig.source)
+
+    assert info.value is memory_error
+    assert len(rig.script.requests) == 1
+
+
 # --- AC7: a complete 200 whose body is unusable -----------------------------
 
 # Every body below is SYNTHETIC, built from the fixtures or from small JSON
@@ -1829,6 +1870,20 @@ UNMAPPED_EXCEPTION_CASES: list[Any] = [
         (58.0,),
         id="system-exit-while-reading-a-429",
     ),
+    # Revision 4 (audit R-9): `MemoryError` is not a source outcome either, and it
+    # propagates unchanged next to `KeyboardInterrupt` and `SystemExit`.
+    pytest.param(
+        MemoryError,
+        _raised_by_the_transport,
+        (3.0,),
+        id="memory-error-before-the-status",
+    ),
+    pytest.param(
+        MemoryError,
+        _body_read_interrupted_after_a_429,
+        (58.0,),
+        id="memory-error-while-reading-a-429",
+    ),
 ]
 
 
@@ -2061,6 +2116,15 @@ REJECTED_BASE_URLS: tuple[tuple[str, str], ...] = (
     ("ipv6-zone", "https://[fe80::1%25eth0]/PLATAFORMA"),
     ("ipv6-zone-not-encoded", "https://[fe80::1%eth0]/PLATAFORMA"),
     ("no-room-for-the-request", "https://source.invalid/" + "p" * 65_500),
+    # Revision 4 (audit F-5 and R-2): the zone rule holds whatever characters the
+    # zone holds (the library raised a `UnicodeEncodeError` with the host text for
+    # a non-ASCII zone), and two bracketed hosts that `urlsplit` itself rejects.
+    ("ipv6-zone-non-ascii", "https://[fe80::1%25é]/PLATAFORMA"),
+    ("ipv6-zone-non-ascii-not-encoded", "https://[fe80::1%éth0]/PLATAFORMA"),
+    ("ipv6-zone-non-ascii-with-a-port", "https://[::1%25é]:8443/PLATAFORMA"),
+    ("ipv6-zone-zero-width-joiner", "https://[fe80::1%25‍]/PLATAFORMA"),
+    ("ipv6-unclosed-bracket", "https://[::1/PLATAFORMA"),
+    ("ipv6-invalid-literal", "https://[zz]/PLATAFORMA"),
 )
 
 
@@ -2480,6 +2544,557 @@ def test_no_leak_rejections_chain_no_library_exception(
         assert not isinstance(raised, httpx.InvalidURL | httpx.HTTPError), repr(
             type(raised)
         )
+
+
+# --- AC8, AC10 and AC15, Revision 4: the output invariant -------------------
+
+# SYNTHETIC marker. The sweeps put it in every slot through which text could
+# reach an exception: each part of a base URL, each argument of a call, and the
+# message of the HTTP library's own errors.
+LEAK_MARKER = "synthetic-leak-marker"
+
+# The output invariant (execution-plan.md § Output invariant, I1 to I4) binds
+# every exception the adapter raises itself: a source error, and a `ValueError`
+# or `RuntimeError` of the constructor or of a call.
+OUTPUT_ERROR_TYPES: tuple[type[BaseException], ...] = (
+    SourceTransportError,
+    SourceStatusError,
+    IncompleteResponseError,
+    ValueError,
+    RuntimeError,
+)
+# Source errors name the operation; option and input errors name the parameter.
+FIXED_MESSAGE_PREFIXES = (
+    "search_ocds: ",
+    "record: ",
+    "base_url ",
+    "connect_timeout ",
+    "read_timeout ",
+    "min_interval ",
+    "cooldown ",
+    "low_remaining_threshold ",
+    "transport ",
+    "now ",
+    "monotonic ",
+    "sleep ",
+    "year ",
+    "page ",
+    "buyer ",
+    "ocid ",
+)
+CLOSED_ADAPTER_MESSAGE = "the source adapter is closed"
+
+
+def _assert_output_invariant(
+    error: BaseException,
+    *markers: str,
+    check_response: bool = True,
+    prefix: str | None = None,
+) -> None:
+    """Assert I1 to I4 on an exception the adapter raised itself.
+
+    `markers` are the texts that must appear nowhere in the error. With
+    `check_response` the carried response is checked too; that is right for a
+    marker in what the source sends, and wrong for one in what the caller gave
+    (the response's `url` holds the caller's input as sent). `prefix` is the
+    start of the message that this case must have.
+    """
+    # I1: exactly one of five types, so a subclass the interpreter or a library
+    # raises (`UnicodeEncodeError`, `idna.IDNAError`) fails here.
+    assert type(error) in OUTPUT_ERROR_TYPES, f"I1: type {type(error).__name__}"
+    # I2: nothing chained.
+    assert error.__cause__ is None, f"I2: cause {type(error.__cause__).__name__}"
+    assert error.__context__ is None, f"I2: context {type(error.__context__).__name__}"
+    # I3: fixed text. The only argument is the message, printable ASCII, and it
+    # starts with the operation or the parameter it concerns.
+    message = str(error)
+    assert error.args == (message,), "I3: the message is the only argument"
+    assert message.isascii(), "I3: the message is ASCII"
+    assert message.isprintable(), "I3: the message is printable"
+    assert message == CLOSED_ADAPTER_MESSAGE or message.startswith(
+        FIXED_MESSAGE_PREFIXES
+    ), f"I3: the message starts with an unknown prefix ({message[:20]!r})"
+    if prefix is not None:
+        assert message.startswith(prefix), f"I3: the message does not start {prefix!r}"
+    # I4: no marker in the formatted traceback (which includes any chain), the
+    # representation or the arguments, nor in the response when it is checked.
+    texts = {
+        "traceback": "".join(traceback.format_exception(error)),
+        "repr": repr(error),
+        "args": repr(error.args),
+    }
+    response = error.response if isinstance(error, SourceError) else None
+    if check_response and response is not None:
+        texts["response repr"] = repr(response)
+        texts["response str"] = str(response)
+    for marker in markers:
+        for place, text in texts.items():
+            assert marker not in text, f"I4: marker {marker!r} is in the {place}"
+
+
+class ClosingStream(BodyStream):
+    """A `BodyStream` whose `close()` may fail (only a test double can do this).
+
+    The library does not map `ResponseStream.close()`, so no real transport
+    raises an `httpx` error from it. SYNTHETIC failures are injected here.
+    """
+
+    def __init__(
+        self,
+        chunks: Sequence[bytes],
+        error: BaseException | None,
+        close_error: BaseException | None,
+    ) -> None:
+        super().__init__(chunks, error)
+        self._close_error = close_error
+
+    def close(self) -> None:
+        if self._close_error is not None:
+            raise self._close_error
+
+
+@dataclass(frozen=True)
+class ClosingReply(Reply):
+    """A scripted answer whose stream fails when it is closed."""
+
+    close_error: BaseException | None = None
+
+    def to_response(self) -> httpx.Response:
+        raw_headers = [
+            (name.encode("latin-1"), value.encode("latin-1"))
+            for name, value in self.headers
+        ]
+        return httpx.Response(
+            self.status,
+            headers=raw_headers,
+            stream=ClosingStream(self.chunks, self.error, self.close_error),
+        )
+
+
+# Revision 4, base URLs (T2): nine places a marked payload can go, by sixteen
+# payloads that are each a character or a form found to be pathological. Each URL
+# either fails construction with a `ValueError` that satisfies I1 to I4, or is
+# accepted and then ends a call in a `SourceStatusError` that satisfies I1 to I3.
+BASE_URL_TEMPLATES = (
+    ("userinfo", "https://{p}@source.invalid/PLATAFORMA"),
+    ("first-label", "https://{p}.source.invalid/PLATAFORMA"),
+    ("last-labels", "https://source.{p}/PLATAFORMA"),
+    ("zone-encoded", "https://[fe80::1%25{p}]/PLATAFORMA"),
+    ("zone-not-encoded", "https://[fe80::1%{p}]/PLATAFORMA"),
+    ("ipv6-tail", "https://[::1{p}]/PLATAFORMA"),
+    ("port", "https://source.invalid:{p}/PLATAFORMA"),
+    ("path", "https://source.invalid/{p}"),
+    ("scheme", "{p}://source.invalid/PLATAFORMA"),
+)
+BASE_URL_PAYLOADS = (
+    ("marker", LEAK_MARKER),
+    ("e-acute", LEAK_MARKER + "é"),
+    ("arabic-indic-digit", LEAK_MARKER + "٣"),
+    ("zero-width-joiner", LEAK_MARKER + "‍"),
+    ("nul", LEAK_MARKER + "\x00"),
+    ("tab", LEAK_MARKER + "\t"),
+    ("newline", LEAK_MARKER + "\n"),
+    ("space", LEAK_MARKER + " "),
+    ("percent", LEAK_MARKER + "%"),
+    ("percent-zz", LEAK_MARKER + "%zz"),
+    ("percent-encoded-e-acute", LEAK_MARKER + "%C3%A9"),
+    ("open-bracket", LEAK_MARKER + "["),
+    ("close-bracket", LEAK_MARKER + "]"),
+    ("at-sign", LEAK_MARKER + "@"),
+    ("colon", LEAK_MARKER + ":"),
+    ("a-label-prefix", "xn--" + LEAK_MARKER),
+)
+BASE_URL_SWEEP = [
+    pytest.param(template.replace("{p}", payload), id=f"{place}-{kind}")
+    for place, template in BASE_URL_TEMPLATES
+    for kind, payload in BASE_URL_PAYLOADS
+]
+assert len(BASE_URL_SWEEP) == 9 * 16
+
+
+@pytest.mark.parametrize("base_url", BASE_URL_SWEEP)
+def test_no_leak_invariant_holds_for_every_base_url_in_the_sweep(
+    base_url: str,
+) -> None:
+    script = Script(_reply(b"synthetic not found", status=404))
+    clock = FakeClock()
+    try:
+        source = SercopSource(
+            base_url=base_url,
+            transport=httpx.MockTransport(script),
+            now=FakeWallClock(),
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+    except ValueError as rejected:
+        _assert_output_invariant(rejected, LEAK_MARKER, prefix="base_url ")
+        assert script.requests == []
+        return
+
+    # Accepted: the call reaches the transport and ends as the status error. The
+    # marker is in the request URL, so the response is not checked for it.
+    with source, pytest.raises(SourceStatusError) as info:
+        source.search_page(year=YEAR, buyer=BUYER, page=1)
+
+    _assert_output_invariant(
+        info.value, LEAK_MARKER, check_response=False, prefix="search_ocds: "
+    )
+    assert len(script.requests) == 1
+    assert clock.sleeps == []
+
+
+# Revision 4, call inputs (T3): a marked buyer or `ocid`, a year or page of each
+# pathological kind, and a call on a closed adapter. All SYNTHETIC. The explicit
+# ids matter: writing 10**5000 as text raises.
+CALL_INPUT_TEXTS = (
+    ("lone-surrogate-after-the-marker", LEAK_MARKER + "\ud800"),
+    ("lone-surrogate-before-the-marker", "\udfff" + LEAK_MARKER),
+    ("nul", LEAK_MARKER + "\x00"),
+    ("carriage-return-and-line-feed", LEAK_MARKER + "\r\n"),
+    ("e-acute", LEAK_MARKER + "é"),
+    ("repeated-4000-times", LEAK_MARKER * 4_000),
+    ("percent-first", "%" + LEAK_MARKER),
+    ("reserved-characters", LEAK_MARKER + "/../?#&="),
+)
+CALL_INPUT_NUMBERS: tuple[tuple[str, Any], ...] = (
+    ("zero", 0),
+    ("minus-one", -1),
+    ("true", True),
+    ("float", 2025.0),
+    ("text", "2025"),
+    ("none", None),
+    ("10-to-the-5000", 10**5000),
+    ("10-to-the-4300", 10**4300),
+)
+
+
+def _search_with(**changes: Any) -> Callable[[SercopSource], object]:
+    arguments: dict[str, Any] = {"year": YEAR, "buyer": BUYER, "page": 1} | changes
+
+    def call(source: SercopSource) -> object:
+        return source.search_page(**arguments)
+
+    return call
+
+
+def _record_with(ocid: Any) -> Callable[[SercopSource], object]:
+    def call(source: SercopSource) -> object:
+        return source.fetch_record(ocid)
+
+    return call
+
+
+def _after_close(call: Callable[[SercopSource], object]) -> Callable[..., object]:
+    def closed_call(source: SercopSource) -> object:
+        source.close()
+        return call(source)
+
+    return closed_call
+
+
+CALL_INPUT_SWEEP = [
+    *(
+        pytest.param(_search_with(buyer=value), id=f"buyer-{name}")
+        for name, value in CALL_INPUT_TEXTS
+    ),
+    *(
+        pytest.param(_record_with(value), id=f"ocid-{name}")
+        for name, value in CALL_INPUT_TEXTS
+    ),
+    *(
+        pytest.param(_search_with(year=value), id=f"year-{name}")
+        for name, value in CALL_INPUT_NUMBERS
+    ),
+    *(
+        pytest.param(_search_with(page=value), id=f"page-{name}")
+        for name, value in CALL_INPUT_NUMBERS
+    ),
+    pytest.param(_after_close(_search_with()), id="search-on-a-closed-adapter"),
+    pytest.param(_after_close(_record_with(OCID)), id="record-on-a-closed-adapter"),
+]
+assert len(CALL_INPUT_SWEEP) == 34
+
+
+@pytest.mark.parametrize("call", CALL_INPUT_SWEEP)
+def test_no_leak_invariant_holds_for_every_call_input_in_the_sweep(
+    make_rig: Callable[..., Rig], call: Callable[[SercopSource], object]
+) -> None:
+    rig = make_rig(_reply(b"synthetic not found", status=404))
+
+    with pytest.raises((SourceError, ValueError, RuntimeError)) as info:
+        call(rig.source)
+
+    # The marker is in what the caller gave, so the response is not checked.
+    error = info.value
+    _assert_output_invariant(error, LEAK_MARKER, check_response=False)
+    if type(error) in (ValueError, RuntimeError):
+        # Rejected input and a closed adapter leave no request and no wait.
+        assert rig.script.requests == []
+        assert rig.clock.sleeps == []
+
+
+# Revision 4, what the source sends (T4): the message of every concrete
+# `httpx.TransportError`, a status line, a header line and a chunk header, with
+# the shape the real protocol parser gives them, quoting rejected bytes. All
+# SYNTHETIC. The library's text must never reach the error, whole or in part.
+HEADER_LINE_TEXT = (
+    "illegal header line: bytearray(b'X-Synthetic: synthetic-header-marker\\x00')"
+)
+STATUS_LINE_TEXT = (
+    "illegal status line: bytearray(b'HTTP/1.1 2000 synthetic-header-marker')"
+)
+CHUNK_HEADER_TEXT = (
+    'illegal chunk header: bytearray(b\'{"total":3,"note":"synthetic-body-marker\')'
+)
+TRANSPORT_ERROR_TYPES: tuple[type[httpx.TransportError], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.CloseError,
+    httpx.RemoteProtocolError,
+    httpx.LocalProtocolError,
+    httpx.ProxyError,
+    httpx.UnsupportedProtocol,
+)
+TRANSPORT_ERROR_NAMES = tuple(
+    error_type.__name__ for error_type in TRANSPORT_ERROR_TYPES
+)
+
+# What a case gives the test: the scripted outcome, the class name that the
+# message of the transport error must hold (`None` for a status case), and the
+# bytes of the partial response (`None`: no response).
+SweepOutcome = tuple[Reply | Failure, str | None, bytes | None]
+
+
+@dataclass(frozen=True)
+class SourceSweepCase:
+    build: Callable[[Operation], SweepOutcome]
+
+
+def _raised_before_the_status(
+    error_type: type[httpx.TransportError], message: str
+) -> SourceSweepCase:
+    def build(operation: Operation) -> SweepOutcome:
+        failure = Failure(lambda request: error_type(message, request=request))
+        return failure, error_type.__name__, None
+
+    return SourceSweepCase(build)
+
+
+def _raised_while_reading_the_body(
+    error_type: type[httpx.TransportError], message: str
+) -> SourceSweepCase:
+    def build(operation: Operation) -> SweepOutcome:
+        outcome = _reply(chunks=(b'{"note":"',), error=error_type(message))
+        return outcome, error_type.__name__, b'{"note":"'
+
+    return SourceSweepCase(build)
+
+
+def _close_fails_after_a_complete_body(operation: Operation) -> SweepOutcome:
+    # Rule 3: the failure of the close that `iter_raw` performs after the last
+    # chunk is a body failure, and every byte is kept.
+    outcome = ClosingReply(
+        chunks=(operation.valid_body,),
+        close_error=httpx.ReadError(CHUNK_HEADER_TEXT),
+    )
+    return outcome, "ReadError", operation.valid_body
+
+
+def _close_fails_after_a_cut(operation: Operation) -> SweepOutcome:
+    # The first failure decides (`ReadError`). The `CloseError` of the close that
+    # follows is dropped, neither raised nor named, and nothing is chained.
+    outcome = ClosingReply(
+        chunks=(b"{",),
+        error=httpx.ReadError(CHUNK_HEADER_TEXT),
+        close_error=httpx.CloseError(CHUNK_HEADER_TEXT),
+    )
+    return outcome, "ReadError", b"{"
+
+
+def _a_status_with_markers(status: int) -> SourceSweepCase:
+    def build(operation: Operation) -> SweepOutcome:
+        headers: Headers = (
+            ("X-Synthetic", HEADER_MARKER),
+            ("Location", f"http://xn--/{HEADER_MARKER}"),
+            ("Set-Cookie", f"synthetic-session={HEADER_MARKER}"),
+        )
+        outcome = _reply(BODY_MARKER.encode("ascii"), status=status, headers=headers)
+        return outcome, None, None
+
+    return SourceSweepCase(build)
+
+
+SOURCE_SWEEP_CASES = [
+    *(
+        pytest.param(
+            _raised_before_the_status(error_type, HEADER_LINE_TEXT),
+            id=f"before-the-status-{error_type.__name__}",
+        )
+        for error_type in TRANSPORT_ERROR_TYPES
+    ),
+    pytest.param(
+        _raised_before_the_status(httpx.RemoteProtocolError, STATUS_LINE_TEXT),
+        id="before-the-status-illegal-status-line",
+    ),
+    *(
+        pytest.param(
+            _raised_while_reading_the_body(error_type, CHUNK_HEADER_TEXT),
+            id=f"during-the-body-{error_type.__name__}",
+        )
+        for error_type in (
+            httpx.ReadTimeout,
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+            httpx.CloseError,
+        )
+    ),
+    pytest.param(
+        SourceSweepCase(_close_fails_after_a_complete_body),
+        id="close-after-a-complete-body",
+    ),
+    pytest.param(SourceSweepCase(_close_fails_after_a_cut), id="close-after-cut"),
+    *(
+        pytest.param(_a_status_with_markers(status), id=f"status-{status}")
+        for status in (200, 301, 302, 303, 307, 308, 404, 429, 500, 600)
+    ),
+]
+assert len(SOURCE_SWEEP_CASES) == 29
+
+
+@pytest.mark.parametrize("operation", OPERATIONS, ids=lambda o: o.name)
+@pytest.mark.parametrize("case", SOURCE_SWEEP_CASES)
+def test_no_leak_invariant_holds_for_what_the_source_sends(
+    make_rig: Callable[..., Rig], operation: Operation, case: SourceSweepCase
+) -> None:
+    outcome, failure_class, partial = case.build(operation)
+    rig = make_rig(outcome)
+
+    error = _raise_through(operation, rig)
+
+    # The markers are in what the source sent, so the response is checked too.
+    _assert_output_invariant(error, BODY_MARKER, HEADER_MARKER)
+    assert len(rig.script.requests) == 1
+    if failure_class is not None:
+        assert isinstance(error, SourceTransportError)
+        # The message names the class of the failure that decided, and no other.
+        named = [name for name in TRANSPORT_ERROR_NAMES if name in str(error)]
+        assert named == [failure_class]
+        if partial is None:
+            assert error.response is None
+        else:
+            response = _response_of(error)
+            assert response.status == 200
+            assert response.content == partial
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [pytest.param(url, id=name) for name, url in REJECTED_BASE_URLS],
+)
+def test_invalid_base_url_raises_exactly_value_error_with_a_fixed_reason(
+    base_url: str,
+) -> None:
+    # Audit F-5: a `UnicodeEncodeError` is a `ValueError`, so `pytest.raises` alone
+    # would accept it. The type is exact, the reason starts with the option's
+    # name, nothing is chained, and the URL is nowhere in the error.
+    with pytest.raises(ValueError) as info:
+        SercopSource(base_url=base_url, transport=httpx.MockTransport(Script()))
+
+    error = info.value
+    assert type(error) is ValueError
+    _assert_output_invariant(error, prefix="base_url ")
+    _assert_base_url_not_echoed(error, base_url)
+
+
+# Revision 4 (audit R-8): the options of `test_invalid_construction_options_raise_
+# value_error` that do not set `base_url` (Revisions 1 and 3), with their
+# prefix, and one case for each type that was accepted or failed later. All
+# SYNTHETIC values.
+INVALID_OPTION_CASES = [
+    pytest.param({"min_interval": -1}, "min_interval ", id="min-interval-negative"),
+    pytest.param({"cooldown": -1}, "cooldown ", id="cooldown-negative"),
+    pytest.param({"connect_timeout": 0}, "connect_timeout ", id="connect-timeout-zero"),
+    pytest.param(
+        {"connect_timeout": -1}, "connect_timeout ", id="connect-timeout-negative"
+    ),
+    pytest.param({"read_timeout": 0}, "read_timeout ", id="read-timeout-zero"),
+    pytest.param({"read_timeout": -5}, "read_timeout ", id="read-timeout-negative"),
+    pytest.param(
+        {"low_remaining_threshold": True},
+        "low_remaining_threshold ",
+        id="threshold-true",
+    ),
+    pytest.param(
+        {"low_remaining_threshold": -1},
+        "low_remaining_threshold ",
+        id="threshold-negative",
+    ),
+    pytest.param(
+        {"low_remaining_threshold": 1.5},
+        "low_remaining_threshold ",
+        id="threshold-float",
+    ),
+    pytest.param(
+        {"connect_timeout": float("nan")}, "connect_timeout ", id="connect-timeout-nan"
+    ),
+    pytest.param(
+        {"connect_timeout": float("inf")}, "connect_timeout ", id="connect-timeout-inf"
+    ),
+    pytest.param(
+        {"connect_timeout": 86_401}, "connect_timeout ", id="connect-timeout-86401"
+    ),
+    pytest.param(
+        {"connect_timeout": True}, "connect_timeout ", id="connect-timeout-true"
+    ),
+    pytest.param(
+        {"read_timeout": float("nan")}, "read_timeout ", id="read-timeout-nan"
+    ),
+    pytest.param({"read_timeout": 1e10}, "read_timeout ", id="read-timeout-1e10"),
+    pytest.param(
+        {"min_interval": float("nan")}, "min_interval ", id="min-interval-nan"
+    ),
+    pytest.param(
+        {"min_interval": float("inf")}, "min_interval ", id="min-interval-inf"
+    ),
+    pytest.param({"min_interval": 86_401}, "min_interval ", id="min-interval-86401"),
+    pytest.param({"cooldown": float("nan")}, "cooldown ", id="cooldown-nan"),
+    pytest.param({"cooldown": float("inf")}, "cooldown ", id="cooldown-inf"),
+    pytest.param({"cooldown": "60"}, "cooldown ", id="cooldown-text"),
+    # The type rules: each of these was accepted, or failed with another type.
+    pytest.param({"base_url": 123}, "base_url ", id="base-url-int"),
+    pytest.param({"base_url": 1.5}, "base_url ", id="base-url-float"),
+    pytest.param({"base_url": None}, "base_url ", id="base-url-none"),
+    pytest.param(
+        {"base_url": b"https://source.invalid/PLATAFORMA"},
+        "base_url ",
+        id="base-url-bytes",
+    ),
+    pytest.param({"base_url": bytearray(b"x")}, "base_url ", id="base-url-bytearray"),
+    pytest.param({"base_url": ["x"]}, "base_url ", id="base-url-list"),
+    pytest.param({"transport": 5}, "transport ", id="transport-int"),
+    pytest.param({"transport": "mock"}, "transport ", id="transport-text"),
+    pytest.param({"now": 5}, "now ", id="now-int"),
+    pytest.param({"monotonic": 5}, "monotonic ", id="monotonic-int"),
+    pytest.param({"sleep": 5}, "sleep ", id="sleep-int"),
+]
+assert len(INVALID_OPTION_CASES) == 32
+
+
+@pytest.mark.parametrize(("options", "prefix"), INVALID_OPTION_CASES)
+def test_invalid_construction_option_raises_exactly_value_error_with_a_fixed_reason(
+    options: dict[str, Any], prefix: str
+) -> None:
+    with pytest.raises(ValueError) as info:
+        SercopSource(**({"transport": httpx.MockTransport(Script())} | options))
+
+    error = info.value
+    assert type(error) is ValueError
+    _assert_output_invariant(error, prefix=prefix)
 
 
 # --- AC11: no test reaches the network --------------------------------------
