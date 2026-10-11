@@ -1,13 +1,73 @@
 # Audit: SERCOP source adapter (F2)
 
-Current round: **round 2** (2026-10-10, intent Revision 3, commit `19ab9c3`). Its
-full report is § Round 2, after the round 1 sections. Round 1 is kept below exactly as
-written, as history; only its Tier Results table gained round 2 columns, because the
-procedure keeps a single Tier Results table.
+Current round: **round 3** (2026-10-10, intent Revision 4, commit `1cd2f1e`). Its
+full report is § Round 3, after § Round 2. Rounds 1 and 2 are kept below as written,
+as history. Two things changed outside § Round 3: the Tier Results table gained round 3
+columns, because the procedure keeps a single Tier Results table, and the round 2 row
+of the audit log is marked superseded.
 
 ## Final verdict
 
-REJECTED (round 2, current)
+REJECTED (round 3, current)
+
+**Summary**: Revision 4 closes every round 2 item, each rerun on the exact round 2
+inputs. F-5, F-6, F-7, R-2, R-8, R-9 and R-10 are resolved. On F-6, sixteen malformed
+framings were sent through the real `httpx`, `httpcore` and `h11` stack with no socket,
+and none leaves anything chained or any marker in the error. All 890 tests pass,
+locally and in CI on `1cd2f1e`, and the 569 tests of `19ab9c3` lost no line. The four
+mutants of round 2 (m1, m2, m2b, m2c) and eight new ones each fail tests. All 39 rows
+of § Exit check hold against the installed packages. Two inputs still break the letter
+of the new § Output invariant, which AC8 says holds "whatever the input". Neither one
+leaks response content. (F-8) A call made while the caller is handling an exception
+raises an error whose `__context__` is the caller's exception. Python sets that link
+itself, so no implementation can meet I2 as written. (F-9) An `httpx.HTTPError`
+subclass raised by an injected transport puts its class name verbatim into the
+message, which can then be non-ASCII or hold a marker (I3, I4). Only a test double can
+do this. Both are spec gaps for the architect. The rule that an unmet binding
+constraint blocks at any severity makes them blocking.
+
+**Critical Issues** (must fix before merge):
+- F-8 (LOW, blocking: AC8 Revision 4 "No exception the adapter raises has a
+  `__cause__` or a `__context__`, whatever its type"; plan § Output invariant I2;
+  AC10 Revision 4 "nothing is chained"; spec gap). Input: call
+  `source.search_page(...)` inside the caller's own `except KeyError:` block. The
+  `SourceStatusError` it raises has `__context__` set to the `KeyError`. The same
+  happens for a construction `ValueError`. F4's natural retry inside an
+  `except SourceError` block hits this. The context is the caller's own exception,
+  and its text is fixed, so nothing leaks. Route: the architect qualifies I2 (for
+  example "nothing chained by the adapter; a context that Python sets from an
+  exception the caller is handling belongs to the caller"). No code change is
+  implied.
+- F-9 (LOW, blocking: plan § Output invariant I3 "printable ASCII" and I4, which the
+  plan says hold "whatever the input"; plan § Outcome mapping Revision 4 prescribes
+  `type(failure).__name__`; § Exit check K11 maps an injected transport's
+  `httpx.HTTPError`; spec gap). Input: a `MockTransport` whose handler raises an
+  instance of `type("Falloé", (httpx.ReadError,), {})`, or of a class whose name holds
+  `synthetic-leak-marker`. The result is `SourceTransportError("search_ocds: the request
+  failed before a response arrived (Falloé)")`, which is not ASCII, or a message that
+  holds the marker. The real transport only raises `httpx`'s own ASCII class names.
+  Route: the architect either classifies this as a test-double case (as row 1.2 and
+  K19 already do for a status that cannot be written) or requires a name that the
+  library defines. No code workaround is proposed here.
+
+**Warnings** (should fix, not blocking):
+- F-10 (LOW): stale text of the F-7 kind. Intent § Revision history (Revision 4) says
+  "the header now reads `Approval: Pending`", but the header records the approval.
+  `tasks.md` § Status, O8c, § Working state and § Checkpoint describe the O2d tests
+  and the O5d code as uncommitted at `eb93264`, with the PR checks unavailable. Both
+  were committed and pushed as `1cd2f1e`, and both checks pass on it.
+
+**Recommendations** (nice to have):
+- R-11: one `SercopSource` instance keeps the capture and the pacing state of the
+  request in progress. Two threads that share an instance can mix the evidence of
+  their calls, with no error raised. Concurrency is out of scope (intent § Scope), but
+  no spec line or docstring says that an instance must not be shared. The architect
+  may add this to plan § Consumers (F4).
+- R-6 and R-7 stay accepted risks.
+
+### Round 2 final verdict (superseded by round 3)
+
+REJECTED (round 2)
 
 **Summary**: Revision 3 closes every round 1 item: F-1, F-2, F-3, F-4, R-1 and R-3 are
 resolved on the exact inputs that reproduced them, all 569 tests pass locally and in
@@ -327,17 +387,18 @@ row's broader `-k` for AC15 includes `userinfo`, and its no-echo assertion is no
 enough to catch chaining (R-1).
 
 Round 2 updated this table in place. The first seven columns are round 1's,
-unchanged. The last four columns hold round 2's results (Revision 3, `19ab9c3`).
+unchanged. The next four columns hold round 2's results (Revision 3, `19ab9c3`). Round 3
+added the last four (Revision 4, `1cd2f1e`).
 
-| Tier | Tests found | ACs verified | Setup matches § Validation | Ran | Status | Finding | Round 2: tests found | Round 2: ran | Round 2: status | Round 2: finding |
-|---|---|---|---|---|---|---|---|---|---|---|
-| unit (pytest) | 316 new (`test_sercop_source.py` 270, `test_source_response.py` 45, `test_layers.py` +1) and the 137 baseline tests, all in `tests/unit/` | AC1 to AC12, AC15 | Yes: only `uv sync --locked`; no dev dependency, `conftest.py`, config file or script added (`pyproject.toml` changes only the runtime `httpx` line; `uv.lock` +72/-0; `.github`, `.sdd`, `.claude` and `.gitignore` unchanged against `main`) | rerun (Windows, Python 3.13.9). Ubuntu CI on the audited state: `unavailable` | PASS | none at tier level; F-1 and F-2 are code or spec defects, R-1 | 569 = 137 baseline + 432 F2 (`test_sercop_source.py` 386, of which 116 are O2c; `test_source_response.py` 45; `test_layers.py` +1). Setup unchanged since `015a72b`: `pyproject.toml`, `uv.lock`, `.github`, `.sdd`, `.claude`, `.gitignore` show no diff | rerun (Windows, Python 3.13.9): `569 passed`; Ubuntu CI on `19ab9c3`: `569 passed` (reused from the run log, read in this round) | PARTIAL | F-6: the AC8 tests use a synthetic `httpx.RemoteProtocolError("synthetic cut-off")` and do not cover the messages that the real `h11` path produces; R-2 (m2c survives) |
-| unit (mypy, AC12) | the annotated `satisfies_port` assignment | AC12 | Yes | rerun | PASS | none | unchanged | rerun: `Success: no issues found in 20 source files` | PASS | none |
-| command (AC13) | the 13 points above | AC13 | Yes | rerun (point 13 partly reused) | PASS | R-4 | the 13 points, plus the Revision 3 `git diff --numstat 015a72b -- tests` | rerun (all 13) | PASS | R-4 closed |
-| manual (AC14) | inspection plus the two `git grep` commands | AC14 | Yes (none needed) | rerun | PASS | F-3 (LOW) | the same | rerun | PASS | F-3 closed |
-| manual (AC15) | the closed-set justification against `.venv` | AC15 | Yes | rerun | PARTIAL | F-2 | the closed-set justification and the 43 rows of § Family check against `.venv` | rerun | PARTIAL | F-5 (row 2.9) |
+| Tier | Tests found | ACs verified | Setup matches § Validation | Ran | Status | Finding | Round 2: tests found | Round 2: ran | Round 2: status | Round 2: finding | Round 3: tests found | Round 3: ran | Round 3: status | Round 3: finding |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| unit (pytest) | 316 new (`test_sercop_source.py` 270, `test_source_response.py` 45, `test_layers.py` +1) and the 137 baseline tests, all in `tests/unit/` | AC1 to AC12, AC15 | Yes: only `uv sync --locked`; no dev dependency, `conftest.py`, config file or script added (`pyproject.toml` changes only the runtime `httpx` line; `uv.lock` +72/-0; `.github`, `.sdd`, `.claude` and `.gitignore` unchanged against `main`) | rerun (Windows, Python 3.13.9). Ubuntu CI on the audited state: `unavailable` | PASS | none at tier level; F-1 and F-2 are code or spec defects, R-1 | 569 = 137 baseline + 432 F2 (`test_sercop_source.py` 386, of which 116 are O2c; `test_source_response.py` 45; `test_layers.py` +1). Setup unchanged since `015a72b`: `pyproject.toml`, `uv.lock`, `.github`, `.sdd`, `.claude`, `.gitignore` show no diff | rerun (Windows, Python 3.13.9): `569 passed`; Ubuntu CI on `19ab9c3`: `569 passed` (reused from the run log, read in this round) | PARTIAL | F-6: the AC8 tests use a synthetic `httpx.RemoteProtocolError("synthetic cut-off")` and do not cover the messages that the real `h11` path produces; R-2 (m2c survives) | 890 = 137 baseline + 753 F2 (`test_sercop_source.py` 707, of which 321 are O2d; `test_source_response.py` 45; `test_layers.py` +1). Every named O2d group exists with the § Validation counts (29, 32, 144, 34, 58, 6, plus 18 list runs). Setup unchanged since `19ab9c3`: `pyproject.toml`, `uv.lock`, `.github`, `.sdd`, `.claude` and `.gitignore` show no diff, and no test imports `httpcore` | rerun (Windows, Python 3.13.9): `890 passed`, and `890 passed` with `-W error`; Ubuntu CI on `1cd2f1e`: `890 passed` (read from the run log) | PASS | none at tier level. F-8 and F-9 are spec gaps, and no test can be named for them before the architect decides |
+| unit (mypy, AC12) | the annotated `satisfies_port` assignment | AC12 | Yes | rerun | PASS | none | unchanged | rerun: `Success: no issues found in 20 source files` | PASS | none | unchanged | rerun: `Success: no issues found in 20 source files` | PASS | none |
+| command (AC13) | the 13 points above | AC13 | Yes | rerun (point 13 partly reused) | PASS | R-4 | the 13 points, plus the Revision 3 `git diff --numstat 015a72b -- tests` | rerun (all 13) | PASS | R-4 closed | the 13 points, plus `git diff --numstat 19ab9c3 -- tests` | rerun (all 13) | PASS | none |
+| manual (AC14) | inspection plus the two `git grep` commands | AC14 | Yes (none needed) | rerun | PASS | F-3 (LOW) | the same | rerun | PASS | F-3 closed | the same | rerun | PASS | none |
+| manual (AC15) | the closed-set justification against `.venv` | AC15 | Yes | rerun | PARTIAL | F-2 | the closed-set justification and the 43 rows of § Family check against `.venv` | rerun | PARTIAL | F-5 (row 2.9) | the 39 rows of § Exit check against `.venv` and the code, and § Output invariant against every `raise` | rerun | PARTIAL | the 39 rows hold. The Output invariant does not hold for two inputs: F-8 (I2) and F-9 (I3, I4) |
 
-No test exists at a tier that § Validation does not name (round 1, and round 2).
+No test exists at a tier that § Validation does not name (rounds 1, 2 and 3).
 
 ## Conventions and feedback
 
@@ -816,9 +877,391 @@ are not coverage gaps.
 - The CI coverage figure (TOTAL 12 missed) differs from Windows (15 missed) only in F1
   lines. This was read from the log; the cause per line was not investigated.
 
+## Round 3
+
+### Scope of round 3
+
+Round 3, 2026-10-10. Auditor: `sdd-auditor` (harny-audit). Reviewed state: branch
+`feat/sercop-source-adapter` at `1cd2f1e`, base `main` `fff0f2d`. The commit is pushed,
+and `git status --short` is empty. Changes since round 2 (`19ab9c3`):
+- intent and plan Revision 4, approved and committed as `eb93264`;
+- 321 new tests (O2d, gate 2 approved);
+- `infrastructure/sercop_source.py` (O5d, 77 lines added and 12 deleted);
+- `tasks.md`.
+
+`git diff --stat 19ab9c3 HEAD` touches only the four spec files, the adapter and
+`tests/unit/test_sercop_source.py`. These show no diff against `19ab9c3`: `domain`,
+`application`, `interfaces`, F1, the fixtures, `docs/` (ADRs included), `README.md`,
+`CHANGELOG.md`, `pyproject.toml`, `uv.lock`, `.github`, `.sdd`, `.claude`,
+`.gitignore` and the other six test files.
+
+Read in full for this round:
+- `intent.md` and `execution-plan.md` Revision 4 (with the new § Output invariant and
+  § Exit check), `tasks.md`, and rounds 1 and 2 of this report;
+- the whole adapter at `1cd2f1e`, and the whole source and test diff `19ab9c3..HEAD`.
+
+Library sources read in `.venv/Lib/site-packages/`:
+- `httpx/_client.py`: `BaseClient.__init__`, `build_request`, `_merge_url`,
+  `_merge_cookies`, `_merge_headers`, `_build_request_auth`, `Client.__init__`,
+  `_init_transport`, `_transport_for_url`, `send`, `_send_handling_auth`,
+  `_send_handling_redirects`, `_send_single_request`, `close` and `__enter__`.
+- `httpx/_models.py`: `Headers.encoding`, `__contains__` and `__delitem__`;
+  `Request.__init__` and `_prepare`; `Response.__init__`, `http_version`,
+  `reason_phrase`, `iter_raw` and `close`; `Cookies.__init__`, `extract_cookies` and
+  `__bool__`; `_CookieCompatRequest`.
+- `httpx/_urls.py` (`host`, `raw_host`, `port`, `netloc`), `httpx/_urlparse.py`
+  (`MAX_URL_LENGTH`, the non-printable check, `encode_host`) and `httpx/_exceptions.py`
+  (`request_context`).
+- `httpx/_transports/default.py` (`map_httpcore_exceptions`, `ResponseStream`,
+  `HTTPTransport.__init__` and `handle_request`), `base.py` and `mock.py`.
+- `httpcore/_backends/mock.py`, `httpcore/_sync/http11.py:45`, `httpcore/_trace.py` and
+  `h11/_readers.py`.
+
+`grep -rn "def __del__"` finds none in `httpx`, `httpcore` or `h11`.
+
+No network access was made to SERCOP or to any resolver. Probes ran in the session
+scratchpad under `r3/`, outside the repository, with the `.venv` interpreter run with
+`-I`. They used `httpx.MockTransport`, and `httpcore.MockBackend` under a real
+`httpx.HTTPTransport`. A guard on `socket.socket.connect`, `connect_ex`,
+`create_connection` and `getaddrinfo` recorded 0 attempts in every probe. The only
+network access was to GitHub, through `gh`, to read the PR #16 checks and run logs.
+
+### Round 2 findings and reservations, rechecked
+
+| Item | Exact round 2 input, rerun now | Result on `1cd2f1e` | Status |
+|---|---|---|---|
+| F-5 (AC10) | `https://[fe80::1%25é]/PLATAFORMA`; `https://[fe80::1%éth0]/PLATAFORMA`; `https://[::1%25é]:8443/PLATAFORMA`; zones holding U+0663 and U+200D (the latter with and without a port); `https://[fe80::1%25synthétic-secret]/PLATAFORMA` | Each raises exactly `ValueError("base_url must not hold an IPv6 zone identifier")`: `args == (str(error),)`, printable ASCII, `__cause__` and `__context__` `None`, and no host or zone text in `str`, `repr`, `args` or the formatted traceback (probe, rerun). Further zone forms give the same reason: ASCII, an empty `%25`, a lone surrogate, an IPv4-mapped literal and a 64-character zone. `[fe80::1%]` and `[fe80::1%25%C3%A9]` give the `urlsplit` reason. Tests pass: the 4 new zone entries of `REJECTED_BASE_URLS`, in the 4 tests that read the list (U+200D verified by code point in the file), and the 6 zone cases of T2 (é, U+0663 and U+200D in both zone templates). Against the `19ab9c3` adapter, those 10 fail (rerun). Mutant m5, which switches the zone rule off, fails 18 tests | **Resolved** |
+| F-6 (AC8) | Through the real `httpx`, `httpcore` and `h11` over `httpcore.MockBackend`, both operations: a chunked `200` whose first chunk line is `{"total":3,"page":1,"note":"synthetic-body-marker` + 30,000 `x`; the header line `Authorization-Synthetic: synthetic-header-marker\x00`; the status line `HTTP/1.1 2000 synthetic-header-marker`. Also 13 other framings: a bad `Content-Length`, conflicting `Content-Length`, an unsupported `Transfer-Encoding`, an invalid header name, a continuation line first, a malformed chunk footer, a bad trailer, a body cut off before its `Content-Length`, a header block over 100 KiB, status `099`, a `101` without an upgrade, no bytes at all, and status `600` | Each of the 15 library failures ends in `SourceTransportError` with a chain of length 1 (no cause, no context). Its message names `RemoteProtocolError` and takes nothing else from the library. In all 16 framings, neither marker appears in `str`, `repr`, `args`, the formatted traceback, the response's `repr` or `str`, or any log record outside `httpcore`. Cut-off bodies keep their bytes (5 and 31). `600` gives rule 2, and a valid `429` the status error. T4 (58 cases) passes, and its 38 failure cases fail against `19ab9c3` (rerun). Mutants: m3 (rule 1 chained again) fails 26 tests, m4 (the library's text added to the rule 3 message) 12, and m8 (a base-class name in the message) 38. `git grep -n -e ") from " -e "raise .* from "` on the adapter -> exit 1 | **Resolved** |
+| F-7 | the five places that round 2 named | Intent § Constraints records the Revision 2 approval. Plan § Risks records both acceptances. Plan row 1.10 gives 100 KiB, and `httpcore/_sync/http11.py:45` confirms it. `tasks.md` § Status, the O8b record, O9b and § Checkpoint record `19ab9c3` as committed and pushed. Plan § Validation AC7 and AC10 describe the two N-11 forms | **Resolved** (new stale text of the same kind is F-10) |
+| R-2 | `https://[::1/PLATAFORMA`, `https://[zz]/PLATAFORMA` | The fixed `urlsplit` reason, with an empty chain. Both are `REJECTED_BASE_URLS` entries, so 4 tests read them. Mutant m2c now fails 2 of the 43 no-chain cases (`base-url-ipv6-unclosed-bracket`, `base-url-ipv6-invalid-literal`) and 38 tests of the suite. The branch is covered | **Resolved** |
+| R-8 (extended) | `base_url` `123`, plus the extension | `base_url` `123`, `1.5`, `None`, `bytes`, `bytearray`, a list or `object()` -> `ValueError("base_url must be a string")`. `transport` `5`, `"mock"` or `httpx.AsyncHTTPTransport()` -> `ValueError("transport must be None or an httpx.BaseTransport")`. `now`, `monotonic` or `sleep` `5` -> `ValueError("<name> must be callable")`. Each is exactly `ValueError`, with an empty chain (probe). The 11 type cases of `INVALID_OPTION_CASES` pass. Mutant m7 (no transport rule) fails 2 | **Resolved** |
+| R-9 (AC15) | `MemoryError` before the status, and during a `429` body | The same object both times, and the next call waits `[3.0]` and `[58.0]` (probe). The 2 `UNMAPPED_EXCEPTION_CASES` and 4 propagation tests pass | **Resolved** |
+| R-10 (AC15) | `close()` failing after a complete body and after a cut | A complete body whose `close()` raises `ReadError` gives `SourceTransportError(... (ReadError))` with all 40 bytes. A cut (`ReadError`) followed by a `close()` that raises `CloseError` gives `(ReadError)` with the 1 byte; the `CloseError` is neither raised nor named. Nothing is chained. Pacing is `[3.0]`, or `[58.0]` with `Remaining: 5` (probe). The `close-after-a-complete-body` and `close-after-cut` cases pass for both operations. Mutant m9 (the later failure escapes `_send`) fails 2. Also by probe: a `close()` raising `KeyboardInterrupt` after a complete body propagates and counts (`[58.0]`). One raising `OSError` (the R-6 shape) or `httpx.InvalidURL` propagates unchanged, as K15 says | **Resolved** |
+| R-6 | `ResponseStream.close()` not mapped | Unchanged (`_transports/default.py:130-132`) | Open (accepted risk) |
+| R-7 | `httpcore` `DEBUG` trace | AC8 Revision 4 now states it. Not re-probed in this round | Open (accepted risk) |
+
+### AC results (intent Revision 4)
+
+| AC | Status | Evidence (all rerun) |
+|---|---|---|
+| AC1 | PASS | `-k "search_success or query"` -> `13 passed`. `git grep "datosabiertos.compraspublicas.gob.ec/PLATAFORMA" -- src` -> 1 match, `sercop_source.py:57` |
+| AC2 | PASS | `-k record_success` -> `4 passed` |
+| AC3 | PASS | `-k "raw_response or store_shape or cookie"` -> `20 passed`. Whole suite with `-W error` -> `890 passed` |
+| AC4 | PASS | `-k "out_of_range or no_results"` -> `4 passed` |
+| AC5 | PASS | `-k status_error` -> `30 passed`. The T4 status cases (`301` to `308` with `Location: http://xn--/<marker>`) pass for both operations |
+| AC6 | PASS | `-k transport` -> `37 passed`. This includes 6 Revision 4 ids that hold the token, as `tasks.md` O2d explains. `h11` probe: `099`, `101` and cut-off bodies (above) |
+| AC7 | PASS | `-k incomplete` -> `53 passed` |
+| AC8 | **PARTIAL** | `-k no_leak` over both files -> `296 passed`; `-k invariant` -> `236 passed`. F-6 is resolved (above). **F-8**: I2 does not hold for a call made while the caller is handling an exception. **F-9**: I3 and I4 do not hold for a class name that an injected transport chooses |
+| AC9 | PASS | `-k pacing` -> `52 passed`, including the two `MemoryError` cases |
+| AC10 | PASS | `-k "timeout or accept_encoding or invalid"` over both files -> `239 passed`; `-k "documented_boundaries or non_ascii_base_path"` -> `18 passed`; `-k "exactly_value_error or invariant"` -> `297 passed`. F-5, R-2 and R-8 are resolved (above). Call input: `"\ud800"`, `"\udfff"`, `10**5000` and `10**4300` give the adapter's own `ValueError` naming the parameter (T3 and the fuzz below). AC10's "nothing is chained" shares the wording of F-8, which is filed once, under AC8 |
+| AC11 | PASS | `-k no_network` -> `2 passed`. `git grep -n -i --untracked -e datosabiertos -e compraspublicas -- tests` -> exit 1. `git grep -c "source.invalid" -- tests/unit/test_sercop_source.py` -> 43 |
+| AC12 | PASS | `tests/unit -k "layer or satisfies_port"` -> `9 passed`; `uv run mypy .` -> `Success: no issues found in 20 source files`. In `src`, `httpx` is imported only at `infrastructure/sercop_source.py:41`. `domain` and `application` show no diff against `19ab9c3` |
+| AC13 | PASS | the 13 points below |
+| AC14 | PASS | § AC14 below. Revision 4 changes no doc, and the docs claim nothing that Revision 4 changes |
+| AC15 | PASS | The AC15 `-k` -> `420 passed`. `git grep` finds no `except Exception` or `except BaseException`, and no `raise ... from`. `KeyboardInterrupt`, `SystemExit` and `MemoryError` propagate as the same object, and the attempt counts (tests, probe). All 39 rows of § Exit check hold (below). F-9 concerns the text of a message, not the closed set of types |
+
+### AC13, point by point (round 3)
+
+| # | Point | Command | Result (all rerun) |
+|---|---|---|---|
+| 1 | Every test passes | `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` | `890 passed`; TOTAL 590 statements, 14 missed, 98%; `sercop_source.py` 291 statements, 1 missed (547) |
+| 2 | `ruff check` | `uv run ruff check .` | `All checks passed!` |
+| 3 | `ruff format` | `uv run ruff format --check .` | `76 files already formatted` |
+| 4 | `mypy` | `uv run mypy .` | `Success: no issues found in 20 source files` |
+| 5 | Doctor | `uv run node .sdd/doctor/run-doctor.mjs` | `summary: 31 ok, 0 skipped, 0 warned, 0 failed` (with `OK pytest`) |
+| 6 | `--version` | `uv run ec-procurement-quality --version` | `ec-procurement-quality 0.1.0` |
+| 7 | Lock and sync | `uv sync --locked`; `uv lock --check` | `Checked 22 packages`; `Resolved 22 packages`; exit 0 for both |
+| 8 | Only `httpx` added | `git diff main -- pyproject.toml` | only `dependencies = []` -> `["httpx>=0.28.1",]` |
+| 9 | F1, `cli.py` and the package root unchanged | `git diff main --stat -- <the four F1 modules> interfaces/cli.py __init__.py` | empty |
+| 10 | Fixtures unchanged | `git log --oneline -- tests/fixtures/sercop`; `git diff --stat 19ab9c3 HEAD -- tests/fixtures` | `74b785d` only; empty |
+| 11 | Whitespace | `git diff --check`; `git diff main --check` | clean; clean |
+| 12 | No real host in tests | `git grep -n -i --untracked -e datosabiertos -e compraspublicas -- tests` | no match, exit 1 |
+| 13 | Nothing removed or weakened | `git diff --numstat 19ab9c3 -- tests`; `git diff --numstat 015a72b -- tests`; the added lines searched for `skip`, `xfail`, `filterwarnings`, `importorskip`, `monkeypatch`, `conftest` and `httpcore`; repeated top-level `def`, `class` and constant names searched | `615 0 tests/unit/test_sercop_source.py`; `1073 0 tests/unit/test_sercop_source.py`, and no other test file differs; no match (exit 1); none repeated. 707 tests are collected in the file and 890 in total. The 569 tests of `19ab9c3` pass inside them unchanged |
+
+Red evidence for O2d, checked independently: the current tests run against the
+`19ab9c3` adapter, on a scratch copy whose imported path was printed and confirmed,
+give `65 failed, 825 passed`. The failures are 4 `exactly_value_error` base URLs, 9
+option cases, 6 T2 cases, 8 T3 cases and 38 T4 cases. That is the 65 that `tasks.md`
+O2d records, per group.
+
+### AC14 and the doc claims (round 3)
+
+| Check | Result (rerun) |
+|---|---|
+| `git grep -n "httpx" -- README.md CHANGELOG.md` | `CHANGELOG.md` 40, 47, 50; `README.md` 72, 81 |
+| `git grep -n "No source access" -- README.md` | no match, exit 1 |
+| README "Planned"; `docs/architecture.md` § Open questions | unchanged since round 2, and still accurate |
+| Claims about chaining, causes, class names or the invariant | `git grep -n -i -w -e chain -e chained -e cause -e __cause__ -e "class name" -e invariant -- README.md CHANGELOG.md docs/architecture.md` -> exit 1. No doc states anything Revision 4 changed, so `tasks.md`'s "no README or CHANGELOG change is needed" holds |
+| Claims not backed by a test | none found. README's "its tests use simulated transports and never reach the network" stays true: the `no_network` proof test uses the real transport, and the guard stops it |
+
+### § Exit check, row by row against the installed packages and the code
+
+Status: **holds** means that the row's statement, the exception types it lists and
+the way each ends were confirmed in the named source, test or probe.
+
+| Row | Checked in | Result |
+|---|---|---|
+| C1 | `_require_base_url` (`isinstance(base_url, str)` before `urlsplit`); probe with 7 types | holds |
+| C2 | `urlsplit` `ValueError` caught at line 206, reason returned; probes: unclosed bracket, invalid literal, NFKC netloc (`／`, `℀`) | holds |
+| C3 | `SplitResult.hostname` (partition on `%`, `lower`) and the `str` operations raise nothing | holds |
+| C4 | `_is_port`: `isascii` and `isdigit` and length checked before `int` | holds |
+| C5 | `httpx.URL` raises `InvalidURL` (a lone surrogate in the host, through IDNA) or a `ValueError` subclass (`UnicodeEncodeError` for a lone surrogate in the path, from its own percent-encoding); both are caught at line 227 (probe) | holds |
+| C6 | `_urls.py:188-191` (`idna.decode` only for an `xn--` host), caught at line 233 | holds |
+| C7 | the zone rule (line 235) runs on `url.host` before `url.raw_host` (line 241). `url.host` encodes nothing. For a host that `httpx` accepts, `":"` and `"%"` are both in it only for an IPv6 literal with a scope. A non-bracketed host cannot hold `":"` in the `httpx` authority grammar, and `ipaddress` needs `%` for a scope. Probe of 15 zone forms, plus the fuzz | holds (F-5 closed) |
+| C8, C9, C10 | `_host_problem` string operations; `_search_url` and `_record_url` with constant ASCII arguments; `_library_accepts` catches `(InvalidURL, ValueError)` | holds |
+| C11, C12 | `_require_seconds`, threshold check; `INVALID_OPTION_CASES` | holds |
+| C13 | `_require_transport`, `_require_callable`; probe | holds (R-8 closed) |
+| C14 | `Client.__init__` with a transport: `allow_env_proxies` false (`_client.py:685`), `Cookies(_NoCookieJar())` keeps the jar (`_models.py:1099`), `Timeout` and `Headers` take validated values | holds |
+| C15 | `_client.py:685-696`, `HTTPTransport.__init__` (`create_ssl_context`, `Proxy`, `ImportError` for SOCKS) | holds; untested by design (environment) |
+| C16 | `MemoryError`, `KeyboardInterrupt` and `SystemExit` are never caught (no broad `except`) | holds |
+| K1, K2 | `_require_open`, `_require_positive_int`, `_require_text`; T3 | holds |
+| K3, K4 | `str(value)` and `value.encode("utf-8")` tried in step 2, with the raise after the `try` (lines 91-97, 105-111). After step 2, `_search_url` and `_record_url` cannot raise: the f-string of a checked `int` and `quote` of encodable text. T3 and the call fuzz | holds |
+| K5 | `build_request`: `_merge_url` (`URL`), `_merge_headers`, `_merge_cookies` (`Cookies.__bool__` iterates an empty jar), `Request.__init__` and `_prepare` (`url.host`, `url.netloc`, both safe once C6 and C7 hold). Only `InvalidURL` for length, caught at line 413, with the raise after the `try` | holds |
+| K6 | `_wait_if_due`: injected callables propagate; with `time.sleep` the wait is at most `cooldown` | holds |
+| K7 | `_attempt` `finally` (lines 427-432); `Decimal(text) < threshold` on ASCII digits | holds |
+| K8 | `send`: closed check (pre-empted by K1), `_set_timeout`, `_build_request_auth` (no user information, so `Auth()`) | holds |
+| K9 | `_transport_for_url`: no mounts with an injected transport; with `NO_PROXY`, `URLPattern.matches` reads `url.host` (C6) | holds |
+| K10 | `HTTPTransport.handle_request`: `raw_scheme`, `raw_host` and `raw_path` are ASCII after C7, and the pool runs under `map_httpcore_exceptions` (`str(exc)` and `from exc`). `h11` probe over `MockBackend`: 16 malformed framings, nothing chained, the class named for the 15 library failures | holds (F-6 closed) |
+| K11 | injected transport: an `httpx.HTTPError` is mapped, and anything else propagates (`SyntheticTransportDefect`, `SystemExit`, `KeyboardInterrupt`, `MemoryError`; probe: `InvalidURL` from `close()`) | holds as to types and endings; the class name of a double's error reaches the message (F-9) |
+| K12 | `extract_cookies` (`_NoCookieJar` does nothing; `_CookieCompatRequest` on an absolute URL), `logger.info` | holds |
+| K13 | `Headers.encoding` falls back to ISO-8859-1; `__contains__` before `__delitem__` | holds |
+| K14 | `iter_raw` (`_models.py:935-959`) under `request_context`; the close after the last chunk is inside the hook's `try` | holds |
+| K15 | `Response.close` sets `is_closed` before `stream.close()`, so the hook's second close is a no-op after a close failure in `iter_raw`; a later `httpx.HTTPError` is dropped in `_send` (line 475); probe | holds (R-10 closed) |
+| K16 | `_send_handling_redirects`: hooks (981-982), then `has_redirect_location` is false (`Location` removed); `_send_handling_auth`: `StopIteration` returns | holds |
+| K17 | `_send` keeps the failure when no status arrived | holds |
+| K18 | `_attempt_from_capture`: injected `now` propagates | holds |
+| K19 | `_outcome`: the status from `h11` has three digits; a status of 10**5000 from a double raises the interpreter's `ValueError` (probe), as the row says | holds; the class-name part is F-9 |
+| K20, K21 | `_decode_json_object` catches `ValueError` and `RecursionError` and returns a verdict; the completeness checks raise nothing | holds |
+| X1 | `Client.close` sets `CLOSED` before `transport.close()`; C13 guarantees `close` exists | holds |
+| X2 | `__enter__` returns `self` | holds |
+
+Result: all 39 rows hold for the exception types and the way each exit ends. The
+class-name text of K11 and K19 is a § Output invariant matter (F-9).
+
+### § Output invariant, against every `raise` in the adapter
+
+Raise sites:
+- call input: lines 87, 97, 102 and 111;
+- construction: 118, 123, 137, 139, 141, 143, 257, 260 and 337;
+- the request URL: 416;
+- a closed adapter: 532;
+- `_outcome`: 567, 573, 578, 585 and 592.
+
+Line 607 raises inside `json.loads` and is caught at line 621, so it never leaves the
+adapter. No `raise` sits inside an `except` block. Each `except` block (lines 93, 107,
+193, 206, 227, 233, 413, 475, 502 and 621) passes, returns or stores the error, and
+the two `finally` blocks (429, 504) raise nothing of their own.
+
+| Rule | Result | Evidence |
+|---|---|---|
+| I1 type | holds | every site names one of the five types; the fuzz below; T2 to T4 |
+| I2 nothing chained | holds for every call made outside an exception handler. **F-8** otherwise | tests, probes, fuzz; the F-8 reproducer |
+| I3 fixed text | holds for every message built from fixed text, the operation, a parameter name, `_MAX_SECONDS`, a status from `h11` and the class name of an `httpx` exception. **F-9** for a class that a double defines | probes; T2 to T4; the F-9 reproducer |
+| I4 no input text | holds for every input slot of the sweeps and the fuzz. **F-9**: a marker in a double's class name reaches the message | the same |
+
+Fuzz (seed 33, offline, scratchpad `r3/fuzz_r3b.py`), with a guard that recorded 0 attempts:
+- Base URLs: 12,000 built from 45 pathological pieces (non-ASCII letters and digits,
+  U+200D, NUL, tab, newline, `%`, `%zz`, `%25`, brackets, `@`, `:`, `xn--`, labels of
+  63 and 64, a lone surrogate, NFKC-sensitive characters) in the scheme, userinfo,
+  host, IPv6 zone, port and path. 972 were accepted and 11,028 rejected. Every
+  rejection satisfies I1 to I4, with the marker absent from the traceback, `repr`
+  and `args`. Every accepted host passes `str.encode("idna")` (what `getaddrinfo`
+  applies) and `ssl` `wrap_bio(server_hostname=...)` with memory BIOs. Each of its two
+  calls, through the real `HTTPTransport` over `MockBackend`, ends in
+  `SourceStatusError` satisfying I1 to I3. No violations.
+- Call inputs: 8,000 random buyers and `ocid`s (lone surrogates, NUL, CR LF, emoji,
+  BOM, `%`, reserved characters, empty), and years and pages (`0`, `-1`, `True`, a
+  float, text, `None`, `10**5000`, `10**4300`, `10**4299`, `2**63`). The results:
+  4,675 `ValueError` and 3,325 `SourceStatusError`, all satisfying I1 to I4. No
+  violations.
+
+A first run used a `MockTransport` reply built with `content=` and gave
+`StreamConsumed` on every call. The plan already names that a test-double defect
+(§ Closed-set justification), so the run was repeated with `stream=`.
+
+### Beyond § Exit check: what the table does not cover
+
+| Path | What was checked | Result |
+|---|---|---|
+| Class name in the message (`_failure_class`, `type(failure).__name__`) | A `MockTransport` raising an instance of `type(name, (httpx.ReadError,), {})` before the status and during the body. The names tried were `synthetic-leak-marker`, `Falloé`, `Bad\nName`, 200 `X`, and a class whose `__name__` was reassigned after creation. `type()` refuses NUL. The real transport maps only to `httpx`'s own classes (`HTTPCORE_EXC_MAP`), whose names are fixed ASCII | **F-9**: the messages are `... (synthetic-leak-marker)`, `... (Falloé)`, `... (Bad\nName)` and a 200-character name, so not ASCII, not printable, or holding the marker |
+| The caller's own exception context | `search_page` called inside the caller's `except KeyError:` raises `SourceStatusError` with `__context__` = the `KeyError`. The same holds for a construction `ValueError`. CPython sets the context at the `raise` from the exception being handled, and `from None` only suppresses its display | **F-8** |
+| Per-instance state shared between calls (`self._capture`, the pacing fields) | Re-entry: a transport that calls `fetch_record` from inside its own request. Two threads on one instance, interleaved by an event; 3 runs, same result | The outer response's content is the inner body followed by the outer body. With two threads, one call's `RawResponse` has an empty body (`b''`) while the other keeps its own. Nothing is raised. Concurrency is out of scope (intent § Scope): **R-11** |
+| `__del__` | `grep` | none in the adapter, `httpx`, `httpcore` or `h11` |
+| Hooks and the cookie jar | `event_hooks` holds only the adapter's response hook. `_NoCookieJar` takes nothing, and `Cookies.__bool__` is false, so no `Cookie` header is built | no gap |
+| `Decimal`, `json`, `codecs`, `quote` | `Decimal` of ASCII digits is exact. `json.loads` errors are caught, and `MemoryError` propagates. Latin-1 decoding cannot fail. The adapter's own UTF-8 check runs before `quote`, and `content.decode("utf-8")` is caught | no gap |
+| `urlsplit`, `host`, `raw_host`, `port`, `netloc` | C2, C6 and C7; `port` is read only by the transport, after the port rule; `netloc` encodes an ASCII host | no gap |
+| The type rules and compatibility | Accepted: a `BaseTransport` subclass, `HTTPTransport`, `MockTransport`, `unittest.mock.Mock(spec=httpx.BaseTransport)`, and a `str` subclass as `base_url`. Rejected: a duck-typed object with `handle_request` and `close`, a bare `MagicMock()`, and `AsyncHTTPTransport()`. The plan requires `isinstance(..., httpx.BaseTransport)` (§ Binding constraints, option types) | compliant; the duck-typed double is a deliberate break (N-14) |
+| `str` and `int` subclasses | Accepted by the spec. A subclass that overrides `__format__` changes the text the URL is built from after the checks ran | caller code; N-14 |
+| A status that cannot be written, from a double | `httpx.Response(10**5000)` -> the interpreter's `ValueError` from `_outcome` | as row 1.2 and K19 say |
+| The reason phrase | `HTTP/1.1 200 synthetic-header-marker\x01`: `h11` accepts it, and the marker reaches the `httpx` `INFO` record | known, N-9 of round 2 (status line, not a header or body value) |
+| `trace` extension | the request's extensions hold only `timeout` | no `httpcore` trace callback |
+
+### Points the brief asked to review
+
+- The two `# noqa: TRY004` (lines 118 and 257). ruff's TRY004 asks for `TypeError` after a
+  type check. AC10 Revision 4 requires exactly `ValueError` for every construction
+  rejection, so each suppression is justified, targeted and commented, and the ruff
+  configuration did not change. ruff does not flag the other type checks
+  (`_require_transport`, `_require_seconds`, `_require_positive_int`): `ruff check`
+  passes with no suppression on them. Targeted `noqa` already appears in the F1 tests.
+  Not a convention violation.
+- Line 547 (`return ""` in `_failure_class` for a failure of `None`). It is reached only
+  through rule 1 when `send` returns normally with no status captured. In `httpx`
+  0.28.1, `_send_handling_redirects` runs the response hooks on every response it
+  returns (lines 979-982), and the hook sets the status first. Rule 3 needs a failure.
+  So the line is unreachable, a defensive branch, not a dead test seam. CI shows the
+  same single miss.
+- The zone rule on `url.host` (the executor's choice). The plan suggested the bracketed
+  part of the `urlsplit` netloc, and allowed any mechanism that meets the rule. The
+  binding requirement is that nothing encodes the host as ASCII before the rule runs.
+  `httpx.URL.host` returns the parsed text and decodes only an `xn--` host, so it holds.
+  The rule catches exactly the hosts the plan names (C7 above). This is a compliant
+  alternative. Mutant m5 shows that the tests pin it.
+
+### No regressions against AC8, AC12 and AC15
+
+- AC8: every message is fixed text plus the operation, a parameter name, a status
+  number or a class name. `RawResponse.__repr__` is unchanged (no `domain` diff). The
+  adapter has no `logging`, `print` or `sys.std*` (grep exit 1). Nothing is chained,
+  and no `JSONDecodeError` or `UnicodeDecodeError` can be reached (`-k no_leak`, T4,
+  the `h11` probe). The only new text paths are F-8 and F-9.
+- AC12: `httpx` is imported only in `infrastructure` (`sercop_source.py:41`). `domain`,
+  `application`, F1, `cli.py` and the fixtures are unchanged.
+- AC15: no `except Exception` or `except BaseException` (grep exit 1). The `except`
+  clauses name `ValueError`, `UnicodeEncodeError`, `httpx.InvalidURL`,
+  `httpx.HTTPError` or `RecursionError` only. The pacing `try`/`finally` (lines
+  427-432) still holds only `self._send(request)`, so every exit after the hand-off
+  counts: `KeyboardInterrupt`, `SystemExit` and `MemoryError` (tests), and a
+  `KeyboardInterrupt` raised by `close()` (probe, `[58.0]`).
+
+### Lines the tests do not cover (round 3)
+
+Coverage, rerun on Windows: `sercop_source.py` has 291 statements and 1 miss (547), and
+TOTAL is 590 statements, 14 missed, 98%. Ubuntu CI on `1cd2f1e` gives the same adapter
+miss and TOTAL 11 missed (98%). The difference is in F1, as in round 2. Line 547 is
+assessed above. No other behavior that the spec requires lacks a test, apart from
+C15, which has no test by design.
+
+### Doc coherence and PR checks
+
+- README, CHANGELOG and `docs/architecture.md` claim nothing that the tests do not
+  verify (§ AC14 above).
+- Specs: the § Exit check counts are consistent (16 C rows, 21 K rows and 2 X rows make
+  39, of which 27 hold unchanged and 12 change). The § Validation counts match the tests
+  (29, 32, 144, 34, 58 and 6, plus 18 list runs, total 321). Stale text: F-10.
+- `tasks.md` records the O2d and O5d numbers that this round reproduced: `890`, `707`,
+  `615 0`, `1073 0`, red `65 failed, 825 passed`, the single uncovered line 547. O9c is
+  `[ ]`, which is correct before this verdict. The auditor writes only `audit.md`.
+- PR checks, read on 2026-10-10. `gh pr checks 16` -> `feedback pass 10s`,
+  `tests pass 14s`. `gh pr view 16 --json headRefOid,state,statusCheckRollup` ->
+  `headRefOid` `1cd2f1e6816930cadc5a04f95a6388aba0be6f46` (the audited HEAD), `state`
+  `OPEN`, and both checks `COMPLETED` with `SUCCESS`. The run logs, read with
+  `gh run view --log`:
+  - `feedback` (run 38109963964) prints `harny-feedback: 2 of 2 command(s) ran, 0
+    skipped.`;
+  - `Tests` (run 38109963941) prints `890 passed`, with `sercop_source.py` 291
+    statements, 1 missed (547).
+
+  `gh run view --json headSha` gives `1cd2f1e` for both runs.
+
+### Conventions and feedback (round 3)
+
+- `harny-standards`, against `AGENTS.md`. The layer boundaries hold. Raw responses are
+  not overwritten. No SERCOP contract is invented. No dependency, infrastructure,
+  framework or service was added. No secret or dataset was added: markers, hosts and
+  bodies are SYNTHETIC, and hosts are `.invalid`, numeric or never contacted.
+  Verification is reported. No violation. No AI attribution appears in the 12 branch
+  commits since `main` (grep count 0) or in the changed files (grep exit 1).
+- `harny-feedback`: the CI `feedback` job ran 2 of 2 commands on `1cd2f1e` and passed.
+  `ruff` and `mypy` were rerun here only as AC13 evidence. Whether the per-turn hook
+  fired during O2d and O5d is `unavailable`, because it leaves no persistent log.
+
+### Findings (round 3)
+
+| Id | Severity | Finding and evidence | Closure condition | Status |
+|---|---|---|---|---|
+| F-5, F-6, F-7 | (round 2) | rechecked above | met | **Resolved** |
+| F-8 | LOW (blocking: AC8 Revision 4 and plan § Output invariant I2 are not met for one calling context; spec gap) | AC8 Revision 4: "No exception the adapter raises has a `__cause__` or a `__context__`, whatever its type". Plan § Output invariant I2: "`error.__cause__ is None and error.__context__ is None`", a property that "the tests check structurally, whatever the input". AC10 Revision 4: "nothing is chained". Reproducer (probe, rerun): `try: raise KeyError("callers-own-error")` / `except KeyError: source.search_page(year=2025, buyer="a", page=1)` against a `404` -> `SourceStatusError` whose `__context__` is that `KeyError`. Inside the same handler, `SercopSource(base_url="https://[::1/P")` -> `ValueError` with the same context. CPython links the exception being handled at every `raise`, and `raise ... from None` only hides the link. No implementation can meet I2 for a call made inside a handler. F4's retry inside `except SourceError` is such a call: the second error then carries the first. Nothing leaks, because the context is the caller's own exception and its text is fixed. The suite checks I2 only outside handlers | The architect revises I2 (with AC8 and AC10 Revision 4) to say what the adapter controls. For example: the adapter chains nothing of its own, and any `__context__` is an exception the caller was already handling. The architect also decides whether § Consumers (F4) should say so. If the wording changes only, no code or test change follows. Then the auditor rechecks. No code workaround is proposed here | Open |
+| F-9 | LOW (blocking: plan § Output invariant I3 and I4, stated for "whatever the input", are not met for an input that the spec maps instead of treating as a test-double defect; spec gap) | Plan § Outcome mapping Revision 4 prescribes `type(failure).__name__` in the message of rules 1 and 3. § Exit check K11 maps every `httpx.HTTPError` from an injected transport, and K19 lists only the long status as a test-double exception. I3 requires a printable ASCII message whose only variable parts are a status and "the class name of an `httpx.HTTPError`". I4 requires that no marker reaches the message. Reproducer (probe, rerun, `MockTransport`, both places): a handler that raises `type("Falloé", (httpx.ReadError,), {})("plain")` -> `SourceTransportError("search_ocds: the request failed before a response arrived (Falloé)")`, which is not ASCII. A class named `Bad\nName` gives a message that is not printable. A class named `synthetic-leak-marker` puts the marker in the message and the traceback. A non-ASCII class name is a legal Python identifier and plausible in a Spanish-language test suite. Only an injected transport can produce this: the real stack maps only to `httpx`'s own ASCII class names. No source content can reach a class name | The architect decides, in a spec revision recorded in `tasks.md`. One option is to classify a double's own `httpx.HTTPError` subclass as a test-double case for I3 and I4, as row 1.2 and K19 already do for a status that cannot be written, and to narrow I3 to "the class name of an exception the HTTP library defines". The other is to require that the message names a class the library itself defines, with a § Validation case and red evidence. Then the auditor rechecks. No code workaround is proposed here | Open |
+| F-10 | LOW | Spec consistency (stale text of the F-7 kind). Intent § Revision history, Revision 4: "because the header now reads `Approval: Pending`", but the header reads "Approved revision 4 by Vladimirjon on 2026-10-10". `tasks.md` § Status (lines 8-10: "the O5d code and the O2d tests uncommitted", "are not committed"), O8c ("PR #16 ... **unavailable** for this state ... until the human commits and pushes"), § Working state ("Uncommitted in the working tree") and § Checkpoint ("with the Revision 4 code and tests uncommitted ... The PR checks are unavailable"). The human committed and pushed this state as `1cd2f1e`, and both checks pass on it (§ Doc coherence above) | The architect updates the intent sentence or marks it as drafting-time history. Whoever owns `tasks.md` records `1cd2f1e` and the PR checks, as O7c did for `19ab9c3`. Checked by reading | Open |
+
+### Reservations (round 3)
+
+- R-2, R-8, R-9 and R-10: resolved (above).
+- R-6 (carried, accepted risk): `ResponseStream.close()` is not mapped.
+- R-7 (carried, accepted risk, now stated in AC8): `httpcore` writes header values at
+  `DEBUG`.
+- R-11 (new): one `SercopSource` holds the capture and the pacing state of the request
+  in progress (`self._capture`, `_last_attempt_end`, `_cooldown_required`). It is not
+  safe to share between threads, or to re-enter from inside a call, and misuse fails
+  silently: the probe gives one call an empty body, and a re-entered call a body that
+  mixes two responses. Intent § Scope puts concurrency out of scope, so this is not a
+  finding. But neither the specs nor the adapter's docstrings say that an instance must
+  not be shared, while the `httpx.Client` underneath is documented as thread-safe, and
+  the failure corrupts evidence (ADR 0005) instead of raising. The architect may add one
+  line to plan § Consumers (F4): one instance per thread, never called from its own
+  transport or callables.
+
+### Notes (round 3)
+
+- N-13: line 547 is unreachable and defensive (above). Statement coverage counts it as
+  the adapter's only miss, locally and in CI.
+- N-14: the type rules change compatibility in the way the plan chose. A duck-typed
+  transport and a bare `MagicMock()` are now rejected, and `Mock(spec=httpx.BaseTransport)`
+  is accepted. `str` and `int` subclasses stay accepted. One that overrides
+  `__format__` or `__str__` can build a request URL other than the checked text.
+  That is the caller's code, outside any input rule.
+- N-15: the T4 sweep injects `httpx` exceptions with the message shape of the real
+  `h11` path, and no test imports `httpcore`. This round's `MockBackend` probe confirms
+  that the real stack produces exactly those classes and ends the same way. The sweep
+  therefore stands for the real path, and its structural I2 check does not depend on
+  the text.
+- N-16: `-k` tokens also match parameter ids, so several focused counts include
+  Revision 4 cases (`transport` 37, the AC10 command 239). `tasks.md` O2d explains this,
+  and the counts were reproduced exactly.
+
+### Commands run in round 3 (all rerun, Windows, Python 3.13.9, `uv`, repository root)
+
+| Command | Result |
+|---|---|
+| `git status --short`; `git rev-parse HEAD` | empty; `1cd2f1e6816930cadc5a04f95a6388aba0be6f46` |
+| `git diff --stat 19ab9c3 HEAD`; `git diff --stat 19ab9c3 HEAD -- src`; `git diff --stat 19ab9c3 -- <domain, application, interfaces, fixtures, docs/adr, pyproject.toml, uv.lock, test_layers.py, test_source_response.py, README.md, CHANGELOG.md, docs/architecture.md, .github, .sdd, .claude, .gitignore>` | 6 files (4 specs, the adapter, the test file); adapter only, `77 +, 12 -`; empty |
+| `git diff --numstat 19ab9c3 -- tests`; `git diff --numstat 015a72b -- tests` | `615 0`; `1073 0` |
+| `uv sync --locked`; `uv lock --check` | `Checked 22 packages`; `Resolved 22 packages` |
+| `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` | `890 passed`; TOTAL 590/14/98%; `sercop_source.py` 291/1 (547) |
+| `uv run pytest tests -W error` | `890 passed` |
+| `uv run pytest --collect-only -q tests` and the adapter file | 890; 707 |
+| focused rows: `search_success or query` / `record_success` / `raw_response or store_shape or cookie` / `out_of_range or no_results` / `status_error` / `transport` / `incomplete` / `no_leak` (both files) / `invariant` / `pacing` / `timeout or accept_encoding or invalid` (both files) / `documented_boundaries or non_ascii_base_path` / `exactly_value_error or invariant` / `no_network` / `layer or satisfies_port` (`tests/unit`) / the AC15 `-k` / `memory_error` / `transport_defect` | 13 / 4 / 20 / 4 / 30 / 37 / 53 / 296 / 236 / 52 / 239 / 18 / 297 / 2 / 9 / 420 / 4 / 12, all passed |
+| `uv run ruff check .`; `uv run ruff format --check .`; `uv run mypy .` | `All checks passed!`; `76 files already formatted`; `Success: no issues found in 20 source files` |
+| `uv run node .sdd/doctor/run-doctor.mjs`; `uv run ec-procurement-quality --version` | `31 ok, 0 skipped, 0 warned, 0 failed`; `ec-procurement-quality 0.1.0` |
+| `git diff main -- pyproject.toml`; `git diff main --stat` (F1, `cli.py`, `__init__.py`); `git log --oneline -- tests/fixtures/sercop`; `git diff --check`; `git diff main --check` | only `httpx`; empty; `74b785d`; clean; clean |
+| `git grep` for the real host in tests, the default URL in `src`, `except Exception`/`except BaseException`, `raise ... from`, `httpx` imports in `src`, logging and printing in the adapter, `noqa` in `src`, attribution in changed files; commit messages since `main` searched for attribution | exit 1; 1 match (`:57`); exit 1; exit 1; `sercop_source.py:41` only; exit 1; lines 118 and 257; exit 1; 0 of 12 commits |
+| Scratch mutants (`PYTHONPATH=<copy>/src`, imported path printed and confirmed): m1, m2, m2b and m2c with `-k test_no_leak_rejections_chain_no_library_exception` | 2 failed of 43 each (m1: `too-long-search-buyer`, `too-long-record-ocid`; m2: `base-url-invalid-ipv4-host`, `base-url-control-character`; m2b: `base-url-a-label-malformed`, `base-url-a-label-disallowed`; m2c: `base-url-ipv6-unclosed-bracket`, `base-url-ipv6-invalid-literal`) |
+| The same 4 mutants and 8 new ones (m3 rule 1 chained, m4 library text in rule 3, m5 no zone rule, m6 no UTF-8 check, m7 no transport rule, m8 base-class name, m9 later failure escapes, m10 no digit check) against the whole suite | failed: m1 4, m2 23, m2b 5, m2c 38, m3 26, m4 12, m5 18, m6 4, m7 2, m8 38, m9 2, m10 4 (of 890) |
+| The current tests against the `19ab9c3` adapter (scratch copy from `git archive`) | `65 failed, 825 passed` (4 + 9 + 6 + 8 + 38) |
+| Scratch probes `r3/probe_construct.py` (F-5, R-2, R-8, compatibility), `r3/probe_h11.py` (20 cases by 2 operations over `MockBackend`: 16 malformed framings, a reason phrase with a control character, a valid `429`, a `200` with an unusable body and a valid search page), `r3/probe_calls.py` (R-9, R-10, class names, the caller's context, the long status), `r3/probe_reentry.py` (3 runs) and `r3/fuzz_r3b.py` | results quoted above; guard attempts 0 |
+| `gh pr checks 16`; `gh pr view 16 --json ...`; `gh run view 38109963964 --log`; `gh run view 38109963941 --log`; `gh run view <id> --json headSha` | both `pass` on `1cd2f1e`; `2 of 2 command(s) ran, 0 skipped`; `890 passed`; `1cd2f1e` for both |
+
+### Not verified in round 3, and why
+
+- Real name resolution and real TLS handshakes were not run (no network by brief). For
+  every host that the fuzz accepted, the `idna` codec that `getaddrinfo` applies, and
+  `ssl` with memory BIOs, were run directly instead.
+- The F-6 recheck used `httpcore.MockBackend`, which replaces only the socket. No live
+  server sent malformed framing.
+- R-7 (`httpcore` at `DEBUG`) was not re-probed in this round.
+- C15 (environment proxy and certificate settings with the default transport) was not
+  exercised, because changing the process environment is outside this audit's offline
+  probes. The row was checked by reading the source only.
+- R-11's thread case depends on scheduling. It gave the same result in 3 runs, which
+  shows that the state is shared, not how often the mix-up happens.
+- Whether the per-turn Stop hook fired during O2d and O5d is `unavailable` (no persistent
+  log). CI `feedback` ran 2 of 2 commands on `1cd2f1e`.
+
 ## Audit log
 
 | Round | Date | Verdict | Notes |
 |---|---|---|---|
 | 1 | 2026-10-10 | REJECTED | Reviewed `015a72b` plus the uncommitted doc and `tasks.md` edits. 453 passed, 97% coverage. AC1 to AC8 and AC11 to AC15 PASS; AC9 and AC10 PARTIAL. Blocking: F-1 (MEDIUM, a zero-padded `Remaining` of more than 4,300 digits is ignored) and F-2 (MEDIUM, spec gap: base URLs that pass construction fail on every call). Non-blocking: F-3 and F-4 (LOW). Reservations R-1 to R-6. `InvalidURL` rule: met by the code, not anchored by any test (mutants m1 and m2 pass). Tier Results: unit PASS, mypy PASS, command PASS, manual AC14 PASS, manual AC15 PARTIAL. CI on the audited state `unavailable`. Next role: architect. |
-| 2 | 2026-10-10 | REJECTED (current) | Reviewed `19ab9c3` (intent and plan Revision 3; O2c, O5c, O7b, O8b), with a clean tree. 569 passed locally and in CI; adapter coverage 99% (171-172 missed). Resolved: F-1, F-2, F-3, F-4, R-1 (mutants m1 and m2 now fail the no-chain test), R-3, R-4, R-5. AC1 to AC7, AC9 and AC11 to AC14 PASS; AC8, AC10 and AC15 PARTIAL. § Family check: 42 of 43 rows hold, and row 2.9 has a gap. Blocking: F-5 (MEDIUM, a non-ASCII IPv6 zone raises a raw `UnicodeEncodeError` with the host text instead of the fixed reason) and F-6 (MEDIUM, spec gap: the chained `httpx` exception quotes body bytes or header lines that `h11` rejected). Non-blocking: F-7 (LOW, stale spec and `tasks.md` text). Reservations R-2, R-6 to R-10. Tier Results: unit PARTIAL, mypy PASS, command PASS, manual AC14 PASS, manual AC15 PARTIAL. PR #16 `feedback` and `tests` pass on `19ab9c3`. Next role: architect (F-6 decision; F-5 case in § Validation; F-7). |
+| 2 | 2026-10-10 | REJECTED (superseded by round 3) | Reviewed `19ab9c3` (intent and plan Revision 3; O2c, O5c, O7b, O8b), with a clean tree. 569 passed locally and in CI; adapter coverage 99% (171-172 missed). Resolved: F-1, F-2, F-3, F-4, R-1 (mutants m1 and m2 now fail the no-chain test), R-3, R-4, R-5. AC1 to AC7, AC9 and AC11 to AC14 PASS; AC8, AC10 and AC15 PARTIAL. § Family check: 42 of 43 rows hold, and row 2.9 has a gap. Blocking: F-5 (MEDIUM, a non-ASCII IPv6 zone raises a raw `UnicodeEncodeError` with the host text instead of the fixed reason) and F-6 (MEDIUM, spec gap: the chained `httpx` exception quotes body bytes or header lines that `h11` rejected). Non-blocking: F-7 (LOW, stale spec and `tasks.md` text). Reservations R-2, R-6 to R-10. Tier Results: unit PARTIAL, mypy PASS, command PASS, manual AC14 PASS, manual AC15 PARTIAL. PR #16 `feedback` and `tests` pass on `19ab9c3`. Next role: architect (F-6 decision; F-5 case in § Validation; F-7). |
+| 3 | 2026-10-10 | REJECTED (current) | Reviewed `1cd2f1e` (intent and plan Revision 4; O2d, O5d, O8c), with a clean tree. 890 passed locally (also with `-W error`) and in CI. Adapter coverage 99%: line 547 missed, unreachable. Resolved: F-5, F-6 (16 malformed framings through the real `h11` stack, nothing chained), F-7, R-2 (m2c now fails), R-8, R-9 and R-10. Mutants m1, m2, m2b and m2c and 8 new ones each fail tests. Red for O2d reproduced: `65 failed`. AC1 to AC7 and AC9 to AC15 PASS; AC8 PARTIAL. § Exit check: all 39 rows hold. § Output invariant: I1 holds; I2 does not hold for a call made inside the caller's exception handler (F-8); I3 and I4 do not hold for a class name chosen by an injected transport (F-9). Blocking: F-8 and F-9 (LOW, spec gaps; no response content leaks). Non-blocking: F-10 (LOW, stale text). Reservations: R-11 (new: a shared instance can mix evidence under concurrent or re-entrant use), R-6 and R-7 (accepted). Tier Results: unit PASS, mypy PASS, command PASS, manual AC14 PASS, manual AC15 PARTIAL. PR #16 `feedback` (2 of 2 commands) and `tests` (890 passed) pass on `1cd2f1e`. Next role: architect (F-8 wording; F-9 decision; F-10; optionally R-11 in § Consumers). |
