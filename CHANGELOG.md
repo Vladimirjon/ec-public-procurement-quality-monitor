@@ -75,3 +75,21 @@ The project has not been released yet, so every entry is under `Unreleased`.
   hooks skip `ruff` and `mypy` when `.venv` is not on `PATH`.
 - No coverage threshold is enforced yet; it is decided once real domain code
   exists.
+- SERCOP source adapter (F2), accepted at audit (APPROVED WITH RESERVATIONS):
+  - An instance holds the state of the request in progress and the pacing
+    state. It must be used by one thread at a time and must not be called from
+    inside its own call (from its transport or from its clock and sleeper).
+    Nothing enforces this, and two calls that share an instance can mix their
+    evidence without an error.
+  - With the real transport, the `httpcore` logger writes response header
+    values at `DEBUG`. The adapter configures no logging, so the caller must
+    keep that logger above `DEBUG`.
+  - `httpx` does not map the closing of a response stream, so a rare `OSError`
+    from closing the socket propagates unchanged. It is not a source outcome.
+  - No test pins that the adapter drops a later `httpx.HTTPError` that caller
+    code raises once the status and headers were captured (for example a test
+    double's `httpx.Response` subclass). The behavior is specified and was
+    confirmed by an audit probe; the test is deferred.
+  - The adapter was tested only with fixtures and simulated transports. That
+    the real source answers its requests as it answered the earlier
+    observations is not verified until the first real ingestion.

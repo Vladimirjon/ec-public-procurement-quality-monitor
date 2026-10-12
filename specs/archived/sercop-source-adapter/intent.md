@@ -1,5 +1,6 @@
 # Intent: SERCOP source adapter (F2)
 
+Shipped: 2026-10-12
 Revision: 5
 Approval: Approved revision 5 by Vladimirjon on 2026-10-11, accepting the architect's recommendation on all six Revision 5 open questions
 

@@ -1,6 +1,6 @@
 # Project Toolchain Specification
 
-> Last synced: 2026-10-09. Owned artifacts: `pyproject.toml`, `uv.lock`, `src/ec_procurement_quality/`, `tests/unit/`, `.github/workflows/harny-feedback.yml` (hand-maintained steps), `.github/workflows/tests.yml`.
+> Last synced: 2026-10-12. Owned artifacts: `pyproject.toml`, `uv.lock`, `src/ec_procurement_quality/`, `tests/unit/`, `.github/workflows/harny-feedback.yml` (hand-maintained steps), `.github/workflows/tests.yml`.
 
 ## Purpose
 
@@ -43,12 +43,13 @@ The system SHALL provide `domain`, `application`, `infrastructure` and
 `interfaces` as importable packages under `src/ec_procurement_quality/`,
 where `domain` imports nothing outside the standard library and itself, and
 `application` imports nothing outside the standard library, `domain` and
-itself. Both rules are enforced by tests in `tests/unit/test_layers.py`. (The
-clause that `domain`, `application` and `infrastructure` hold only what makes
-them packages was retired at F1; modules live inside the layer packages, never
+itself, and only `infrastructure` imports `httpx` (ADR 0006). The three rules
+are enforced by tests in `tests/unit/test_layers.py`. (The clause that
+`domain`, `application` and `infrastructure` hold only what makes them
+packages was retired at F1; modules live inside the layer packages, never
 directly in `src/ec_procurement_quality/`, see invariant 3.)
 
-**Source:** project-skeleton · intent.md § AC6; execution-plan.md § Binding constraints "Layer boundaries"; raw-evidence-store · intent.md § AC11, § Constraints "Current-truth note"; execution-plan.md § Binding constraints "Layer imports"
+**Source:** project-skeleton · intent.md § AC6; execution-plan.md § Binding constraints "Layer boundaries"; raw-evidence-store · intent.md § AC11, § Constraints "Current-truth note"; execution-plan.md § Binding constraints "Layer imports"; sercop-source-adapter · intent.md § AC12, § Constraints "Current-truth notes"
 
 #### Scenario: Import the layers
 - **WHEN** the four layer packages are imported in one `python -c` command
@@ -56,7 +57,7 @@ directly in `src/ec_procurement_quality/`, see invariant 3.)
 
 #### Scenario: Layer import rules
 - **WHEN** `uv run pytest tests/unit -q -k layer` is run
-- **THEN** it passes, including the check that every module in `domain` imports only the standard library and `domain`, and the check that every module in `application` imports only the standard library, `domain` and `application`
+- **THEN** it passes, including the check that every module in `domain` imports only the standard library and `domain`, the check that every module in `application` imports only the standard library, `domain` and `application`, and `test_layer_only_infrastructure_imports_httpx`, which fails if a module outside `infrastructure` imports `httpx`
 
 ### Requirement: PT-4 — Lint and format pass on the whole repository
 
@@ -94,7 +95,7 @@ including a unit test that proves the version command output (CLI-1).
 
 #### Scenario: Run the suite
 - **WHEN** `uv run pytest` is run
-- **THEN** it exits 0 with every test passed (7 at F0; 137 at F1, the 7 F0 tests plus 130 raw evidence tests), including the version test in `tests/unit/test_cli.py`
+- **THEN** it exits 0 with every test passed (7 at F0; 137 at F1, the 7 F0 tests plus 130 raw evidence tests; 961 at F2, the 137 earlier tests plus 824 source adapter tests), including the version test in `tests/unit/test_cli.py`
 
 ### Requirement: PT-7 — The `feedback` CI check really runs ruff and mypy
 
@@ -152,19 +153,26 @@ The system SHALL run the unit tests with a coverage report in a separate
 
 #### Scenario: Pull request
 - **WHEN** a pull request is opened
-- **THEN** the `Tests` job is green, its `Install dependencies` step ran `uv sync --locked`, and its `Run tests` log shows a `TOTAL` coverage row and every test passed (`7 passed` at F0, `133 passed` on the F1 head `392145f`; 137 locally at F1 with the `race` tests). The push-to-`main` trigger is verified by inspection only
+- **THEN** the `Tests` job is green, its `Install dependencies` step ran `uv sync --locked`, and its `Run tests` log shows a `TOTAL` coverage row and every test passed (`7 passed` at F0, `133 passed` on the F1 head `392145f`; 137 locally at F1 with the `race` tests; at F2, `890 passed` on the PR #16 head `dc78500`, the run the audit read, and `961 passed` on the PR #16 head `b939248`, confirmed by a read of the PR checks after the audit, outside `audit.md`; 961 locally). The push-to-`main` trigger is verified by inspection only
 
-### Requirement: PT-11 — `pytest-cov` is a development-only dependency
+### Requirement: PT-11 — `pytest-cov` is development-only, and `httpx` is the only runtime dependency
 
 The system SHALL record `pytest-cov` only in `[dependency-groups] dev` and
 `uv.lock` (locked at 7.1.0, with `coverage` 7.16.2), keep `[project]
-dependencies` empty, and make the CI test command work locally.
+dependencies` to the one approved runtime dependency, `httpx` (`httpx>=0.28.1`,
+locked at 0.28.1; ADR 0006), and make the CI test command work locally. (Until
+F2 this clause read "keep `[project] dependencies` empty"; F2 added `httpx` with
+the human's approval.)
 
-**Source:** project-skeleton · intent.md § AC15
+**Source:** project-skeleton · intent.md § AC15; sercop-source-adapter · intent.md § AC13, § Constraints "Current-truth notes"
 
 #### Scenario: Local coverage run
 - **WHEN** `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` is run
-- **THEN** it exits 0 with every test passed (`7 passed` at F0, 137 at F1) and a coverage table with a `TOTAL` row
+- **THEN** it exits 0 with every test passed (`7 passed` at F0, 137 at F1, 961 at F2) and a coverage table with a `TOTAL` row
+
+#### Scenario: Runtime dependencies
+- **WHEN** `git diff main -- pyproject.toml` is read for F2
+- **THEN** it adds only an `httpx` entry to `[project] dependencies`, and `uv sync --locked` and `uv lock --check` exit 0
 
 ### Requirement: PT-12 — A failing test fails `tests`; coverage alone never does
 
@@ -186,8 +194,9 @@ set a coverage threshold (`--cov-fail-under` or any coverage configuration).
 3. `src/ec_procurement_quality/` holds at most 2 files of its own: the doctor
    treats a direct child of `src/` with 3 or more files as a component and
    would warn about a missing `AGENTS.md`.
-4. `[project] dependencies` stays empty until a runtime dependency is
-   explicitly approved; development tools live in the `dev` group.
+4. `[project] dependencies` holds only runtime dependencies the human
+   explicitly approved (today `httpx`, added by F2, which fulfils this
+   invariant); development tools live in the `dev` group.
 5. The `setup-uv` SHA is the same in `harny-feedback.yml` and `tests.yml` so
    Dependabot keeps both in step.
 
@@ -210,6 +219,7 @@ audit, as a human GitHub settings action outside F0 scope (see
 |---|---|---|
 | project-skeleton (F0) | 2026-10-08 | The `uv` package and lockfile, Python floor, four layer packages, ruff, mypy and pytest configuration, the `feedback` CI setup steps and the `Tests` workflow with `pytest-cov` (PT-1 to PT-12) |
 | raw-evidence-store (F1) | 2026-10-09 | Modified PT-3 (the layers may hold modules; `application` imports only the standard library, `domain` and itself, enforced by a layer test) and PT-6, PT-10 and PT-11 (test counts restated: 137 at F1). Invariants 3 and 4 kept |
+| sercop-source-adapter (F2) | 2026-10-12 | Modified PT-3 (only `infrastructure` may import `httpx`, enforced by a layer test), PT-11 (`[project] dependencies` holds `httpx`, the first approved runtime dependency, and Invariant 4 is fulfilled) and the counts of PT-6, PT-10 and PT-11 (961 at F2) |
 
 ## Related ADRs
 

@@ -973,3 +973,93 @@ Ver [plan.md](plan.md).
   migración, documentación y suite contra la línea base), el auditor escribe
   `audit.md` (O9), puerta 3, documentación y merge del PR #16. Retrospectiva de
   la semana 2.
+
+## Día 14: F2 `sercop-source-adapter`, auditoría y repaso de la semana 2 (2026-10-11 al 2026-10-12)
+
+- **Objetivo:** cerrar F2: pasar la puerta 2 de la revisión 5, dejar verde el
+  adaptador, pasar la re-auditoría (ronda 4) y la puerta 3, documentar, archivar
+  las specs y dejar listo el merge del PR #16. Además, la retrospectiva de la
+  semana 2.
+- **Qué hice:**
+  - **PR #16:** lo enlacé a la sesión y dejé Auto-fix activo, sin auto-merge.
+  - **Puerta 2 (O2e):** el test-writer agregó 71 pruebas (890 pasaron a 961
+    coleccionadas); 44 fallaban por la razón correcta contra `1cd2f1e` y 27 ya
+    pasaban porque fijan comportamiento existente. Aprobé.
+  - **O5e y O8d:** el executor cambió solo `infrastructure/sercop_source.py`:
+    nombra la clase de `httpx` más cercana (F-9), lee el estado como `int`
+    exacto, conserva la primera excepción si falla el cierre del stream (D-1) y
+    documenta la regla de un solo hilo (R-11). Suite: 961 pasan.
+  - **Auditoría, ronda 4 (puerta 3):** APPROVED WITH RESERVATIONS, sin hallazgos
+    bloqueantes. F-8, F-9, F-10 y R-11 quedaron resueltos. Aprobé la puerta 3 y
+    pedí cerrar F-11, F-12 y N-17 con el architect, según mi regla de no dejar
+    deuda.
+  - **Cierres de texto:** salieron F-13 a F-16 y N-21 y N-22 (solo texto). Se
+    cerraron con el architect y el executor (comentarios y docstring, sin tocar
+    ninguna línea ejecutable), con dos relecturas acotadas del auditor y una regla
+    de parada para no entrar en un ciclo sin fin.
+  - **Commit y push:** `b939248`. En el PR #16, `Tests` mostró `961 passed` y
+    `feedback` `2 of 2 command(s) ran`, ambos `success` sobre esa cabeza (R-12
+    cerrado).
+  - **Documentación y archivo:** README, CHANGELOG, la nueva capacidad
+    `specs/current/source-access.md`, `project-toolchain.md` e `_index.md`; las
+    specs de F2 quedaron en `specs/archived/sercop-source-adapter/` con
+    `Shipped: 2026-10-12`.
+- **Qué aprendí (con mis palabras):**
+  - **Hoy no expliqué nada con mis palabras.** Lo que sí hice fueron preguntas
+    para entender el proceso: si con la puerta 2 terminaba el día, qué estaba
+    fallando cuando tardaba, qué había pasado con un comando que apareció como
+    `[killed]` y para qué serviría probar la ruta N-21.
+  - **Lo que me explicaron (no es mi redacción):** los 44 `failed` de la puerta 2
+    son rojo a propósito; el comando `[killed]` fue un intérprete colgado del
+    auditor en su carpeta temporal, sin efecto en el repositorio; la prueba de
+    N-21 protegería una rama de `_send` que solo alcanza un transporte inyectado,
+    así que su valor práctico es bajo.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **Puertas 2 y 3:** aprobadas hoy.
+  - **N-21:** "dejo anotado ese caso límite, no para ahora, pero que quede
+    documentado". Queda como limitación conocida de la capacidad `source-access`
+    y en `CHANGELOG.md`, con el reproductor para una prueba posterior. No es
+    parte del PR #16.
+  - **Relectura del auditor de O7f y O5g:** aprobada, una sola vez, con regla de
+    parada.
+  - **Nada nuevo del registro D-01 a D-13.**
+- **Verificación (comando y resultado):**
+  - `uv run pytest`: 961 pasan (137 de F1 y base, y 824 del adaptador).
+  - `uv run ruff check .`, `uv run ruff format --check .` (76 archivos) y
+    `uv run mypy .` (20 archivos): sin errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos;
+    `--only spec-state`: sin fallos.
+  - `git diff --check` limpio. Las pruebas ganaron 646 líneas y no perdieron
+    ninguna desde `1cd2f1e`.
+- **Dudas abiertas:**
+  - N-21 (sin prueba), R-6 y R-7 (aceptados) y R-11 (regla documentada, sin
+    mecanismo).
+  - Si SERCOP responde a `httpx` como a mi `curl`: sigue sin verificarse hasta
+    la primera ingesta real.
+  - Revisar línea por línea `specs/current/_index.md` y confirmar las
+    severidades que el agente de documentación asignó en `source-access.md`
+    (LOW, MED en U1).
+  - El README ahora tiene reglas operativas en el punto del adaptador; decidir
+    si se deja o se revierte.
+  - Las dudas heredadas del Día 7 (checks que fallan, hooks sin `.venv` en el
+    `PATH`, `harny init` o `update`).
+- **Retrospectiva de la semana 2 (borrador a partir de mis notas de los Días
+  8 a 13 y de hoy; para confirmar o corregir):**
+  - **Lo que salió bien:** F1 (almacén de evidencia) quedó mergeado; F2 pasó la
+    puerta 1, la puerta 2 en cada una de sus cinco revisiones y la puerta 3 hoy;
+    el adaptador se prueba sin salir a la red; y la regla de no dejar deuda
+    funcionó: cada hallazgo se cerró en las specs y no con parches en el código.
+  - **Lo que me costó:** seguir los hallazgos en la puerta 3 cuando llegan como
+    una lista de IDs (Día 11: pedí que me dijeran si estaban resueltos); entender
+    qué hacía el servidor MCP (Día 12); y que cada ronda de auditoría abría otra
+    revisión de las specs (cinco en total) y hoy llevó la auditoría a cuatro
+    rondas, con dos relecturas acotadas más.
+  - **Lo que haría distinto:** pedir desde el inicio de cada puerta una frase por
+    hallazgo (qué estaba mal, qué se hizo y si está cerrado), y fijar de entrada
+    cuándo se deja un caso límite como nota aceptada en lugar de abrir otra
+    revisión.
+  - **Pendiente de tu parte:** corregir lo que no sea cierto y añadir con tus
+    palabras qué fue lo que más te costó entender.
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
+- **Siguiente paso:** merge del PR #16 con tu OK explícito; después, Día 15:
+  PostgreSQL y Docker Compose.
