@@ -75,13 +75,12 @@ Implemented in the repository:
   the response as received or raises a typed error that carries the valid
   response that arrived, so that it can be stored as evidence; a status
   outside 100 to 599 is reported without a response. It does not retry and
-  only spaces its requests. An instance is meant for one thread at a time,
-  and a caller must keep the `httpcore` logger above `DEBUG` (see the known
-  limitations in the [changelog](CHANGELOG.md)). It is a library only: it
-  has no CLI command, nothing calls it yet, and its tests use simulated
-  transports and never reach the network. Whether the real source answers
-  its requests as it answered the earlier observations has not been checked
-  against the network.
+  only spaces its requests. It is a library only: it has no CLI command,
+  nothing calls it yet, and its tests use simulated transports and never
+  reach the network. Whether the real source answers its requests as it
+  answered the earlier observations has not been checked against the
+  network. Its known limitations are listed in the
+  [changelog](CHANGELOG.md).
 - `httpx`, the first runtime dependency, used only in `infrastructure`
   (ADR 0006). The other dependencies are development-only: `ruff` (lint and
   format), `mypy` (strict in `domain` only), `pytest` and `pytest-cov`.

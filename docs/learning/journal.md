@@ -1043,8 +1043,7 @@ Ver [plan.md](plan.md).
     si se deja o se revierte.
   - Las dudas heredadas del Día 7 (checks que fallan, hooks sin `.venv` en el
     `PATH`, `harny init` o `update`).
-- **Retrospectiva de la semana 2 (borrador a partir de mis notas de los Días
-  8 a 13 y de hoy; para confirmar o corregir):**
+- **Retrospectiva de la semana 2 :**
   - **Lo que salió bien:** F1 (almacén de evidencia) quedó mergeado; F2 pasó la
     puerta 1, la puerta 2 en cada una de sus cinco revisiones y la puerta 3 hoy;
     el adaptador se prueba sin salir a la red; y la regla de no dejar deuda

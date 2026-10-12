@@ -55,6 +55,6 @@ None yet under `specs/archived/*/decisions/`. The project-level ADRs 0001 to
 | raw-evidence | N3 | Integrity error `__context__` links to the `JSONDecodeError`, which holds the record text | LOW |
 | source-access | N-21 | Known limitation, deferred: no test pins `_send`'s drop of a later `httpx.HTTPError` raised by caller code after the status and headers were captured (mutant m17 passes all 961 tests) | LOW |
 | source-access | R-6 | `httpx` does not map `ResponseStream.close()`; a rare `OSError` from `socket.close()` propagates unchanged (accepted risk) | LOW |
-| source-access | R-7 | `httpcore` writes response header values at `DEBUG` with the real transport; F4 keeps that logger above `DEBUG` (accepted risk) | LOW |
-| source-access | R-11 | One instance shared between threads or re-entered mixes the evidence of two calls with no error; a documented rule, nothing enforces it | LOW |
+| source-access | R-7 | `httpcore` writes response header values at `DEBUG` with the real transport; F4 keeps that logger above `DEBUG` (accepted risk) | LOW (impact Med) |
+| source-access | R-11 | One instance shared between threads or re-entered mixes the evidence of two calls with no error; a documented rule, nothing enforces it | LOW (impact High) |
 | source-access | U1 | Behavior against the real SERCOP portal is unverified (fixtures and simulated transports only); first compared at the first live run | MED |
