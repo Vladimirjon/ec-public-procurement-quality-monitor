@@ -42,6 +42,16 @@ every construction rejection; the type rules for the options; the zone and
 bracket cases of the base URL; and `MemoryError`. Every marker, body, header,
 host and defect is SYNTHETIC; hosts are `.invalid` or numeric and never
 contacted, and the IPv6 literals are never contacted either.
+
+Revision 5 (outcome O2e; AC8, AC13 and AC15) adds, at the end of the file, four
+groups: a call made inside the caller's own `except` or `finally` (the context
+of the error is that exception and nothing else), a class name that a test
+double defines (only a name that `httpx` exports reaches a message), a status
+that is an `int` subclass (it is read by value), and a stream whose `close()`
+fails after a read that ended in an interrupt or a defect (the first exception
+decides). Every marker, class, status and defect is SYNTHETIC; hosts are
+`.invalid`. A marker is always passed through a variable, never written in the
+line that makes a call, because a formatted traceback quotes that line.
 """
 
 import gzip
@@ -3168,3 +3178,639 @@ def test_satisfies_port_the_adapter_is_usable_as_a_procurement_source() -> None:
     assert isinstance(record, RecordResponse)
     assert record.ocid == OCID
     assert len(script.requests) == 2
+
+
+# --- Revision 5 (outcome O2e): the caller's handler, class names, the status --
+# and a failing stream close (AC8, AC13 and AC15; plan § Output invariant and
+# § Statement check). Everything below is SYNTHETIC. The marker is always held
+# in a variable: a formatted traceback quotes the line that made the call, so a
+# literal there would put the marker in the text that I4 checks.
+
+# Where the marker sits in what the transport delivers (the cases that check the
+# carried response): the body and one header value.
+MARKER_BYTES = LEAK_MARKER.encode("ascii")
+MARKED_HEADERS: Headers = (*JSON_HEADERS, ("X-Synthetic", LEAK_MARKER))
+OPERATION_PREFIXES = {SEARCH.name: "search_ocds: ", RECORD.name: "record: "}
+
+
+def _assert_invariant_with_context(
+    error: BaseException,
+    context: BaseException | None,
+    *markers: str,
+    check_response: bool = True,
+    prefix: str | None = None,
+) -> None:
+    """Assert I1 to I4 in their Revision 5 form (plan § Output invariant).
+
+    `context` is `sys.exception()` when the call began: the exception the caller
+    was handling in an `except`, a `finally` or an `__exit__`, or `None`. The
+    Revision 4 helper `_assert_output_invariant` says `__context__ is None`,
+    which is the same answer for a call made outside any handler, and it is
+    left as it was. I4 reads the traceback with `chain=False`, so the caller's
+    own exception (which may hold anything) is left out.
+    """
+    # I1: exactly one of five types.
+    assert type(error) in OUTPUT_ERROR_TYPES, f"I1: type {type(error).__name__}"
+    # I2: no cause, the context is the caller's exception and it is not hidden.
+    assert error.__cause__ is None, f"I2: cause {type(error.__cause__).__name__}"
+    assert error.__suppress_context__ is False, "I2: the context is hidden"
+    assert error.__context__ is context, (
+        f"I2: context {type(error.__context__).__name__}, "
+        f"expected {type(context).__name__}"
+    )
+    # I3: fixed text, printable ASCII, starting with the operation or parameter.
+    message = str(error)
+    assert error.args == (message,), "I3: the message is the only argument"
+    assert message.isascii(), "I3: the message is ASCII"
+    assert message.isprintable(), "I3: the message is printable"
+    assert message == CLOSED_ADAPTER_MESSAGE or message.startswith(
+        FIXED_MESSAGE_PREFIXES
+    ), f"I3: the message starts with an unknown prefix ({message[:20]!r})"
+    if prefix is not None:
+        assert message.startswith(prefix), f"I3: the message does not start {prefix!r}"
+    # I4: no marker in this error's own text (not in its chain).
+    texts = {
+        "traceback": "".join(traceback.format_exception(error, chain=False)),
+        "repr": repr(error),
+        "args": repr(error.args),
+    }
+    response = error.response if isinstance(error, SourceError) else None
+    if check_response and response is not None:
+        texts["response repr"] = repr(response)
+        texts["response str"] = str(response)
+    for marker in markers:
+        for place, text in texts.items():
+            assert marker not in text, f"I4: marker {marker!r} is in the {place}"
+
+
+# T5: a call made while the caller handles an exception. The audit's F-8: Python
+# links that exception as the `__context__` of whatever the call raises, and no
+# code can clear it (`from None` only hides it). The adapter must chain nothing
+# of its own and must not hide that link.
+
+
+class SyntheticCallerError(Exception):
+    """SYNTHETIC: the caller's own exception, handled while it calls the adapter.
+
+    Its message holds the marker, as anything the caller handles may.
+    """
+
+
+def _in_an_except_block(
+    action: Callable[[], object],
+) -> tuple[BaseException, BaseException]:
+    """Run `action` inside `except SyntheticCallerError`; return both exceptions."""
+    caller_text = LEAK_MARKER
+    try:
+        raise SyntheticCallerError(caller_text)
+    except SyntheticCallerError as caller_error:
+        try:
+            action()
+        except (SourceError, ValueError, RuntimeError) as error:
+            return error, caller_error
+    pytest.fail("the call did not raise")
+
+
+def _in_a_finally_block(
+    action: Callable[[], object],
+) -> tuple[BaseException, BaseException]:
+    """Run `action` inside a `finally` while `SyntheticCallerError` propagates."""
+    caller_text = LEAK_MARKER
+    raised: list[BaseException] = []
+    try:
+        try:
+            raise SyntheticCallerError(caller_text)
+        finally:
+            try:
+                action()
+            except (SourceError, ValueError, RuntimeError) as error:
+                raised.append(error)
+    except SyntheticCallerError as caller_error:
+        assert len(raised) == 1, "the call did not raise"
+        return raised[0], caller_error
+    pytest.fail("the caller's exception did not propagate")
+
+
+@dataclass(frozen=True)
+class HandlerRun:
+    """What one case saw: the adapter's error and the exception it must chain."""
+
+    error: BaseException
+    context: BaseException
+    expected_type: type[BaseException]
+    prefix: str
+    check_response: bool
+
+
+HandlerCase = Callable[[Callable[..., Rig]], HandlerRun]
+
+
+def _construction_in_a_handler(prefix: str, **options: Any) -> HandlerCase:
+    def run(make_rig: Callable[..., Rig]) -> HandlerRun:
+        arguments: dict[str, Any] = {
+            "base_url": BASE_URL,
+            "transport": httpx.MockTransport(Script()),
+        } | options
+
+        def construct() -> object:
+            return SercopSource(**arguments)
+
+        error, caller_error = _in_an_except_block(construct)
+        return HandlerRun(error, caller_error, ValueError, prefix, False)
+
+    return run
+
+
+def _call_in_a_handler(
+    call: Callable[[SercopSource], object],
+    outcome: Callable[[], Reply | Failure],
+    expected_type: type[BaseException],
+    prefix: str,
+    *,
+    delivered: bool,
+) -> HandlerCase:
+    """`delivered`: the marker is in what the transport sent, so the response is checked."""
+
+    def run(make_rig: Callable[..., Rig]) -> HandlerRun:
+        rig = make_rig(outcome())
+        error, caller_error = _in_an_except_block(lambda: call(rig.source))
+        return HandlerRun(error, caller_error, expected_type, prefix, delivered)
+
+    return run
+
+
+def _retry_in_a_handler(operation: Operation) -> HandlerCase:
+    """A second call inside `except SourceError as first`: its context is `first`."""
+
+    def run(make_rig: Callable[..., Rig]) -> HandlerRun:
+        rig = make_rig(
+            _reply(MARKER_BYTES, status=404, headers=MARKED_HEADERS),
+            _reply(MARKER_BYTES, status=429, headers=MARKED_HEADERS),
+        )
+        try:
+            operation.call(rig.source)
+        except SourceError as first:
+            # The first call was made outside any handler.
+            assert first.__context__ is None, "the first error has a context"
+            try:
+                operation.call(rig.source)
+            except SourceError as second:
+                prefix = OPERATION_PREFIXES[operation.name]
+                return HandlerRun(second, first, SourceStatusError, prefix, True)
+            pytest.fail("the retry did not raise")
+        pytest.fail("the first call did not raise")
+
+    return run
+
+
+def _call_in_a_finally(operation: Operation) -> HandlerCase:
+    def run(make_rig: Callable[..., Rig]) -> HandlerRun:
+        rig = make_rig(_reply(MARKER_BYTES, status=404, headers=MARKED_HEADERS))
+        error, caller_error = _in_a_finally_block(lambda: operation.call(rig.source))
+        prefix = OPERATION_PREFIXES[operation.name]
+        return HandlerRun(error, caller_error, SourceStatusError, prefix, True)
+
+    return run
+
+
+# SYNTHETIC call inputs. Each is built in a variable first.
+_SURROGATE_TEXT = LEAK_MARKER + "\ud800"
+_TOO_LONG_TEXT = LEAK_MARKER + "a" * 70_000
+
+
+def _marked_failure() -> Failure:
+    # Rule 1: the library error's own text holds the marker.
+    return Failure(lambda request: httpx.ConnectError(LEAK_MARKER, request=request))
+
+
+def _marked_status(status: int) -> Callable[[], Reply | Failure]:
+    return lambda: _reply(MARKER_BYTES, status=status, headers=MARKED_HEADERS)
+
+
+def _marked_cut_off() -> Reply:
+    # Rule 3: a first chunk, then a library error whose text holds the marker.
+    return _reply(
+        chunks=(b"{" + MARKER_BYTES,),
+        headers=MARKED_HEADERS,
+        error=httpx.ReadError(LEAK_MARKER),
+    )
+
+
+def _handler_cases_of(
+    operation: Operation,
+    invalid_argument: Callable[[SercopSource], object],
+    invalid_prefix: str,
+    surrogate: Callable[[SercopSource], object],
+    surrogate_prefix: str,
+    too_long: Callable[[SercopSource], object],
+) -> list[Any]:
+    name = operation.name
+    prefix = OPERATION_PREFIXES[name]
+    filler = _marked_status(404)
+    return [
+        pytest.param(
+            _call_in_a_handler(
+                invalid_argument, filler, ValueError, invalid_prefix, delivered=False
+            ),
+            id=f"{name}-invalid-argument",
+        ),
+        pytest.param(
+            _call_in_a_handler(
+                surrogate, filler, ValueError, surrogate_prefix, delivered=False
+            ),
+            id=f"{name}-lone-surrogate",
+        ),
+        pytest.param(
+            _call_in_a_handler(too_long, filler, ValueError, prefix, delivered=False),
+            id=f"{name}-too-long-for-a-url",
+        ),
+        pytest.param(
+            _call_in_a_handler(
+                _after_close(operation.call),
+                filler,
+                RuntimeError,
+                CLOSED_ADAPTER_MESSAGE,
+                delivered=False,
+            ),
+            id=f"{name}-closed-adapter",
+        ),
+        pytest.param(
+            _call_in_a_handler(
+                operation.call,
+                _marked_failure,
+                SourceTransportError,
+                prefix,
+                delivered=True,
+            ),
+            id=f"{name}-rule-1-failure-before-the-status",
+        ),
+        pytest.param(
+            _call_in_a_handler(
+                operation.call,
+                _marked_status(600),
+                SourceTransportError,
+                prefix,
+                delivered=True,
+            ),
+            id=f"{name}-rule-2-invalid-status",
+        ),
+        pytest.param(
+            _call_in_a_handler(
+                operation.call,
+                _marked_cut_off,
+                SourceTransportError,
+                prefix,
+                delivered=True,
+            ),
+            id=f"{name}-rule-3-cut-off-body",
+        ),
+        pytest.param(
+            _call_in_a_handler(
+                operation.call, filler, SourceStatusError, prefix, delivered=True
+            ),
+            id=f"{name}-rule-4-status-error",
+        ),
+        pytest.param(
+            _call_in_a_handler(
+                operation.call,
+                _marked_status(200),
+                IncompleteResponseError,
+                prefix,
+                delivered=True,
+            ),
+            id=f"{name}-rule-5-unusable-200",
+        ),
+    ]
+
+
+HANDLER_CASES: list[Any] = [
+    pytest.param(
+        _construction_in_a_handler("base_url ", base_url="https://[::1/PLATAFORMA"),
+        id="construction-unclosed-bracket-in-the-base-url",
+    ),
+    pytest.param(
+        _construction_in_a_handler("min_interval ", min_interval=-1),
+        id="construction-negative-min-interval",
+    ),
+    pytest.param(
+        _construction_in_a_handler("transport ", transport=5),
+        id="construction-transport-of-the-wrong-type",
+    ),
+    *_handler_cases_of(
+        SEARCH,
+        _search_with(page=0),
+        "page ",
+        _search_with(buyer=_SURROGATE_TEXT),
+        "buyer ",
+        _search_with(buyer=_TOO_LONG_TEXT),
+    ),
+    *_handler_cases_of(
+        RECORD,
+        _record_with(""),
+        "ocid ",
+        _record_with(_SURROGATE_TEXT),
+        "ocid ",
+        _record_with(_TOO_LONG_TEXT),
+    ),
+    *(
+        pytest.param(_retry_in_a_handler(operation), id=f"{operation.name}-retry")
+        for operation in OPERATIONS
+    ),
+    *(
+        pytest.param(_call_in_a_finally(operation), id=f"{operation.name}-finally")
+        for operation in OPERATIONS
+    ),
+]
+assert len(HANDLER_CASES) == 25
+
+
+@pytest.mark.parametrize("case", HANDLER_CASES)
+def test_no_leak_invariant_context_is_the_callers_own_exception(
+    make_rig: Callable[..., Rig], case: HandlerCase
+) -> None:
+    observed = case(make_rig)
+
+    assert type(observed.error) is observed.expected_type
+    _assert_invariant_with_context(
+        observed.error,
+        observed.context,
+        LEAK_MARKER,
+        check_response=observed.check_response,
+        prefix=observed.prefix,
+    )
+
+
+# T6: the class a message names. A test double can define any class that derives
+# from `httpx.HTTPError`, with any name; the message may name only a class that
+# `httpx` itself exports (the nearest one in the failure's class hierarchy).
+
+
+def _renamed_write_error() -> type[Any]:
+    # SYNTHETIC: the name is set after the class exists, as a double might.
+    renamed = type("Placeholder", (httpx.WriteError,), {})
+    renamed.__name__ = LEAK_MARKER
+    return renamed
+
+
+# Each entry: the case id, a SYNTHETIC test-local class, and the name the message
+# must end with.
+DOUBLE_ERROR_CLASSES: tuple[tuple[str, type[Any], str], ...] = (
+    ("non-ascii-name", type("Falloé", (httpx.ReadError,), {}), "ReadError"),
+    (
+        "name-is-the-marker",
+        type(LEAK_MARKER, (httpx.ConnectError,), {}),
+        "ConnectError",
+    ),
+    (
+        "name-with-a-newline",
+        type("Bad\nName", (httpx.RemoteProtocolError,), {}),
+        "RemoteProtocolError",
+    ),
+    (
+        "name-of-200-characters",
+        type("X" * 200, (httpx.ReadTimeout,), {}),
+        "ReadTimeout",
+    ),
+    ("name-set-to-the-marker-later", _renamed_write_error(), "WriteError"),
+    (
+        "direct-subclass-of-http-error",
+        type(LEAK_MARKER, (httpx.HTTPError,), {}),
+        "HTTPError",
+    ),
+    (
+        "two-httpx-bases",
+        type(LEAK_MARKER, (httpx.ReadError, httpx.WriteError), {}),
+        "ReadError",
+    ),
+)
+
+
+def _double_error(
+    error_class: type[Any], message: str, request: httpx.Request | None = None
+) -> BaseException:
+    error: BaseException
+    if issubclass(error_class, httpx.RequestError):
+        error = error_class(message, request=request)
+    else:
+        error = error_class(message)
+    return error
+
+
+@pytest.mark.parametrize("operation", OPERATIONS, ids=lambda o: o.name)
+@pytest.mark.parametrize("place", ["before-the-status", "after-one-chunk"])
+@pytest.mark.parametrize(
+    ("error_class", "expected"),
+    [
+        pytest.param(cls, name, id=case_id)
+        for case_id, cls, name in DOUBLE_ERROR_CLASSES
+    ],
+)
+def test_no_leak_invariant_names_only_a_class_that_httpx_exports(
+    make_rig: Callable[..., Rig],
+    operation: Operation,
+    place: str,
+    error_class: type[Any],
+    expected: str,
+) -> None:
+    message = LEAK_MARKER
+    outcome: Reply | Failure
+    partial: bytes | None
+    if place == "before-the-status":
+        outcome = Failure(lambda request: _double_error(error_class, message, request))
+        partial = None
+    else:
+        partial = b"{"
+        outcome = _reply(chunks=(partial,), error=_double_error(error_class, message))
+    rig = make_rig(outcome)
+
+    error = _raise_through(operation, rig)
+
+    assert isinstance(error, SourceTransportError)
+    _assert_invariant_with_context(
+        error, None, LEAK_MARKER, prefix=OPERATION_PREFIXES[operation.name]
+    )
+    assert str(error).endswith(f" ({expected})"), (
+        f"the message does not end with ({expected}), the class httpx exports"
+    )
+    if partial is None:
+        assert error.response is None
+    else:
+        assert _response_of(error).content == partial
+    assert len(rig.script.requests) == 1
+
+
+# T7: the status is read by value. A test double can answer with an `int`
+# subclass whose own methods write any text; none of it may reach a message or
+# the response.
+
+
+class SyntheticStatus(int):
+    """SYNTHETIC: an `int` subclass that a test double answers as a status.
+
+    Formatting it writes the marker followed by a non-ASCII letter, and `str()`
+    and `repr()` write the marker.
+    """
+
+    def __format__(self, format_spec: str) -> str:
+        return LEAK_MARKER + "é"
+
+    def __str__(self) -> str:
+        return LEAK_MARKER
+
+    def __repr__(self) -> str:
+        return LEAK_MARKER
+
+
+# Each entry: the case id, the scripted answer, the exact error type, the status
+# of the carried response (`None`: no response) and a part of the message.
+STATUS_SUBCLASS_CASES: tuple[
+    tuple[str, Callable[[], Reply], type[BaseException], int | None, str | None], ...
+] = (
+    (
+        "rule-2-invalid-status",
+        lambda: _reply(b"synthetic body", status=SyntheticStatus(600)),
+        SourceTransportError,
+        None,
+        "status 600",
+    ),
+    (
+        "rule-3-cut-off-body",
+        lambda: _reply(
+            status=SyntheticStatus(200),
+            chunks=(b"{",),
+            error=httpx.ReadError("synthetic cut-off"),
+        ),
+        SourceTransportError,
+        200,
+        "(status 200)",
+    ),
+    (
+        "rule-4-status-error",
+        lambda: _reply(b"synthetic not found", status=SyntheticStatus(404)),
+        SourceStatusError,
+        404,
+        "status 404",
+    ),
+    (
+        "rule-5-unusable-200",
+        lambda: _reply(b"nope", status=SyntheticStatus(200)),
+        IncompleteResponseError,
+        200,
+        None,
+    ),
+)
+
+
+@pytest.mark.parametrize("operation", OPERATIONS, ids=lambda o: o.name)
+@pytest.mark.parametrize(
+    ("build", "expected_type", "status", "message_part"),
+    [
+        pytest.param(build, error_type, status, part, id=case_id)
+        for case_id, build, error_type, status, part in STATUS_SUBCLASS_CASES
+    ],
+)
+def test_no_leak_invariant_reads_the_status_as_an_exact_int(
+    make_rig: Callable[..., Rig],
+    operation: Operation,
+    build: Callable[[], Reply],
+    expected_type: type[BaseException],
+    status: int | None,
+    message_part: str | None,
+) -> None:
+    rig = make_rig(build())
+
+    error = _raise_through(operation, rig)
+    carried = error.response
+
+    assert type(error) is expected_type
+    # The marker is in what the transport delivered (its status), so the
+    # response is checked too.
+    _assert_invariant_with_context(
+        error, None, LEAK_MARKER, prefix=OPERATION_PREFIXES[operation.name]
+    )
+    if message_part is not None:
+        assert message_part in str(error)
+    if status is None:
+        assert carried is None
+    else:
+        assert carried is not None
+        response = carried
+        assert type(response.status) is int
+        assert response.status == status
+    assert len(rig.script.requests) == 1
+
+
+# AC15, Revision 5 (plan § Statement check S21 to S23): the stream's `close()`
+# fails after a read that ended in an interrupt or a defect. The first exception
+# decides; before Revision 5 the close's `httpx` error replaced it and was
+# dropped, and the call went on to build a result from the bytes already read.
+
+# Each entry: the case id, the first exception (not an `httpx` error) and the
+# `httpx` error that the stream's `close()` then raises.
+FAILING_CLOSE_CASES: tuple[
+    tuple[str, type[BaseException], type[httpx.TransportError]], ...
+] = (
+    ("keyboard-interrupt-then-close-error", KeyboardInterrupt, httpx.CloseError),
+    ("system-exit-then-read-error", SystemExit, httpx.ReadError),
+    ("memory-error-then-close-error", MemoryError, httpx.CloseError),
+    ("transport-defect-then-close-error", SyntheticTransportDefect, httpx.CloseError),
+)
+
+
+@pytest.mark.parametrize("operation", OPERATIONS, ids=lambda o: o.name)
+@pytest.mark.parametrize(
+    ("first_type", "close_type"),
+    [
+        pytest.param(first, close, id=case_id)
+        for case_id, first, close in FAILING_CLOSE_CASES
+    ],
+)
+def test_transport_defect_survives_a_failing_stream_close(
+    make_rig: Callable[..., Rig],
+    operation: Operation,
+    first_type: type[BaseException],
+    close_type: type[httpx.TransportError],
+) -> None:
+    # SYNTHETIC: a `200` with a low `Remaining` streams the complete valid body,
+    # raises the first exception, and then its `close()` raises the second one.
+    first = first_type("synthetic first exception")
+    outcome = ClosingReply(
+        headers=_with_remaining("5"),
+        chunks=(operation.valid_body,),
+        error=first,
+        close_error=close_type("synthetic failing close"),
+    )
+    rig = make_rig(outcome, _reply(b"synthetic not found", status=404))
+
+    with pytest.raises(first_type) as info:
+        operation.call(rig.source)
+
+    assert info.value is first
+    assert len(rig.script.requests) == 1
+    assert rig.clock.sleeps == []
+    # The attempt counted: `Remaining: 5` asks for the cool-down (60 s, 2 s gone).
+    rig.clock.advance(2.0)
+    later = _raise_through(operation, rig)
+    assert isinstance(later, SourceStatusError)
+    assert rig.clock.sleeps == [58.0]
+    assert len(rig.script.requests) == 2
+
+
+@pytest.mark.parametrize("operation", OPERATIONS, ids=lambda o: o.name)
+def test_transport_defect_from_the_stream_close_follows_python_chaining(
+    make_rig: Callable[..., Rig], operation: Operation
+) -> None:
+    # SYNTHETIC: this case pins Python's own rule, not an adapter rule. A second
+    # exception that is not an `httpx` error is not caught, so it propagates as
+    # the same object with the first as its `__context__`.
+    first = SyntheticTransportDefect("synthetic first defect")
+    second = SyntheticTransportDefect("synthetic second defect")
+    outcome = ClosingReply(chunks=(b"{",), error=first, close_error=second)
+    rig = make_rig(outcome)
+
+    with pytest.raises(SyntheticTransportDefect) as info:
+        operation.call(rig.source)
+
+    assert info.value is second
+    assert second.__context__ is first
+    assert len(rig.script.requests) == 1

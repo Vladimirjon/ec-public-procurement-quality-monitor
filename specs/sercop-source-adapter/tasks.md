@@ -8,8 +8,32 @@ Intent Revision 5 was drafted by the architect on 2026-10-10 and approved by the
   - Reservation: R-11 (new).
 - Following the project rule of no technical debt, the architect drafted Revision 5 of the three spec files instead of working around the findings in code.
 - The architect also checked every normative statement of § Output invariant, AC8, AC10 and AC15 against legal inputs and legitimate test doubles (`execution-plan.md` § Statement check). Of 25 statements, 16 are restated. Three of the restatements need a code change in `infrastructure/sercop_source.py`: the class named (F-9), the status read as an exact `int`, and the close after a read that ended in an interrupt or a defect (D-1).
-- Next: the human's approval of Revision 5. Intent § Open questions has six one-word questions. Then O2e (test-writer), gate 2, O5e (executor), O8d (executor) and O9d (auditor, round 4).
-- Bookkeeping (O7d, audit F-10): the O2d tests and the O5d code were committed and pushed as `1cd2f1e`. PR #16 `feedback` and `tests` pass on it; the auditor read them with `gh` (audit.md § Round 3 "Doc coherence and PR checks"). The Revision 5 changes to the three spec files and this file are uncommitted; the roles do not commit.
+- Next (superseded: the approval, O2e, gate 2, O5e, O8d and O9d have all happened; see the Revision 5 and round 4 records below): the human's approval of Revision 5. Intent § Open questions has six one-word questions. Then O2e (test-writer), gate 2, O5e (executor), O8d (executor) and O9d (auditor, round 4).
+- Bookkeeping (O7d, audit F-10): the O2d tests and the O5d code were committed and pushed as `1cd2f1e`. PR #16 `feedback` and `tests` pass on it; the auditor read them with `gh` (audit.md § Round 3 "Doc coherence and PR checks"). Round 4 record (O7e, audit F-12): the Revision 5 changes to the three spec files and this file, together with the round 3 report in `audit.md`, were then committed and pushed by the human as `dc78500` (`git show --stat dc78500` lists `intent.md`, `execution-plan.md`, `tasks.md` and `audit.md`; PR #16 head `dc78500`). The roles do not commit.
+
+- Revision 5 record (executor, 2026-10-12): the "Next" line above is superseded. The human approved Revision 5 on 2026-10-11 and the O2e tests at gate 2 on 2026-10-12. O5e and O8d are done: `961 passed`, with the changes only in `infrastructure/sercop_source.py` (the class named, the status read as an exact `int`, the stream close after a non-`httpx` read end, the one-thread docstring). The tests and the code are uncommitted. Next: O9d (auditor, round 4); the commit and push are the human's.
+
+- Round 4 record (architect, 2026-10-12). The "Next" line of the Revision 5 record above is superseded:
+  - O9d is done. The round 4 audit, on `1cd2f1e` plus the uncommitted O2e tests and O5e code at HEAD `dc78500`, returned **APPROVED WITH RESERVATIONS** ([audit.md](audit.md) § Round 4). AC1 to AC15 PASS, and F-8, F-9, F-10 and R-11 are resolved.
+    - Non-blocking: F-11 (LOW, the module docstring keeps the Revision 4 "no `__context__`" wording) and F-12 (LOW, stale lines in this section).
+    - Reservation R-12: the PR #16 checks are unavailable for the reviewed state. R-6 and R-7 stay accepted.
+    - Notes N-17 to N-20.
+  - Gate 3 was approved by the human on 2026-10-12. Following the project rule of no technical debt, the human asked that F-11, F-12 and N-17 be closed before the documentation step.
+  - The closure is text only: no behavior, test, fixture or AC changes, and intent Revision 5 stays the approved revision.
+    - O7e (architect, done): F-12 in this file, and N-17 in `execution-plan.md` (§ Exit check K15 and one sentence of the § Validation AC15 row).
+    - O5f (executor, done on 2026-10-12): F-11, the `_send` comment of N-17 and the fallback comment of N-18, comment and docstring only, with the exact text given there. `961 passed`, the AST is equal apart from the docstring, `ruff` and `mypy` are clean, and `git diff --numstat 1cd2f1e` gives `646 0` for the tests and `65 14` for `src` (the record is in O5f).
+  - R-12 stays open until the human commits and pushes the O2e tests, the O5e code, O5f and O5g. Then the PR #16 checks are confirmed on the new head: `Tests` prints `961 passed`, `feedback` prints `2 of 2 command(s) ran`, and both runs have that head's `headSha`.
+- Round 4 addendum record (architect, 2026-10-12):
+  - The auditor's scoped re-check ([audit.md](audit.md) § Round 4 addendum) resolved F-11 and F-12 and closed N-17. The verdict stays APPROVED WITH RESERVATIONS.
+  - It filed three new non-blocking items: F-13 (LOW, the docstring's message rule omits the closed-adapter message), F-14 (LOW, a wrong step number in the R-12 response) and N-21 ("no path reaches `_send`'s drop" holds only for `httpx`'s own code).
+  - Under the same rule of no technical debt, these are closed by text only:
+    - **O7f** (architect, done): F-14 in this file, and N-21 in `execution-plan.md` and this file.
+    - **O5g** (executor, done on 2026-10-12): F-13 and the `_send` comment of N-21, comment and docstring only, with the exact text given there. `961 passed`, the AST is equal apart from the docstring, `ruff` and `mypy` are clean, and `git diff --numstat 1cd2f1e` gives `646 0` for the tests and `67 14` for `src` (the record is in O5g).
+  - The auditor's second scoped re-read ([audit.md](audit.md) § Round 4 second addendum, 2026-10-12; approved by the human) checked O7f and O5g.
+    - It resolved F-13 and F-14 and closed N-21. The verdict is unchanged.
+    - It filed three text items: F-15 and F-16 (LOW) and N-22 (note).
+    - The architect closed them in **O7g** with the auditor's exact wording, and the conductor verifies them by `grep`. By the stopping rule agreed with the human, there is no third read.
+  - N-21 decision (the human, 2026-10-12): no test is added now. It is accepted that no test pins `_send`'s drop when caller code reaches it, and the case is deferred, not for PR #16. The reproducer and the expected outcomes are in the N-21 row of § Finding responses, and the risk is in plan § Risks. The documentation step records it as a known limitation of the `source-access` capability.
 
 History of Revision 4: Intent Revision 4 was approved by the human on 2026-10-10, with its five open questions accepted as recommended. The O9b audit, round 2, had returned REJECTED. Its blocking findings were F-5 (a non-ASCII IPv6 zone escaped as a `UnicodeEncodeError`) and F-6 (the chained `httpx` exception quoted body bytes or header lines); F-7 was LOW. The architect's exit check found two more cases. O2d (321 new tests, 65 red) passed gate 2 on 2026-10-10. O5d and O8c gave `890 passed`. Revision 5 record (audit F-10): the human then committed and pushed this work as `1cd2f1e`, and PR #16 `feedback` and `tests` pass on it. The words "uncommitted" and "not committed" in the O8c record, the Revision 4 working state and the Revision 4 checkpoint describe the state before that commit.
 
@@ -70,6 +94,12 @@ Order and ownership:
    - **O8d (executor)** reruns the broader suite against the Revision 5 baseline.
    - **O9d (auditor)** writes round 4 of `audit.md`.
    - No README or CHANGELOG change is needed. Neither mentions chains, class names, the status type, the stream close or threads: `git grep -n -i -w -e chain -e chained -e cause -e __cause__ -e "class name" -e invariant -- README.md CHANGELOG.md docs/architecture.md` found no match in round 3. AC14 is unchanged.
+10. Round 4 closure, after gate 3 (text only; not a revision of the intent):
+   - **O7e**, the stale-text corrections of audit F-12 and the spec wording of N-17, is done by the architect.
+   - **O5f (executor)** changes comments and the module docstring only (F-11, N-17, N-18).
+   - After the round 4 addendum, **O7f**, the spec wording of F-14 and N-21, is done by the architect, and **O5g (executor)** changes comments and the module docstring only (F-13, N-21). After the second addendum, **O7g**, the auditor's exact wording for F-15, F-16 and N-22, is done by the architect and verified by the conductor's `grep`.
+   - The human then commits and pushes, and the PR #16 checks are confirmed on that head (R-12).
+   - No README or CHANGELOG change is needed: the round 4 `git grep` for chains, causes, class names, the invariant, threads and the close found no match in the docs (audit § Round 4, AC14).
 
 - [x] **O1** (AC13) — executor: add `httpx` as the first runtime dependency with `uv add httpx`.
   - Done when:
@@ -470,7 +500,7 @@ Order and ownership:
   - intent § Revision history, Revision 4: "the header now reads `Approval: Pending`" now says that the header read so while Revision 4 was a draft. The Revision 4 approval record moved there from the header, which now reads `Approval: Pending` for Revision 5;
   - this file: § Status, the O8c record, § Working state and § Checkpoint now record `1cd2f1e` as committed and pushed, with both PR #16 checks passing (reused from the audit).
   The auditor checks these by reading at O9d.
-- [ ] **O2e** (AC8, AC13, AC15; Revision 5) — test-writer: the Revision 5 tests, in `tests/unit/test_sercop_source.py` only. `tests/unit/test_source_response.py`, `tests/unit/test_layers.py`, the fixtures and `src/` do not change. Add tests and helpers only; change or remove no existing line, so `git diff --numstat 1cd2f1e -- tests` shows 0 deletions. In particular, `_assert_output_invariant` keeps its Revision 4 form: every existing call to it is made outside any handler, where the Revision 5 I2 gives the same answer. The new tests use a new helper.
+- [x] **O2e** (AC8, AC13, AC15; Revision 5) — test-writer: the Revision 5 tests, in `tests/unit/test_sercop_source.py` only. `tests/unit/test_source_response.py`, `tests/unit/test_layers.py`, the fixtures and `src/` do not change. Add tests and helpers only; change or remove no existing line, so `git diff --numstat 1cd2f1e -- tests` shows 0 deletions. In particular, `_assert_output_invariant` keeps its Revision 4 form: every existing call to it is made outside any handler, where the Revision 5 I2 gives the same answer. The new tests use a new helper.
   - Ground rules: markers, classes, statuses and defects are SYNTHETIC and labelled so. Every marker is passed through a variable, never written as a literal in the line that makes the call (plan § Output invariant I4). Hosts are `.invalid`. The network guard stays active, mock responses use `stream=`, and fake `monotonic`, `sleep` and `now` are used. No test imports `httpcore`.
   - Expected new tests: 71, so 890 -> 961 collected overall and 707 -> 778 in the file. Expected red against `1cd2f1e`: 44, with the reasons below. The other 27 pass and pin behavior that already holds; their output must say so. A typo, an import error, a wrong fixture or a missing helper is never a correct red reason.
   - Tests to add. The names are fixed because the § Validation commands and the auditor select them; the cases are those of the AC8 and AC15 rows, and case ids are suggested.
@@ -487,9 +517,22 @@ Order and ownership:
        - Expected green: they pin Python's rule, which already holds.
   - Count check: 25 + 28 + 8 + 8 + 2 = 71; red 0 + 28 + 8 + 8 + 0 = 44.
   - The counts come from the architect's scratch model of these groups, run against `1cd2f1e` (§ Guidance consulted: `44 failed, 27 passed`). In that model the record cases of item 4 streamed a search body, so the record call raised `IncompleteResponseError` instead of returning a result. With the AC2 fixture, the plan's form, it returns a `RecordResponse`. Either way the case is red. The test-writer reruns everything and records the real counts. If a count differs, the test-writer reports the difference and its reason before gate 2, and does not adjust the tests to match.
-  - Tests: [to be filled by the test-writer]
-  - Red: [to be filled by the test-writer]
-- [ ] **O5e** (AC8, AC15; Revision 5) — executor: make the O2e tests green without editing any test. Follow `execution-plan.md` § Binding constraints (Revision 5 items), § Outcome mapping (Revision 5) and § Output invariant, and confirm each library and interpreter behavior in `.venv`.
+  - Tests (2026-10-11, `tests/unit/test_sercop_source.py` only; 71 new tests, 890 -> 961 collected overall and 707 -> 778 in the file; additions only: `git diff --numstat 1cd2f1e -- tests` -> `646 0 tests/unit/test_sercop_source.py`; `_assert_output_invariant` is untouched, and the new helper is `_assert_invariant_with_context`; marker, classes, status and defects are SYNTHETIC, the marker is held in `LEAK_MARKER` and appears as a literal only in its definition; hosts `.invalid`; network guard active; `stream=`; fake `monotonic`, `sleep` and `now`; no test imports `httpcore`):
+    1. `test_no_leak_invariant_context_is_the_callers_own_exception` (T5), 25 cases: 3 construction (`base_url` `https://[::1/PLATAFORMA`, `min_interval=-1`, `transport=5`), 9 call cases by 2 operations (invalid argument, lone surrogate, too long, closed adapter, rules 1 to 5), 2 `retry` and 2 `finally`. Each runs inside `except SyntheticCallerError` (or `except SourceError as first`, or a `finally`) and asserts the exact type, no `__cause__`, `__suppress_context__` false, `__context__` is the caller's exception, I3, and I4 with `chain=False`.
+    2. `test_no_leak_invariant_names_only_a_class_that_httpx_exports` (T6), 28 cases: the 7 classes of the AC8 row by 2 places by 2 operations.
+    3. `test_no_leak_invariant_reads_the_status_as_an_exact_int` (T7), 8 cases: `SyntheticStatus(int)` for rules 2, 3, 4 and 5 by 2 operations.
+    4. `test_transport_defect_survives_a_failing_stream_close`, 8 cases: 4 pairs by 2 operations, each with a following call 2 s later that waits `[58.0]`.
+    5. `test_transport_defect_from_the_stream_close_follows_python_chaining`, 2 cases.
+  - Red (2026-10-11, `.venv`, `httpx` 0.28.1, run against `src/` at `1cd2f1e`, which is unchanged; each of the 5 groups was also run alone): `uv run pytest -q` -> `44 failed, 917 passed` (890 earlier tests plus 27 new ones that pin behavior that already holds). The counts are those of the architect's model.
+    - Item 1 (T5), 25 passed, as expected. Red evidence is from two mutants on a scratch copy of `src/` under the scratchpad directory (never `src/`), run with `PYTHONPATH` pointing at the copy: m11 (`from None` on rule 4) -> `6 failed, 19 passed`, each `AssertionError: I2: the context is hidden`; m12 (rule 4 raised inside `except LookupError`) -> `6 failed, 19 passed`, `AssertionError: I2: context LookupError, expected SyntheticCallerError` for the two rule-4 and the two `finally` cases, and `AssertionError: the first error has a context` for the two retry cases (the first call already carries the `LookupError`). Both fail exactly the 6 rule-4, retry and `finally` cases.
+    - Item 2 (T6), 28 failed: `Falloé` (4) -> `I3: the message is ASCII`; `Bad\nName` (4) -> `I3: the message is printable`; the four cases whose class name is the marker or is set to it later (16) -> `I4: marker ... is in the traceback`; the 200-character name (4) -> the message does not end with ` (ReadTimeout)`.
+    - Item 3 (T7), 8 failed: rules 2, 3 and 4 (6) -> `I3: the message is ASCII` (the message holds the marker and `é`); rule 5 (2) -> `I4: marker ... is in the response repr`.
+    - Item 4, 8 failed -> `Failed: DID NOT RAISE <the first exception's type>` (`KeyboardInterrupt`, `SystemExit`, `MemoryError`, `SyntheticTransportDefect`), for both operations: the call returned a `SearchPage` or a `RecordResponse`.
+    - Item 5, 2 passed, as expected: Python's rule already holds.
+    - Test logic, checked outside the repository (scratchpad `fix/`, a scratch copy of `src/` with the three Revision 5 code changes of O5e as probes): all 961 tests pass against it. This is evidence about the tests only, not an implementation for O5e.
+    - `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `76 files already formatted`; `uv run mypy .` -> `Success: no issues found in 20 source files`; `git diff --check` clean; `git status --short` -> ` M tests/unit/test_sercop_source.py`.
+    - Gate 2 (2026-10-12, recorded by the executor): the 71 tests were approved by the human. `tests/unit/test_sercop_source.py` is the only test file that differs from `1cd2f1e`, uncommitted.
+- [x] **O5e** (AC8, AC15; Revision 5) — executor: make the O2e tests green without editing any test. Follow `execution-plan.md` § Binding constraints (Revision 5 items), § Outcome mapping (Revision 5) and § Output invariant, and confirm each library and interpreter behavior in `.venv`.
   - Changes, in `src/ec_procurement_quality/infrastructure/sercop_source.py` only:
     - F-9: rules 1 and 3 name the nearest class in `type(failure).__mro__` that `httpx` exports as a subclass of `httpx.HTTPError`. The list is taken from the installed package;
     - the status is read once as an exact `int`, by value (`operator.index` is suggested);
@@ -497,32 +540,237 @@ Order and ownership:
     - R-11: the `SercopSource` docstring states the one-caller rule with the words "one thread at a time" (no mechanism, unless the human chose the guard at approval).
   - Nothing else changes: not `domain`, `application`, the tests, the fixtures, F1, ADR 0006, the docs or the specs. F-8 needs no code change.
   - Done when every O2e test passes with all 890 earlier tests, the focused commands of the AC8 and AC15 rows pass, `ruff`, `ruff format --check` and `mypy` are clean, and the AC15 `git grep` checks give their expected results.
-  - Green: [to be filled by the executor]
-- [ ] **O8d** Broader suite vs the Revision 5 baseline (AC13): the O8c commands again.
+  - Green (2026-10-12, `.venv`, Python 3.13.9, `httpx` 0.28.1, branch `feat/sercop-source-adapter`, HEAD `dc78500`; only `src/ec_procurement_quality/infrastructure/sercop_source.py` changed for O5e (`git diff --numstat 1cd2f1e -- src` -> `49	6`); no test, fixture, `domain`, `application`, F1, ADR, doc or other spec file was edited):
+    - `uv run pytest -q` -> `961 passed` (before: `44 failed, 917 passed`). The 71 O2e tests alone (`-k "survives_a_failing_stream_close or follows_python_chaining or context_is_the_callers or names_only_a_class or exact_int"`) -> `71 passed, 707 deselected`.
+    - Focused commands from the § Validation rows (all passed): AC8 `tests/unit/test_source_response.py tests/unit/test_sercop_source.py -k no_leak` -> 357; `tests/unit/test_sercop_source.py -k invariant` -> 297; `-k "invariant or transport_defect"` -> 319; AC9 `-k pacing` -> 52; AC10 `-k "timeout or accept_encoding or invalid"` over both files -> 245, and `-k "exactly_value_error or invariant"` -> 358; AC15 `-k "transport_defect or invalid_status or status_error or too_long or after_close or userinfo or cookie or no_leak or memory_error or exactly_value_error"` -> 491.
+    - `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `76 files already formatted`; `uv run mypy .` -> `Success: no issues found in 20 source files`.
+    - `git grep -n -e "except Exception" -e "except BaseException" -- src/.../sercop_source.py` -> no match (exit 1). `git grep -n -e ") from " -e "raise .* from " -- src/.../sercop_source.py` -> no match (exit 1). `git grep -n -e suppress -e "from None" -- src/.../sercop_source.py` -> no match (exit 1). `git grep -n "one thread at a time" -- src/.../sercop_source.py` -> one match (line 321, the `SercopSource` docstring).
+  - Library and interpreter behavior confirmed in `.venv` (`-I`) before relying on it:
+    - `httpx.__all__` has 69 names and all resolve with `getattr`. The ones that are classes and subclasses of `httpx.HTTPError` are 21: `CloseError`, `ConnectError`, `ConnectTimeout`, `DecodingError`, `HTTPError`, `HTTPStatusError`, `LocalProtocolError`, `NetworkError`, `PoolTimeout`, `ProtocolError`, `ProxyError`, `ReadError`, `ReadTimeout`, `RemoteProtocolError`, `RequestError`, `TimeoutException`, `TooManyRedirects`, `TransportError`, `UnsupportedProtocol`, `WriteError` and `WriteTimeout`. All have `__module__` `httpx` and `__name__` equal to the exported name. This is the plan's list.
+    - `operator.index(S(404))`, with `S` an `int` subclass whose `__index__`, `__format__`, `__str__` and `__repr__` return other values, returns the exact `int` `404` by value (type `int`, and none of those methods runs). `operator.index("200")` raises `TypeError`, which then propagates unchanged from the hook.
+    - `httpx/_models.py` 0.28.1: `Response.iter_raw` (935 to 959) ends with `self.close()`, inside the generator; `Response.close` (961 to 972) sets `is_closed` before it calls `self.stream.close()`, so a second `close()` is a no-op.
+  - Changes, each against the Revision 5 rule it closes:
+    - F-9 (AC8, plan § Outcome mapping Revision 5): a module-level `_HTTPX_ERROR_CLASSES`, a tuple built from `httpx.__all__` (so an upgrade that adds a class extends it). `_failure_class` walks `type(failure).__mro__` and writes the `__name__` of the first class that is one of them, found by identity (`is`), never by `==` or hashing. A double's own class name is never written. The `return` after the loop (`HTTPError`) is unreachable, since a failure is caught as an `httpx.HTTPError`.
+    - Status (AC8, I3, I4): the hook reads `response.status_code` once, through `operator.index`, into `capture.status`. Pacing, rule 2, the messages and `RawResponse` use that exact `int`.
+    - D-1 (AC15): in the hook's `finally`, `response.close()` is wrapped in `try`/`except httpx.HTTPError: pass`. When the read ended in an exception that is not an `httpx.HTTPError`, that exception is still in flight and propagates unchanged, and the close's `httpx.HTTPError` is dropped. A close error of another type is not caught, and Python chains the first as its `__context__`. After a read that ended cleanly or in an `httpx` error, the drop changes nothing: the stream is already closed (`is_closed`), or the error would have been dropped by `_send`, which still holds that drop as a safety net. The pacing update in `_attempt` runs in its `finally`, so the attempt still counts.
+    - R-11: the `SercopSource` docstring states the one-caller rule with the words "one thread at a time", and that nothing enforces it. No guard, no mechanism (the human accepted this).
+    - F-8: no change. There is no `from None` and no `raise ... from`.
+  - Uncovered lines in the adapter: 584 (`return ""` in `_failure_class` for a failure of `None`, as in O5d) and 590 (the fallback return, unreachable). Both are guards that keep a `NoneType` or an unknown class out of a message.
+- [x] **O8d** Broader suite vs the Revision 5 baseline (AC13): the O8c commands again.
   - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` with 890 plus the O2e tests.
   - `git diff --numstat 1cd2f1e -- tests` with 0 deletions.
   - `git diff --stat 1cd2f1e -- src/ec_procurement_quality/domain src/ec_procurement_quality/application src/ec_procurement_quality/interfaces tests/fixtures docs/adr pyproject.toml uv.lock tests/unit/test_layers.py tests/unit/test_source_response.py README.md CHANGELOG.md` empty.
   - The three `git grep` checks of the AC15 row.
   - Record the PR #16 checks for the head that holds the Revision 5 changes, or record them as unavailable if that head was not pushed.
-  - Green: [to be filled by the executor]
-- [ ] **O9d** Independent audit, round 4 (auditor): `audit.md` gains round 4.
+  - Green (2026-10-12, `.venv`, Python 3.13.9, `httpx` 0.28.1, branch `feat/sercop-source-adapter`, HEAD `dc78500`; the working tree held, uncommitted: `tests/unit/test_sercop_source.py` (O2e, gate 2 approved), `src/ec_procurement_quality/infrastructure/sercop_source.py` (O5e) and this file):
+    - `uv sync --locked` -> exit 0 (`Resolved 22 packages`, `Checked 22 packages`).
+    - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` -> exit 0, `961 passed in 13.87s` (890 plus the 71 O2e tests). Per file: `test_cli.py` 2, `test_content_hash.py` 17, `test_layers.py` 7, `test_local_disk_raw_evidence_store.py` 60, `test_raw_evidence.py` 52, `test_sercop_source.py` 778, `test_source_response.py` 45. TOTAL row: `599 statements, 15 missed, 97%`. Misses by file: `domain/raw_evidence.py` 2 (lines 99, 107) and `infrastructure/local_disk_raw_evidence_store.py` 11 (F1, unchanged); `infrastructure/sercop_source.py` 2 (lines 584 and 590, see O5e); `application/procurement_source.py` and `domain/source_response.py` 100%. No coverage threshold applies (PT-12).
+    - `git diff --numstat 1cd2f1e -- tests` -> `646	0	tests/unit/test_sercop_source.py`: 646 added lines, 0 deleted, and no other test file differs.
+    - `git diff --stat 1cd2f1e -- src/ec_procurement_quality/domain src/ec_procurement_quality/application src/ec_procurement_quality/interfaces tests/fixtures docs/adr pyproject.toml uv.lock tests/unit/test_layers.py tests/unit/test_source_response.py README.md CHANGELOG.md` -> empty (exit 0). `git diff --numstat 1cd2f1e -- src` -> `49	6	src/ec_procurement_quality/infrastructure/sercop_source.py`, and no other file under `src/`.
+    - AC15 row, the three `git grep` checks: `git grep -n -e "except Exception" -e "except BaseException" -- src/ec_procurement_quality/infrastructure/sercop_source.py` -> no match (exit 1); `git grep -n -e ") from " -e "raise .* from " -- src/ec_procurement_quality/infrastructure/sercop_source.py` -> no match (exit 1); `git grep -n "one thread at a time" -- src/ec_procurement_quality/infrastructure/sercop_source.py` -> one match, line 321, in the `SercopSource` docstring.
+    - Focused AC8 and AC15 commands: see O5e (all passed).
+    - `uv run ruff check .` -> `All checks passed!` (exit 0). `uv run ruff format --check .` -> `76 files already formatted` (exit 0). `uv run mypy .` -> `Success: no issues found in 20 source files` (exit 0). `uv lock --check` -> `Resolved 22 packages` (exit 0).
+    - `uv run node .sdd/doctor/run-doctor.mjs` -> `summary: 31 ok, 0 skipped, 0 warned, 0 failed` (exit 0; `OK pytest` is one of its checks).
+    - `uv run ec-procurement-quality --version` -> `ec-procurement-quality 0.1.0` (exit 0). `git diff --check` -> no output (exit 0).
+    - `git grep -n -i --untracked -e datosabiertos -e compraspublicas -- tests` -> no match (exit 1). `git grep -n "datosabiertos.compraspublicas.gob.ec/PLATAFORMA" -- src` -> one match, `infrastructure/sercop_source.py:58` (`DEFAULT_BASE_URL`).
+    - PR #16 `feedback` and `Tests` checks: **unavailable** for this state. `gh pr checks 16` -> `feedback pass`, `tests pass`, and `gh pr view 16 --json headRefOid,state` -> `OPEN`, `headRefOid` `dc785003fa5ea3db0b3a95065d8499359e43d8e3` (equal to the local HEAD). Those results cover `dc78500`, which holds the Revision 5 specs and the round 3 audit but not the O2e tests or the O5e code; both are uncommitted, so no check has run on them. They stay unavailable until the human commits and pushes, and are not recorded as a pass.
+- [x] **O9d** Independent audit, round 4 (auditor): `audit.md` gains round 4.
   - It rechecks F-8, F-9 and F-10 and R-11 on the exact round 3 inputs, including the F-8 reproducer inside `except KeyError` and the F-9 class names `Falloé`, `Bad\nName` and the marker.
   - It checks § Statement check row by row and § Output invariant against every `raise` in the adapter.
   - It checks the three Revision 5 rows of § Exit check against the code.
-  [verdict]
+  - Verdict (`audit.md` § Round 4, written by the auditor on 2026-10-12): **APPROVED WITH RESERVATIONS**.
+    - Reviewed state: `1cd2f1e` plus the uncommitted O2e tests and O5e code, at HEAD `dc78500`.
+    - `961 passed`, also with `-W error`. The O2e red reproduced against `1cd2f1e`: `44 failed, 917 passed`.
+    - AC1 to AC15 PASS. Resolved: F-8, F-9, F-10 and R-11. All 25 rows of § Statement check hold, as do the Revision 5 rows of § Exit check, and I1 to I4 hold at all 20 raise sites.
+    - Non-blocking: F-11 and F-12 (LOW). Reservation: R-12 (new); R-6 and R-7 stay accepted. Notes: N-17 to N-20.
+  - Gate 3 was approved by the human on 2026-10-12. The responses are in § Finding responses. The architect recorded this verdict here; the auditor writes only `audit.md`.
+- [x] **O7e** (AC13 bookkeeping; audit F-12 and N-17) — architect, done on 2026-10-12. It changes spec text only, and no code, test, fixture, doc or AC:
+  - F-12, in this file:
+    - § Status: the Revision 5 "Next" line is marked superseded where it stands;
+    - the bookkeeping line records `dc78500` as committing the Revision 5 specs and the round 3 report;
+    - a round 4 record is added;
+    - the "Previous working state (architect, Revision 5 draft)" entry gains the note that `dc78500` committed that state.
+  - N-17, in `execution-plan.md`: the § Exit check K15 row is reworded, and a note that records the correction follows the Revision 5 rows. The sentence of the § Validation AC15 row that placed the drop in `_send` is also corrected. Both now say what the code does and the tests pin:
+    - the hook's `finally` drops an `httpx.HTTPError` from the stream's close, whatever way the read ended;
+    - a close exception of another type follows Python's rule;
+    - `_send`'s own drop is a safety net. As first written, O7e said that no path reaches it with `httpx` 0.28.1. O7f narrows that (audit N-21): no code inside `httpx` 0.28.1 reaches it, but caller code can, so it is not dead code.
+    The evidence is the auditor's round 4 probes and mutants m16, m17 and m19. The plan's revision log records the correction as text, not as a revision.
+- [x] **O5f** (F-11; N-17 and N-18, code text) — executor: comments and the module docstring only, in `src/ec_procurement_quality/infrastructure/sercop_source.py`.
+  - No executable line changes. No test, fixture, `domain`, `application`, F1, ADR, doc or spec file changes, and no other file under `src/`.
+  - The three replacements are exact. Each old block occurs once at the reviewed state (line numbers at the O5e state).
+  - (a) F-11, the module docstring paragraph at lines 14 to 19 (AC8 Revision 5, plan § Output invariant I2 and I3). Replace these lines:
+    ```text
+    Every exception the adapter raises itself is exactly one of the source errors,
+    `ValueError` or `RuntimeError`, has fixed ASCII text that starts with the
+    operation or the parameter, and has no `__cause__` and no `__context__`: the
+    libraries' own messages quote the bytes they reject, so none is ever chained.
+    A reason found inside an `except` block is returned or flagged, and raised after
+    the block.
+    ```
+    with these (column 0, as in the docstring):
+    ```text
+    Every exception the adapter creates and raises is exactly one of the source
+    errors, `ValueError` or `RuntimeError`, with fixed printable ASCII text that
+    starts with the operation or the parameter. It has no `__cause__`. Its
+    `__context__` is only the exception the caller was handling when the call or
+    the construction started (in an `except`, a `finally` or an `__exit__`), or
+    `None`. Nothing raised during that call or construction, by the libraries, the
+    interpreter or the adapter's own checks, is reachable through the chain: the
+    libraries' own messages quote the bytes they reject. A reason found inside an
+    `except` block is returned or flagged, and raised after the block. No `from`
+    clause is written, so the caller's context is never hidden.
+    ```
+  - (b) N-17, the comment in `_send` at lines 496 and 497, under `if capture.status is None:`, indented 12 spaces. Replace these lines:
+    ```text
+    # Otherwise the response was captured and the outcome is decided
+    # from the capture: the library's error is dropped, not chained.
+    ```
+    with these:
+    ```text
+    # Otherwise a status was captured, and the outcome is decided from
+    # the capture. With `httpx` 0.28.1 no error reaches this point then:
+    # the hook keeps a read's `httpx.HTTPError` as the failure and drops
+    # one from the stream's close. This drop is a safety net: a later
+    # library error would be dropped, not chained.
+    ```
+  - (c) N-18, the comment above the fallback `return` of `_failure_class` at line 589, indented 4 spaces. Replace this line:
+    ```text
+    # Not reachable: a failure is caught as an `httpx.HTTPError`, which is listed.
+    ```
+    with these:
+    ```text
+    # Reached only if a metaclass (caller code) makes `__mro__` hide the class's
+    # `httpx` bases; the name written is still one of the exported classes.
+    ```
+  - Expected effect: the file grows by 8 lines (706 to 714): 4 in (a), 3 in (b) and 1 in (c). The architect applied the three replacements to a scratch copy outside the repository and found:
+    - `ruff check` and `ruff format --check` pass on it, and every new line is at most 80 characters;
+    - its AST equals the current file's, apart from the module docstring;
+    - the AC15 `git grep` patterns give the same results as before. That is, no `except Exception`, `except BaseException`, `) from `, `raise .* from `, `suppress` or `from None`, and one `one thread at a time`, which moves from line 321 to line 325;
+    - the two uncovered lines move from 584 and 590 to 591 and 598.
+  - Done when:
+    - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` gives `961 passed`, with no test file changed (`git diff --numstat 1cd2f1e -- tests` still `646 0`). The only coverage change is that the two misses in `sercop_source.py` are reported at 591 and 598;
+    - `uv run ruff check .`, `uv run ruff format --check .` and `uv run mypy .` are clean;
+    - the three AC15 `git grep` checks and the `suppress` / `from None` check give the results above;
+    - the change touches only the docstring and comment lines of (a), (b) and (c). O5e is uncommitted, so `git diff` against HEAD also shows O5e. Compare instead with a copy of the file taken before the edit, kept outside the repository, using `diff -U0`. The module AST minus its docstring must be unchanged (`ast.dump` equal), and every changed line outside the docstring must start with `#` after its indentation.
+  - Record the commands and results here, as O5e did. If any replacement does not apply exactly, or if anything beyond text would need to change, stop and report it.
+  - Green (2026-10-12, executor, `.venv`, branch `feat/sercop-source-adapter`, HEAD `dc78500`; O2e and O5e still uncommitted). The three old blocks matched the file exactly (once each), and the three replacements were applied with the exact text above. Only `src/ec_procurement_quality/infrastructure/sercop_source.py` and this file changed in this step:
+    - Comparison with a copy of the file taken before the edit, kept outside the repository: `diff -U0` shows three hunks only, `@@ -14,6 +14,10 @@` (the docstring paragraph, 6 lines replaced by 10), `@@ -496,2 +500,5 @@` (the `_send` comment, 2 by 5) and `@@ -589 +596,2 @@` (the `_failure_class` comment, 1 by 2). Every changed line outside the docstring starts with `#` after its indentation. The module AST minus its docstring is unchanged (`ast.dump` equal, `True`). Every new line is at most 80 characters.
+    - The file went from 706 to 714 lines (+4 in (a), +3 in (b), +1 in (c)).
+    - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `961 passed in 13.84s`. The only misses in `sercop_source.py` are `591, 598` (300 statements, 2 missed, 99%); TOTAL `599 statements, 15 missed, 97%`, as in O8d.
+    - `git diff --numstat 1cd2f1e -- tests` -> `646	0	tests/unit/test_sercop_source.py`. `git diff --stat 1cd2f1e -- src/ec_procurement_quality/domain src/ec_procurement_quality/application src/ec_procurement_quality/interfaces tests/fixtures docs/adr pyproject.toml uv.lock tests/unit/test_layers.py tests/unit/test_source_response.py README.md CHANGELOG.md` -> empty. `git diff --numstat 1cd2f1e -- src` -> `65	14	src/ec_procurement_quality/infrastructure/sercop_source.py` and no other file under `src/`.
+    - `uv run ruff check .` -> `All checks passed!`. `uv run ruff format --check .` -> `76 files already formatted`. `uv run mypy .` -> `Success: no issues found in 20 source files`. `git diff --check` -> no output (exit 0).
+    - `git grep -n -e "except Exception" -e "except BaseException" -- src/ec_procurement_quality/infrastructure/sercop_source.py` -> no match (exit 1). `git grep -n -e ") from " -e "raise .* from " -- ...` -> no match (exit 1). `git grep -n "one thread at a time" -- ...` -> one match, line 325 (the `SercopSource` docstring). `git grep -n -e "suppress" -e "from None" -- ...` -> no match (exit 1).
+    - Left for others: a scoped read-only re-check by the auditor (F-11 and F-12 name "checked by reading"), the commit and push (the human's), and R-12 on the new head. The § Status "O5f (executor, next)" line and § Working state were not updated by the executor; they are the architect's bookkeeping.
+- [x] **O7f** (AC13 bookkeeping; audit F-14 and N-21, spec text) — architect, done on 2026-10-12. It changes spec text only, and no code, test, fixture, doc or AC:
+  - F-14, in this file: the R-12 row of § Finding responses no longer cites a step number; it names the § Working state step that confirms R-12. I also checked every other step reference the architect wrote:
+    - the "Round 4 record" under the executor's previous working state cites steps 1 and 2 of that entry's own list (O9d; the commit and push), which is right;
+    - the other "step 2" mentions are the call order of plan § Request format, or the F-10 record of the Revision 4 working state, and are right (wording corrected after the round 4 second addendum, F-16).
+  - N-21, in `execution-plan.md`:
+    - the K15 parenthesis now reads "K14: rule 3 for an `httpx.HTTPError`, pass-through for any other exception";
+    - the K15 note says "no code inside `httpx` 0.28.1 reaches it", and a second note gives the caller-code path, with the auditor's reproducer and the m17 result;
+    - the AC15 sentence and the revision log say the same.
+  - N-21, in this file: the O7e record and the N-17 row are corrected the same way.
+  - Kept as written, as for N-18: the executor's previous working state (Revision 5 code), which calls `_send`'s drop "a safety net with no path of its own". It records what the executor believed then.
+- [x] **O5g** (F-13; N-21, code text) — executor: comments and the module docstring only, in `src/ec_procurement_quality/infrastructure/sercop_source.py`.
+  - The limits are those of O5f: no executable line changes. No test, fixture, `domain`, `application`, F1, ADR, doc or spec file changes, and no other file under `src/`.
+  - The two replacements are exact. Each old block occurs once in the file at the O5f state (714 lines; line numbers at that state).
+  - (a) F-13, the first three lines of the module docstring paragraph, lines 14 to 16. The other seven lines of the paragraph stay as they are. Replace these lines:
+    ```text
+    Every exception the adapter creates and raises is exactly one of the source
+    errors, `ValueError` or `RuntimeError`, with fixed printable ASCII text that
+    starts with the operation or the parameter. It has no `__cause__`. Its
+    ```
+    with these (column 0, as in the docstring):
+    ```text
+    Every exception the adapter creates and raises to its caller is exactly one of
+    the source errors, `ValueError` or `RuntimeError`, with fixed printable ASCII
+    text. The text starts with the operation or the parameter, or it is exactly
+    `the source adapter is closed`. The exception has no `__cause__`. Its
+    ```
+    "to its caller" leaves out the internal `ValueError` of `_reject_json_constant`, which is caught inside the adapter (the option in the audit's F-13 closure condition). The closed-adapter message is the one exception that plan I3 names.
+  - (b) N-21, the `_send` comment at lines 501 to 504, indented 12 spaces. These are the last four lines of the O5f comment; its first line, `# Otherwise a status was captured, and the outcome is decided from`, stays. Replace these lines:
+    ```text
+    # the capture. With `httpx` 0.28.1 no error reaches this point then:
+    # the hook keeps a read's `httpx.HTTPError` as the failure and drops
+    # one from the stream's close. This drop is a safety net: a later
+    # library error would be dropped, not chained.
+    ```
+    with these:
+    ```text
+    # the capture. No code inside `httpx` 0.28.1 gets here then: the
+    # hook keeps a read's `httpx.HTTPError` as the failure and drops one
+    # from the stream's close. Caller code can: a transport may return
+    # a `Response` subclass whose `has_redirect_location` raises an
+    # `httpx.HTTPError`. That late error is dropped here, not chained.
+    ```
+  - Expected effect: the file grows by 2 lines, from 714 to 716: 1 in (a) and 1 in (b). The architect applied both replacements to a scratch copy of the O5f file, outside the repository, and found:
+    - `ruff check` and `ruff format --check` pass on it, and every new line is at most 80 characters;
+    - its AST equals the O5f file's, apart from the module docstring;
+    - no `except Exception`, `except BaseException`, `) from `, `raise .* from `, `suppress` or `from None`;
+    - `one thread at a time` moves from line 325 to line 326;
+    - the two uncovered lines move from 591 and 598 to 593 and 600;
+    - the closed-adapter message is on one docstring line, so `grep "the source adapter is closed"` finds it there and at the `raise`.
+  - Done when, as for O5f, with the new numbers:
+    - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` gives `961 passed`, and `git diff --numstat 1cd2f1e -- tests` is still `646 0`. The only coverage change is that the two misses in `sercop_source.py` are reported at 593 and 600;
+    - `uv run ruff check .`, `uv run ruff format --check .` and `uv run mypy .` are clean;
+    - the three AC15 `git grep` checks and the `suppress` / `from None` check give the results above;
+    - compared with a copy of the file taken before the edit, kept outside the repository, `diff -U0` shows the two hunks of (a) and (b) only. The module AST minus its docstring is unchanged (`ast.dump` equal), and every changed line outside the docstring starts with `#` after its indentation.
+  - Record the commands and results here, as O5f did. If a replacement does not apply exactly, or if anything beyond text would need to change, stop and report it.
+  - Green (2026-10-12, executor, `.venv`, branch `feat/sercop-source-adapter`, HEAD `dc78500`; O2e, O5e and O5f still uncommitted). The two old blocks matched the file exactly (once each), and the two replacements were applied with the exact text above. Only `src/ec_procurement_quality/infrastructure/sercop_source.py` and this file changed in this step:
+    - Comparison with a copy of the file taken before the edit, kept outside the repository: `diff -U0` shows two hunks only, `@@ -14,3 +14,4 @@` (the docstring paragraph, 3 lines replaced by 4) and `@@ -501,4 +502,5 @@` (the `_send` comment, 4 by 5). Every changed line outside the docstring starts with `#` after its indentation. The module AST minus its docstring is unchanged (`ast.dump` equal, `True`). Every new line is at most 80 characters (the longest is 80).
+    - The file went from 714 to 716 lines (+1 in (a), +1 in (b)); `wc -l` -> `716`.
+    - `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `961 passed in 11.41s`. The only misses in `sercop_source.py` are `593, 600` (300 statements, 2 missed, 99%); TOTAL `599 statements, 15 missed, 97%`, as in O5f.
+    - `git diff --numstat 1cd2f1e -- tests` -> `646	0	tests/unit/test_sercop_source.py`. `git diff --stat 1cd2f1e -- src/ec_procurement_quality/domain src/ec_procurement_quality/application src/ec_procurement_quality/interfaces tests/fixtures docs/adr pyproject.toml uv.lock tests/unit/test_layers.py tests/unit/test_source_response.py README.md CHANGELOG.md` -> empty. `git diff --numstat 1cd2f1e -- src` -> `67	14	src/ec_procurement_quality/infrastructure/sercop_source.py` and no other file under `src/` (was `65 14` after O5f).
+    - `uv run ruff check .` -> `All checks passed!`. `uv run ruff format --check .` -> `76 files already formatted`. `uv run mypy .` -> `Success: no issues found in 20 source files`. `git diff --check` -> no output (exit 0).
+    - `git grep -n -e "except Exception" -e "except BaseException" -- src/ec_procurement_quality/infrastructure/sercop_source.py` -> no match (exit 1). `git grep -n -e ") from " -e "raise .* from " -- ...` -> no match (exit 1). `git grep -n "one thread at a time" -- ...` -> one match, line 326 (the `SercopSource` docstring). `git grep -n -e "suppress" -e "from None" -- ...` -> no match (exit 1). `git grep -n "the source adapter is closed" -- ...` -> two matches: line 17 (the docstring) and line 573 (the `raise`).
+    - Left for others: a scoped read-only re-check by the auditor (F-13 and F-14 name "checked by reading"), the commit and push (the human's), R-12 on the new head, and, put to the human, whether to pin `_send`'s caller-code drop with a test (N-21). Per the instructions of this step, the executor updated only the lines that said O5g was next (§ Status addendum record, § Working state, § Checkpoint); § Finding responses was not touched.
+- [x] **O7g** (AC13 bookkeeping; audit F-15, F-16 and N-22, spec text) — architect, done on 2026-10-12. It applies the auditor's exact wording from audit.md § Round 4 second addendum. It changes no code, test, fixture, doc, AC, `intent.md` or `audit.md`:
+  - F-15, in this file, R-12 row, Response column: the list of work to commit now names O5g after O5f, with the auditor's exact phrase. Check: the conductor's `grep -n` for that phrase finds the R-12 row only.
+  - F-16, in this file, O7f record: the bullet that said no other place cites a numbered step is replaced by the auditor's sentence on the other "step 2" mentions. Check: the conductor's `grep -n` for the old phrase finds nothing.
+  - N-22, in `execution-plan.md`: the AC15 sentence reads "Only caller code can, for example a transport that returns a `Response` subclass whose `has_redirect_location` raises an `httpx.HTTPError`.", and the § Risks N-21 row reads "Caller code can, for example a transport that returns a `Response` subclass whose `has_redirect_location` raises." A revision-log line records it. Check: `grep -c "Caller code can, for example\|Only caller code can, for example" execution-plan.md` gives 2.
+  - Bookkeeping in this file: § Status, § Working state and § Checkpoint record the second scoped re-read. The N-21 row records the auditor's record-call probe and the `history` setter path.
+  - Verification is the conductor's `grep` check. By the stopping rule agreed with the human, there is no further audit read.
 
 ## Working state
-- Updated: 2026-10-10 (architect, Revision 5 draft)
-- Outcome: O9c recorded (REJECTED, round 3) and O7d done. The three spec files of Revision 5 are drafted and approved by the human on 2026-10-11. HEAD is `1cd2f1e`, pushed, with both PR #16 checks passing. Uncommitted: `audit.md` (the auditor's) and the Revision 5 changes to `intent.md`, `execution-plan.md` and this file. No code, test, fixture, ADR, F1 module or doc was touched.
-- Phase: Repairing; Revision 5 approved, O2e (test-writer, red tests) next
+- Updated: 2026-10-12 (architect, after the round 4 second addendum and O7g)
+- Outcome:
+  - O9d is recorded: round 4, APPROVED WITH RESERVATIONS. Gate 3 was approved by the human on 2026-10-12.
+  - O7e and O5f are done. The auditor's scoped re-check (audit.md § Round 4 addendum) resolved F-11 and F-12, closed N-17, and filed F-13, F-14 and N-21, all non-blocking. The verdict is unchanged.
+  - O7f is done: F-14 and N-21 in this file, and N-21 in `execution-plan.md` (the K15 parenthesis, a second K15 note, the AC15 sentence and the revision log).
+  - O5g is done (executor, 2026-10-12), with its exact text: F-13, and the `_send` comment for N-21. `961 passed`, the AST is equal apart from the docstring, `ruff`, `ruff format --check` and `mypy` are clean, and the file has 716 lines (the record is in O5g).
+  - The auditor's second scoped re-read (audit.md § Round 4 second addendum, 2026-10-12; approved by the human) checked O7f and O5g.
+    - It resolved F-13 and F-14 and closed N-21. The verdict is unchanged.
+    - It also probed the record case: `RecordResponse` for a `200`, `SourceStatusError` for a `404`.
+    - It filed F-15, F-16 and N-22, which O7g closed with the auditor's exact wording. The conductor verifies them by `grep`. By the agreed stopping rule, there is no third read.
+  - Human decision on N-21, 2026-10-12: no test is added now. It is accepted that no test pins `_send`'s drop when caller code reaches it (mutant m17 passes all 961). The case is deferred, not for PR #16. The reproducer and the expected outcomes are written in the N-21 row of § Finding responses, so that a later test-writer can use them: a `Response` subclass whose `has_redirect_location` raises `httpx.RemoteProtocolError`; `SearchPage` for a `200`, `SourceStatusError` for a `404`. It is an accepted risk in plan § Risks.
+  - The architect changed no code, test, fixture, doc, `intent.md` or `audit.md`. The only check run was on a scratch copy of the O5f file with the O5g text, outside the repository. `ruff check` and `ruff format --check` passed, the AST was unchanged apart from the docstring, the `git grep` patterns gave the same results, and the file had 716 lines.
+  - HEAD is `dc78500`, pushed. Uncommitted in the working tree:
+    - `tests/unit/test_sercop_source.py` (O2e) and `src/ec_procurement_quality/infrastructure/sercop_source.py` (O5e, O5f and O5g);
+    - `audit.md` (round 4 and its two addenda, the auditor's);
+    - `execution-plan.md` and this file (O7e, O7f, O7g, the O5f and O5g records, and the N-21 decision).
+- Phase: closing; gate 3 is approved, and the text-only closure is done (F-11 to F-16 and N-17, N-21 and N-22 answered; the conductor's `grep` check of O7g is pending)
 - In progress: nothing
-- Last command (architect): the scratch model of the O2e groups against `1cd2f1e` -> `44 failed, 27 passed`, and against the scratch reference fix -> `71 passed`. The reference fix also passes the 890 existing tests (scratchpad `r5/`, outside the repository).
+- Next step (O5g and the auditor's second scoped re-read are done and no longer listed):
+  1. The human commits and pushes; the roles do not commit.
+  2. Then confirm R-12 on the new head: `Tests` prints `961 passed`, `feedback` prints `2 of 2 command(s) ran`, and both runs have that head's `headSha`.
+  3. Then the documentation step (`specs/current`, "Shipped", archive) runs outside these outcomes. It must carry the N-21 deferral as a known limitation of the `source-access` capability: no test pins `_send`'s drop when caller code reaches it (plan § Risks; the N-21 row).
+
+Previous working state (executor, Revision 5 code, 2026-10-12; the round 4 record follows it):
+- Updated: 2026-10-12 (executor)
+- Outcome: O2e (gate 2 approved by the human on 2026-10-12), O5e and O8d done by the executor: `961 passed`, `ruff`, `ruff format --check`, `mypy`, `uv lock --check`, `uv sync --locked` and the doctor (`31 ok, 0 skipped, 0 warned, 0 failed`) clean. HEAD is `dc78500`, pushed (PR #16 `feedback` and `tests` pass on it, which does not cover the changes below). Uncommitted in the working tree: `tests/unit/test_sercop_source.py` (O2e), `src/ec_procurement_quality/infrastructure/sercop_source.py` (O5e) and this file. No test, fixture, `domain`, `application`, F1, ADR, doc or other spec file was touched by the executor.
+- Phase: Repairing; the Revision 5 code is done, the independent re-audit (O9d, round 4) is next
+- In progress: nothing
+- Last command (executor): `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `961 passed`, TOTAL `599 statements, 15 missed, 97%`
 - Next step:
-  1. O2e (test-writer: 71 new tests, 44 expected red against `1cd2f1e`), then gate 2 (the human reviews the red tests).
-  2. O5e (executor), O8d (suite), then O9d (auditor, round 4).
-  3. O5e and O8d (executor).
-  4. O9d (auditor, round 4).
-  The commit and push are the human's.
+  1. O9d (auditor): round 4 of `audit.md`. It rechecks F-8, F-9, F-10 and R-11 on the exact round 3 inputs, § Statement check row by row and § Output invariant against every `raise` in the adapter. Points the executor leaves to the auditor: (a) the D-1 drop is written as `try`/`except httpx.HTTPError: pass` around `response.close()` in the hook's `finally`, for every kind of read end, and not only after a non-`httpx` end (the outcome is the same, because `_send` would drop it; `_send`'s drop is now a safety net with no path of its own); (b) `_failure_class` has two unreachable lines (584 and 590); (c) `_HTTPX_ERROR_CLASSES` is built from `httpx.__all__`, and the tuple is compared by identity.
+  2. The human commits and pushes; the roles do not commit. Then the PR #16 `feedback` and `Tests` checks can run on the head that holds Revision 5, and are recorded here (O8d has them as unavailable).
+  3. After gate 3, the documentation step (`specs/current`, "Shipped", archive) runs outside these outcomes.
+- Round 4 record (architect, 2026-10-12): step 1 above then happened. O9d returned APPROVED WITH RESERVATIONS, and the human approved gate 3 on 2026-10-12. Step 2 has not happened yet: the O2e tests and the O5e code are still uncommitted, so R-12 is open.
+
+Previous working state (architect, Revision 5 draft, 2026-10-10; the round 4 record follows it):
+- Outcome: O9c recorded (REJECTED, round 3) and O7d done. The three spec files of Revision 5 are drafted and approved by the human on 2026-10-11. HEAD is `1cd2f1e`, pushed, with both PR #16 checks passing. Uncommitted: `audit.md` (the auditor's) and the Revision 5 changes to `intent.md`, `execution-plan.md` and this file. No code, test, fixture, ADR, F1 module or doc was touched.
+- Next step was O2e (test-writer: 71 new tests, 44 expected red against `1cd2f1e`), gate 2, O5e, O8d and O9d. The architect's scratch model of the O2e groups gave `44 failed, 27 passed` against `1cd2f1e`, and `71 passed` against the scratch reference fix.
+- Round 4 record (audit F-12): the human then committed and pushed this state as `dc78500`, together with the round 3 report in `audit.md`. "Uncommitted" above describes the state before that commit.
 
 Previous working state (executor, Revision 4, 2026-10-10; the Revision 5 record follows it):
 - Updated: 2026-10-10 (executor)
@@ -578,9 +826,34 @@ Previous working state (before Revision 4):
 | F-10 (audit round 3, LOW): stale text. Intent § Revision history Revision 4 says "the header now reads `Approval: Pending`", and this file describes `1cd2f1e`'s content as uncommitted | Corrected in Revision 5 (O7d). The intent sentence now records the drafting-time state and the approval. § Status, the O8c record, § Working state and § Checkpoint record `1cd2f1e` as committed and pushed, with both checks passing (reused from the audit) | O7d |
 | R-11 (audit round 3, reservation): a shared or re-entered instance mixes the evidence of two calls with no error | Spec Revision 5: **a documented one-caller rule** (intent AC15 Revision 5, plan § Binding constraints, § Consumers F4, § Risks, and one `SercopSource` docstring sentence). Recommendation, put to the human: no guard. ADR 0006 fixes one-thread synchronous use. A guard (for example a non-blocking lock that raises `RuntimeError`) is cheap to write, but its own state needs new rules: an interrupt between taking it and the `try` that releases it would leave the adapter refusing every call, and `close()` from another thread would need a rule too. That is new normative text of the kind this revision removes, against a misuse the rule already forbids. If the human prefers the guard, it becomes an O2e and O5e item: `RuntimeError` before any wait or request, a fixed message, and no pacing change | intent AC15 Revision 5, § Open questions; plan § Statement check S24; O5e |
 | Statement check (architect, Revision 5): every normative statement of § Output invariant, AC8, AC10 and AC15, tried against legal inputs and legitimate test doubles | 25 statements: 5 hold, 4 are clarified, and 16 are restated (plan § Statement check). Beyond F-8 and F-9, it found three cases:<br>(a) a status that a test double gives as an `int` subclass wrote its own text into the message and the response's `repr`. Now the status is read as an exact `int` (code, one line).<br>(b) D-1: a read that ends in `KeyboardInterrupt`, `SystemExit`, `MemoryError` or a transport defect, followed by an `httpx` error from the stream's close, lost the first exception, and a search returned a `SearchPage` (probe). Now the first exception decides (code, a few lines, no broad `except`), and a non-`httpx` close error follows Python's rule.<br>(c) Methods of `str` and `int` subclasses, and values a test double returns, are now named caller code (no code; it writes down what Revision 4 did for a bad `now`, and the audit's N-14) | intent AC8, AC10, AC15 Revision 5; plan § Statement check, § Exit check Revision 5 rows; O2e items 3 to 5; O5e |
+| F-11 (audit round 4, LOW, not blocking): the module docstring of `sercop_source.py` (lines 14 to 17) still says that every exception the adapter raises has "no `__cause__` and no `__context__`", the Revision 4 wording that no code can meet (F-8) | **Closed by text, in code (O5f)**. The paragraph is restated as AC8 Revision 5 and plan I2 say it: no `__cause__`; the `__context__` is only the exception the caller was handling when the call or the construction started, or `None`; nothing raised during the call, by the libraries, the interpreter or the adapter's own checks, is reachable through the chain; and no `from` clause hides the caller's context. It also says "creates and raises" (S1) and "printable ASCII" (I3). Reason: the human asked for no technical debt, and only the executor edits code. A note accepting the old wording was rejected. No behavior changes: O5f's done check compares the AST | O5f (a); plan § Output invariant I2, I3, § Statement check S1, S2 |
+| F-12 (audit round 4, LOW, not blocking): § Status line 12 called the Revision 5 spec changes uncommitted, the "Next: the human's approval" line was marked superseded only by a later bullet, and the "Previous working state (architect, Revision 5 draft)" entry had no note that `dc78500` committed it | **Corrected (O7e)**. The "Next" line is marked superseded where it stands. The bookkeeping line records that `dc78500` committed the Revision 5 specs and the round 3 report. The previous working state gains the same kind of note as its predecessors. A round 4 record is added to § Status, § Working state and § Checkpoint. Evidence: `git show --stat dc78500` and the PR #16 head, as read by the auditor in round 4. The architect made no network access | O7e; § Status; § Working state; § Checkpoint |
+| N-17 (audit round 4, note): the D-1 drop covers every way a read can end, so `_send`'s drop branch has no path, and three texts still placed the drop in `_send` | **Closed by text, with no behavior change**. The auditor judged the behavior to be the plan's (mutant m16 passes 961). In the spec (O7e), the K15 row and the AC15 row sentence now say three things. The hook's `finally` drops an `httpx.HTTPError` from the stream's close, whatever way the read ended. A close exception of another type follows Python's rule. `_send`'s drop is a safety net that no code inside `httpx` 0.28.1 reaches (m17 passes 961; m19 fails the 2 `close-after-cut` cases). As first written, this row said "no path"; O7f narrowed it, because caller code can reach the drop (N-21). The `_send` comment is restated in O5f (b), and again in O5g (b). Kept as is: the D-1 flag form in § Proposed approach, which is labelled an example; the historical lines of § Guidance consulted (R-10, D-1) and of K14a ("was: ..."), which describe the code at `19ab9c3` and `1cd2f1e`; and the `_send` branch itself (removing it would be a behavior change) | plan § Exit check K15 and its note, § Validation AC15 row, § Revision log; O5f (b) |
+| R-12 (audit round 4, reservation): the PR #16 checks are unavailable for the reviewed state. They pass on `dc78500`, which holds neither the O2e tests nor the O5e code (`890 passed`) | **Left open; it is the human's step**. The roles do not commit. After the human commits and pushes the O2e tests, the O5e code, O5f and O5g, confirm on the new head that `Tests` prints `961 passed`, that `feedback` prints `2 of 2 command(s) ran`, and that both runs have that head's `headSha`. Record the result in § Working state | § Status round 4 record; § Working state, the step that confirms R-12 after the human's commit and push (no step number is cited, because the list is renumbered as steps finish; audit F-14) |
+| N-18 (audit round 4, note): line 584 is unreachable, and line 590 is reachable only through a metaclass that overrides `__mro__`, where it writes the fixed `HTTPError`. The comment "Not reachable" is imprecise for that double | **The comment is corrected in O5f (c)**, with no behavior change: the metaclass is caller code (AC15 Revision 5), and the name written is still one from the closed list (I3 holds; audit probe). Reason: the comment is wrong as written, and the fix is two comment lines in the same pass. The O5d and O5e records in this file, which call line 590 unreachable, describe what the executor believed then, and stay as written | O5f (c) |
+| N-19 (audit round 4, note): `git diff --numstat 015a72b -- tests` prints `1756 37` with git's default algorithm and `1719 0` with `--minimal`, `--patience` or `--histogram` | No action. It is a diff-alignment artifact: no line was deleted, and the references that bind now, `1cd2f1e` and `19ab9c3`, print `646 0` and `1261 0` with the default algorithm | audit § Round 4, AC13 point 13 |
+| N-20 (audit round 4, note): a status of more than 4,300 digits from a test double still raises the interpreter's `ValueError` in rule 2 | No action. Row 1.2 and K19 already record it, and it is caller code under AC15 Revision 5 (a value a test double returned, S1). The real stack gives three digits (`h11`) | plan § Family check 1.2, § Exit check K19, § Statement check S1 |
+| F-13 (round 4 addendum, LOW, not blocking): the new module docstring says that every message "starts with the operation or the parameter", but `RuntimeError("the source adapter is closed")` does not. Plan I3 names that exact text as the one exception | **Closed by text, in code (O5g (a))**. The sentence now admits the closed-adapter message, written exactly as plan I3 has it. It also says "raises to its caller", the optional wording of the audit's closure condition, because the internal `ValueError` of `_reject_json_constant` never leaves the adapter. No behavior changes: O5g's done check compares the AST | O5g (a); plan § Output invariant I3 |
+| F-14 (round 4 addendum, LOW, not blocking): the R-12 row cited "§ Working state step 3", but the R-12 confirmation was step 2 | **Corrected (O7f)**. The row names the step by what it does, with no number, because the list is renumbered as steps finish. Every other step reference in this file was checked. The architect's own references are right: the round 4 record under the executor's previous working state cites that entry's steps 1 and 2. The other "step 2" mentions are the call order of plan § Request format, or the F-10 record of the Revision 4 working state, and are right | O7f; § Finding responses, R-12 row |
+| N-21 (round 4 addendum, note): "no path reaches `_send`'s drop with `httpx` 0.28.1" holds only for `httpx`'s own code. A transport that returns an `httpx.Response` subclass whose `has_redirect_location` raises an `httpx.HTTPError` reaches the drop after the hook. With the code, a `200` returns a `SearchPage` and a `404` raises `SourceStatusError`; under m17 both raise `RemoteProtocolError`. Also, K15's "(a failure of that earlier close is K14, rule 3)" holds only for an `httpx.HTTPError` | **Closed by text (O7f in the specs, O5g (b) in code)**, with no behavior change:<br>- every "no path" statement now says that no code inside `httpx` 0.28.1 reaches the drop, that caller code can, and that the branch is therefore a kept safety net, not dead code. These are the K15 note and a second note, the AC15 sentence, the revision log, the O7e record, the N-17 row and the `_send` comment;<br>- the K15 parenthesis says "rule 3 for an `httpx.HTTPError`, pass-through for any other exception", as the auditor's probe showed (`KeyboardInterrupt` propagates);<br>- I confirmed in `.venv` that `_send_handling_redirects` reads `has_redirect_location` after the response hook, inside its `try`.<br>**Accepted by the human on 2026-10-12, deferred (not for PR #16):** no test pins `_send`'s drop when caller code reaches it, so mutant m17, which re-raises there, passes all 961. The behavior is specified in § Outcome mapping Revision 4 ("any later `httpx.HTTPError` is dropped") and confirmed by the auditor's probe. It is an accepted risk in plan § Risks. The documentation step records it as a known limitation of the `source-access` capability.<br>Reproducer, for a later test-writer (from audit.md § Round 4 addendum):<br>- a test-local, SYNTHETIC subclass of `httpx.Response` whose `has_redirect_location` property raises `httpx.RemoteProtocolError` (a fixed synthetic message);<br>- an `httpx.MockTransport` handler that returns an instance of it, built with `stream=`, for a search call, under the network guard, with fake `monotonic`, `sleep` and `now`.<br>`_send_handling_redirects` reads that property after the response hook, inside its `try`, so the capture is complete when the error is raised. Expected, as the auditor's probe gave them:<br>- with the AC1 fixture `search_single_page.json` and status `200`, the call returns the same `SearchPage` as the AC1 test;<br>- with status `404` and a synthetic body, the call raises `SourceStatusError` carrying the complete response;<br>- in both cases the `RemoteProtocolError` is neither raised nor chained (I2).<br>Red evidence: under m17 both cases raise `RemoteProtocolError`. A record-call case belongs in the same test. With the AC2 fixture and status `200` it gives a `RecordResponse` (`ocid` `ocds-5wno2w-SYNTHETIC-A`, 1 release, same bytes). With status `404` it gives `SourceStatusError` with the complete body and no chain. Under m17 both raise `RemoteProtocolError`. Earlier wording said the auditor had not probed the record case; that is out of date, because the second addendum probed it. N-22: `has_redirect_location` is one example. A `Response` subclass whose `history` setter raises an `httpx.HTTPError` reaches the same drop, with the same outcomes (audit § Round 4 second addendum). Kept as written, as for N-18: the executor's previous working state ("a safety net with no path of its own") | plan § Exit check K15 and its notes, § Validation AC15 row, § Risks, § Revision log; O7f; O5g (b) |
+| F-15 (round 4 second addendum, LOW, not blocking): the R-12 row's Response column listed the work to commit as the O2e tests, the O5e code and O5f, leaving out O5g | **Corrected (O7g)** with the auditor's exact wording, which adds O5g after O5f. Verified by the conductor's `grep -n` for the phrase given in audit.md § Round 4 second addendum (F-15) | O7g; R-12 row |
+| F-16 (round 4 second addendum, LOW, not blocking): the O7f record said that no other place cites a numbered step, but the F-10 record of the Revision 4 working state does | **Corrected (O7g)** with the auditor's exact wording. The bullet now says that the other "step 2" mentions are the call order of plan § Request format, or the F-10 record of the Revision 4 working state, and are right. Verified by the conductor: a `grep -n` for the old phrase (audit.md § Round 4 second addendum, F-16) finds nothing | O7g; O7f record |
+| N-22 (round 4 second addendum, note): the AC15 sentence and the § Risks N-21 row gave the `has_redirect_location` path as if it were the only one. A `Response` subclass whose `history` setter raises an `httpx.HTTPError` (set after the hook) reaches the same drop, with the same outcomes | **Corrected (O7g)** in `execution-plan.md` only, with the auditor's exact wording ("Only caller code can, for example ..." and "Caller code can, for example ..."). A revision-log line records it. The `_send` comment and the second K15 note already give the path as an example, so they are unchanged. The N-21 row of this file names the `history` path. Verified by the conductor: `grep -c` gives 2 | plan § Validation AC15 row, § Risks, § Revision log; O7g |
 
 ## Checkpoint
-On 2026-10-10, on `feat/sercop-source-adapter` at HEAD `1cd2f1e` (base `main` `fff0f2d`), O1 to O9c, O7c, O2d, O5d, O8c and O7d are done. The commit `1cd2f1e` is pushed, and PR #16 `feedback` and `tests` pass on it with `890 passed`. The round 3 audit is REJECTED (F-8, F-9, F-10; reservation R-11), and Revision 5 of the three spec files, drafted and approved by the human on 2026-10-11, answers it. Resume at O2e (test-writer).
+On 2026-10-12, on `feat/sercop-source-adapter` at HEAD `dc78500` (pushed; base `main` `fff0f2d`; code and tests baseline `1cd2f1e`), O1 to O9d, O7c, O7d, O7e, O5f, O7f, O5g and O7g are done.
+- The round 4 audit is APPROVED WITH RESERVATIONS, and gate 3 was approved by the human on 2026-10-12.
+- Its scoped addendum resolved F-11 and F-12, closed N-17, and filed F-13, F-14 and N-21, all non-blocking. O7f answered F-14 and N-21 in the specs.
+- O5g, which changed comments and the docstring only (F-13 and the `_send` comment of N-21), is done (executor, 2026-10-12).
+- The auditor's second scoped re-read (2026-10-12) resolved F-13 and F-14 and closed N-21. It filed F-15, F-16 and N-22, which O7g closed with the auditor's exact wording. The conductor verifies them by `grep`, and by the agreed stopping rule there is no third read.
+- The suite is `961 passed`, with the O2e tests and the O5e, O5f and O5g code still uncommitted (`git diff --numstat 1cd2f1e`: tests `646 0`, `src` `67 14`).
+- R-12 stays open until the human commits and pushes, and then the PR #16 checks are confirmed on that head.
+- N-21 was accepted and deferred by the human on 2026-10-12: no test pins `_send`'s drop when caller code reaches it. It is not for PR #16. The reproducer is in the N-21 row, and the risk is in plan § Risks.
+- Resume at the human's commit and push, then the R-12 check on the new head. Then the documentation step, which records the N-21 deferral as a known limitation of the `source-access` capability.
+
+Previous checkpoint (Revision 5 code, 2026-10-12; then audited in round 4, and gate 3 approved): On 2026-10-12, on `feat/sercop-source-adapter` at HEAD `dc78500` (base `main` `fff0f2d`; code and tests baseline `1cd2f1e`), O1 to O9c, O7c, O7d, O2e (gate 2 approved on 2026-10-12), O5e and O8d are done. The round 3 audit is REJECTED ([audit.md](audit.md)) and Revision 5 (approved on 2026-10-11) answers it. The suite is `961 passed` (890 plus the 71 O2e tests) with the Revision 5 code and tests uncommitted; `git diff --numstat 1cd2f1e -- tests` shows 646 added and 0 deleted lines. The PR #16 checks are unavailable for this state until the human commits and pushes (they pass on `dc78500`, which does not hold it). Resume at O9d (auditor, round 4).
+
+Previous checkpoint (Revision 5 draft, 2026-10-10): at HEAD `1cd2f1e`, O1 to O9c, O7c, O2d, O5d, O8c and O7d done. The commit `1cd2f1e` is pushed, and PR #16 `feedback` and `tests` pass on it with `890 passed`. The round 3 audit is REJECTED (F-8, F-9, F-10; reservation R-11), and Revision 5 of the three spec files, drafted and approved by the human on 2026-10-11, answers it. Resume at O2e (test-writer).
 
 Previous checkpoint (Revision 4, recorded before the commit; audit F-10: the state described here was then committed and pushed as `1cd2f1e`, with the PR checks passing): On 2026-10-10, on `feat/sercop-source-adapter` at HEAD `eb93264` (base `main` `fff0f2d`), O1 to O9b, O7c, O2d (gate 2 approved), O5d and O8c are done; the round 2 audit is REJECTED ([audit.md](audit.md)) and Revision 4 (approved) answers it. The suite is `890 passed` (569 plus the 321 O2d tests) with the Revision 4 code and tests uncommitted; `git diff --numstat 19ab9c3 -- tests` shows 615 added and 0 deleted lines. The PR checks are unavailable for this state until the human commits and pushes. Resume at O9c (auditor, round 3).
 

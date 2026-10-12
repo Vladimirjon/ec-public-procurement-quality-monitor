@@ -11,12 +11,17 @@ logger and prints nothing, and no message holds body bytes or header values.
 Anything that is not a source outcome (an interrupt, a defect of an injected
 transport or clock) propagates unchanged and is never wrapped.
 
-Every exception the adapter raises itself is exactly one of the source errors,
-`ValueError` or `RuntimeError`, has fixed ASCII text that starts with the
-operation or the parameter, and has no `__cause__` and no `__context__`: the
-libraries' own messages quote the bytes they reject, so none is ever chained.
-A reason found inside an `except` block is returned or flagged, and raised after
-the block.
+Every exception the adapter creates and raises to its caller is exactly one of
+the source errors, `ValueError` or `RuntimeError`, with fixed printable ASCII
+text. The text starts with the operation or the parameter, or it is exactly
+`the source adapter is closed`. The exception has no `__cause__`. Its
+`__context__` is only the exception the caller was handling when the call or
+the construction started (in an `except`, a `finally` or an `__exit__`), or
+`None`. Nothing raised during that call or construction, by the libraries, the
+interpreter or the adapter's own checks, is reachable through the chain: the
+libraries' own messages quote the bytes they reject. A reason found inside an
+`except` block is returned or flagged, and raised after the block. No `from`
+clause is written, so the caller's context is never hidden.
 
 The HTTP client is kept from processing anything the source sends beyond the
 status, the headers and the body: no cookie is parsed or replayed and `Location`
@@ -29,6 +34,7 @@ close), then the outcome mapping and the completeness checks as plain functions.
 
 import json
 import math
+import operator
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -71,6 +77,15 @@ _MAX_SECONDS = 86_400
 # without its trailing dot.
 _MAX_HOST_LABEL = 63
 _MAX_HOST_NAME = 253
+# The exception classes that `httpx` exports as subclasses of `httpx.HTTPError`,
+# taken from the installed package (21 in 0.28.1). A message names the nearest of
+# these in a failure's class hierarchy, so a class that a test double defines can
+# never put its own name in a message (see `_failure_class`).
+_HTTPX_ERROR_CLASSES: tuple[type[httpx.HTTPError], ...] = tuple(
+    exported
+    for exported in (getattr(httpx, name) for name in httpx.__all__)
+    if isinstance(exported, type) and issubclass(exported, httpx.HTTPError)
+)
 
 
 def _local_now() -> datetime:
@@ -306,7 +321,15 @@ class _NoCookieJar(CookieJar):
 
 
 class SercopSource:
-    """Reads search pages and records from the SERCOP portal."""
+    """Reads search pages and records from the SERCOP portal.
+
+    An instance must be used by one thread at a time, and must never be called
+    from inside its own call (from its transport, `now`, `monotonic` or `sleep`).
+    Every guarantee here, the evidence of one call and the pacing between calls
+    included, assumes that use. Nothing enforces it: two threads on one instance,
+    or a call from its own transport, can mix the evidence of two calls with no
+    error. Use one instance per thread, or serialize the calls.
+    """
 
     # --- (a) Constructor and the two public calls ---------------------------
 
@@ -475,8 +498,12 @@ class SercopSource:
         except httpx.HTTPError as error:
             if capture.status is None:
                 capture.failure = error  # no status arrived
-            # Otherwise the response was captured and the outcome is decided
-            # from the capture: the library's error is dropped, not chained.
+            # Otherwise a status was captured, and the outcome is decided from
+            # the capture. No code inside `httpx` 0.28.1 gets here then: the
+            # hook keeps a read's `httpx.HTTPError` as the failure and drops one
+            # from the stream's close. Caller code can: a transport may return
+            # a `Response` subclass whose `has_redirect_location` raises an
+            # `httpx.HTTPError`. That late error is dropped here, not chained.
 
     def _capture_response(self, response: httpx.Response) -> None:
         """Response hook: keep the status, headers and body, and hide `Location`.
@@ -489,7 +516,10 @@ class SercopSource:
         can run or leave the call. `RawResponse.headers` keeps it as received.
         """
         capture = self._capture
-        capture.status = response.status_code
+        # Read once, by value, as an exact `int`: an `int` subclass from a test
+        # double would otherwise run its own methods wherever the status is
+        # compared or written (pacing, messages, the `RawResponse` repr).
+        capture.status = operator.index(response.status_code)
         capture.headers = tuple(  # Latin-1 is lossless for any byte
             (name.decode("latin-1"), value.decode("latin-1"))
             for name, value in response.headers.raw
@@ -502,7 +532,18 @@ class SercopSource:
         except httpx.HTTPError as error:
             capture.failure = error  # the bytes read so far stay in the capture
         finally:
-            response.close()
+            # If the read ended in an exception that is not an `httpx.HTTPError`
+            # (an interrupt, `MemoryError`, a defect), it is still in flight here
+            # and must propagate unchanged. An `httpx.HTTPError` from the stream's
+            # close would replace it, so that one is dropped. A close error of
+            # any other type is not caught: Python propagates it with the first
+            # exception as its `__context__`. After a clean or an `httpx` read
+            # end the outcome is decided from the capture, which the drop leaves
+            # as it was.
+            try:
+                response.close()
+            except httpx.HTTPError:
+                pass
 
     def _attempt_from_capture(self, request: httpx.Request) -> _Attempt:
         """The attempt, with a `RawResponse` when the status is in 100 to 599."""
@@ -542,10 +583,21 @@ class SercopSource:
 
 
 def _failure_class(failure: httpx.HTTPError | None) -> str:
-    """` (ReadTimeout)`: the class of the library's failure, and nothing of it."""
+    """` (ReadTimeout)`: the nearest class `httpx` exports, and nothing of the failure.
+
+    The class of a failure that a test double defines is not named: its own name
+    can be non-ASCII, not printable, or hold a marker. The name written is one of
+    `_HTTPX_ERROR_CLASSES`, found by identity in the failure's class hierarchy.
+    """
     if failure is None:
         return ""
-    return f" ({type(failure).__name__})"
+    for cls in type(failure).__mro__:
+        for exported in _HTTPX_ERROR_CLASSES:
+            if cls is exported:
+                return f" ({exported.__name__})"
+    # Reached only if a metaclass (caller code) makes `__mro__` hide the class's
+    # `httpx` bases; the name written is still one of the exported classes.
+    return f" ({httpx.HTTPError.__name__})"
 
 
 def _outcome[Result](
@@ -561,7 +613,8 @@ def _outcome[Result](
     """
     response = attempt.response
     # Nothing below is chained: the library's exception text quotes the bytes it
-    # rejected (a header line, a chunk header), so only its class name is used.
+    # rejected (a header line, a chunk header), so only the name of the nearest
+    # class that `httpx` exports is used (`_failure_class`).
     # 1. failure before the response (no response)
     if attempt.status is None:
         raise SourceTransportError(
