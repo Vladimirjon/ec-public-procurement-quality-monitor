@@ -1213,8 +1213,9 @@ Ver [plan.md](plan.md).
   - **Pendiente de tu parte:** corregir lo que no sea cierto y añadir con tus
     palabras qué te costó entender de hoy.
 - **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
-- **Siguiente paso:** merge del PR del Día 16 con tu OK explícito; después, Día
-  17: el test-writer escribe las pruebas en rojo contra PostgreSQL real (puerta
-  2), el executor agrega `psycopg` y escribe la migración inicial (yo la reviso
-  línea por línea), se agrega el servicio `postgres:18` al job `tests`, y luego
-  auditoría (puerta 3) y documentación.
+- **Siguiente paso:** Día 17: el executor agrega `psycopg` (O1), el
+  test-writer escribe las pruebas en rojo contra PostgreSQL real (puerta 2), el
+  executor escribe la migración inicial (yo la reviso línea por línea) y el
+  resto de F3, se agrega el servicio `postgres:18` al job `tests`, y luego
+  auditoría (puerta 3) y documentación. (Corregido el 2026-10-13: el merge del
+  PR #22 ya se hizo, `main` en `e74a41a`; antes decía que faltaba.)
