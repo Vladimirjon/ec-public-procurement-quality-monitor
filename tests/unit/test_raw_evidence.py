@@ -215,7 +215,7 @@ def test_observation_with_invalid_status_is_rejected(status: int) -> None:
 
 def test_observation_with_invalid_naive_capture_time_is_rejected() -> None:
     with pytest.raises(ValueError):
-        Observation(**_fields(captured_at=datetime(2026, 10, 9, 10, 15)))  # noqa: DTZ001
+        Observation(**_fields(captured_at=datetime(2026, 10, 9, 10, 15)))
 
 
 def test_observation_with_invalid_negative_size_is_rejected() -> None:
