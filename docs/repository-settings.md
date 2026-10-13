@@ -69,8 +69,8 @@ turn off "Include administrators", merge the fix, and turn it back on.
 |---|---|
 | Secret scanning and push protection | On |
 | Dependabot alerts and security updates | On |
-| Dependabot version updates | `github-actions`, weekly (`.github/dependabot.yml`) |
+| Dependabot version updates | `github-actions` and `uv`, weekly (`.github/dependabot.yml`) |
 | Default `GITHUB_TOKEN` permissions | Read-only |
 
-The `pip` ecosystem is added to `.github/dependabot.yml` once the Python
-toolchain is decided and a manifest exists.
+The `uv` ecosystem keeps the dependencies of `pyproject.toml` and `uv.lock`
+current, the same way the `github-actions` entry keeps the workflow pins.

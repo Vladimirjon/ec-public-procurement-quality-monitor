@@ -707,7 +707,7 @@ def test_store_interrupted_write_leaves_no_file_and_a_retry_stores_the_content(
         pytest.param({"status": 600}, id="status-above-range"),
         pytest.param({"method": ""}, id="empty-method"),
         pytest.param({"url": ""}, id="empty-url"),
-        pytest.param({"captured_at": datetime(2026, 10, 9, 10, 15)}, id="naive-time"),  # noqa: DTZ001,
+        pytest.param({"captured_at": datetime(2026, 10, 9, 10, 15)}, id="naive-time"),
     ],
 )
 def test_store_invalid_input_is_rejected_before_anything_is_written(

@@ -90,9 +90,10 @@ needing Docker.
 ## Consequences
 
 The project gains its second runtime dependency, `psycopg`, recorded in
-`uv.lock` and watched by Dependabot. It also owns a migration runner: more code
-to write, test and maintain, in exchange for no further dependency and
-migrations that read as SQL.
+`uv.lock` and watched by Dependabot version updates (the `uv` entry of
+`.github/dependabot.yml`). It also owns a migration runner: more code to write,
+test and maintain, in exchange for no further dependency and migrations that
+read as SQL.
 
 Docker Desktop becomes a requirement for local work on persistence and for the
 integration tests. CI integration tests must use a PostgreSQL service of the
