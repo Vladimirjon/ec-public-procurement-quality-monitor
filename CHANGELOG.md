@@ -58,6 +58,10 @@ The project has not been released yet, so every entry is under `Unreleased`.
 
 ### Changed
 
+- Dependabot version updates now also cover the `uv` ecosystem
+  (`pyproject.toml` and `uv.lock`), weekly. Until now only `github-actions` was
+  configured, although ADR 0006 and ADR 0007 described the lockfile as watched;
+  both ADRs now name the entry.
 - The `feedback` CI job now installs the locked dependencies and puts `.venv`
   on `PATH` through three hand-maintained steps, so `ruff` and `mypy` actually
   run (`2 of 2 command(s) ran`) instead of being skipped. These steps must be
