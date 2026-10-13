@@ -4,9 +4,9 @@
 Gate 1 approved on Revision 2 by the human on 2026-10-13. The human made the gate 1 decisions on 2026-10-13: question 2 approved (`psycopg[binary]>=3.3.6`); question 6 option B (the executor writes `migrations/0001_initial_schema.sql`, and the human reviews it line by line); questions 1, 3, 4, 5, 7, 8 and 9 accepted as recommended; question 10 handled outside F3. Revision 2 records those decisions and fixes review findings P1 (AC11), P2 (isolation) and P2 (JSON equality). The approval is recorded in the `Approval` line of `intent.md`. No code, test or configuration has changed. The spec set has 17 acceptance criteria (AC1 to AC17) and 12 outcomes (O1 to O12); O5 includes the human's review step.
 
 ## Baseline
-- Base commit: `3aac942` (`main`, "Merge pull request #17 from Vladimirjon/docs/day-15-postgres-compose").
-- Branch: `docs/day-16-f3-postgres-persistence-specs` (specs only). The implementation branch is created from `main` after these specs are merged or approved.
-- Interpreter: Python 3.13.9 (`uv run python --version`), uv 0.12.23. PostgreSQL 18.6 in the Compose service `postgres` (Docker Desktop).
+- Base commit: `e74a41a` (`main`, "Merge pull request #22 from Vladimirjon/docs/day-16-f3-postgres-persistence-specs"). Updated on 2026-10-13 (Day 17); the earlier base was `3aac942`.
+- Branch: `feat/postgres-persistence`, cut from `main` at `e74a41a`.
+- Interpreter: Python 3.13.9 (`uv run python --version`), uv 0.12.23, ruff 0.17.0, `uv_build` `>=0.13.0,<0.14`. PostgreSQL 18.6 in the Compose service `postgres` (Docker Desktop, `healthy`).
 - Cwd: the repository root, `ec-public-procurement-quality-monitor`.
 - Commands:
   - Install: `uv sync --locked`
@@ -17,7 +17,7 @@ Gate 1 approved on Revision 2 by the human on 2026-10-13. The human made the gat
   - Lint and format: `uv run ruff check .` and `uv run ruff format --check .`
   - Type check: `uv run mypy .`
   - Readiness: `uv run node .sdd/doctor/run-doctor.mjs`
-- Pre-existing failures: none. On 2026-10-13 at `3aac942`: `uv run pytest -q` -> `961 passed`; `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `78 files already formatted`; `uv run mypy .` -> `Success: no issues found in 20 source files`; `uv run node .sdd/doctor/run-doctor.mjs` -> `summary: 31 ok, 0 skipped, 0 warned, 0 failed`.
+- Pre-existing failures: none. On 2026-10-13 at `e74a41a` (replaces the `3aac942` baseline): `uv run pytest -q` -> `961 passed`; `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `81 files already formatted`; `uv run mypy .` -> `Success: no issues found in 20 source files`; `uv run node .sdd/doctor/run-doctor.mjs` -> `summary: 31 ok, 0 skipped, 0 warned, 0 failed`.
 
 ## Outcomes
 Order and ownership:
