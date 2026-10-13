@@ -18,8 +18,9 @@ Empresa Eléctrica Quito.
 Version 1 will be a modular monolith executed through a CLI and batch
 processing. It will preserve source responses in immutable raw storage and
 use PostgreSQL for normalized data, audit records, and quality results.
-Docker Compose is planned for local PostgreSQL infrastructure in a later
-task. Version 1 does not include microservices, Kafka, Redis, Kubernetes,
+Docker Compose runs that PostgreSQL locally for development
+([ADR 0007](docs/adr/0007-postgresql-persistence.md)); the application does not
+use the database yet. Version 1 does not include microservices, Kafka, Redis, Kubernetes,
 authentication, or a load balancer.
 
 The layout of the local raw evidence store (paths, observation metadata, and
@@ -49,6 +50,7 @@ See [the architecture](docs/architecture.md) and the accepted decisions:
 - [ADR 0004: Python toolchain](docs/adr/0004-python-toolchain.md)
 - [ADR 0005: Raw evidence store layout](docs/adr/0005-raw-evidence-store-layout.md)
 - [ADR 0006: HTTP client for source access](docs/adr/0006-http-client-for-source-access.md)
+- [ADR 0007: PostgreSQL persistence, migrations and local environment](docs/adr/0007-postgresql-persistence.md)
 
 ## Technologies
 
@@ -86,12 +88,17 @@ Implemented in the repository:
   format), `mypy` (strict in `domain` only), `pytest` and `pytest-cov`.
 - Two GitHub Actions workflows on pull requests: `feedback` (`ruff` and `mypy`,
   plus a secret scan) and `Tests` (unit tests with a coverage report).
+- A local PostgreSQL 18 defined in `compose.yaml` (one service, port on
+  `127.0.0.1` only, named volume), with credentials in `.env` (git-ignored) and
+  fake values in `.env.example`
+  ([ADR 0007](docs/adr/0007-postgresql-persistence.md)). It is empty: there are
+  no migrations, no database driver dependency, and no code that connects.
 - Git-based source and documentation management.
 
 Planned, not implemented yet:
 
-- PostgreSQL for normalized records, audit, and quality results.
-- Docker Compose for local PostgreSQL execution.
+- PostgreSQL persistence for normalized records, audit, and quality results:
+  the `psycopg` adapter, the SQL migrations and their runner (F3).
 - The ingestion that will call the SERCOP adapter and the raw evidence store.
 - Real CLI commands beyond `--version`.
 
@@ -109,6 +116,20 @@ Run these from the repository root. They need [uv](https://docs.astral.sh/uv/).
 | Type check | `uv run mypy .` |
 | Test | `uv run pytest` |
 | Test with coverage report (what CI runs) | `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` |
+
+The local database needs Docker. Copy `.env.example` to `.env`, put your own
+local password in it, then:
+
+| Task | Command |
+|---|---|
+| Start PostgreSQL and wait until it is healthy | `docker compose up -d --wait` |
+| Open `psql` inside the container | `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` |
+| Stop it, keeping the data | `docker compose down` |
+| Stop it and delete the data | `docker compose down -v` |
+
+PostgreSQL stores the password in the data volume the first time it starts.
+Changing `POSTGRES_PASSWORD` in `.env` afterwards does not change it: delete the
+volume with `down -v`, or run `ALTER ROLE` in the database.
 
 The `Tests` workflow runs the coverage command on every pull request and on
 every push to `main`. It reports coverage only: no minimum percentage is

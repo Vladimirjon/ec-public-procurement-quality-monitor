@@ -1,0 +1,25 @@
+# Local PostgreSQL for development. Not a deployment definition (ADR 0003).
+# Credentials come from `.env` (ignored by git); see `.env.example`.
+name: ec-procurement-quality
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      # Loopback only: the database is not reachable from the network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # PostgreSQL 18+ images keep versioned data under /var/lib/postgresql.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

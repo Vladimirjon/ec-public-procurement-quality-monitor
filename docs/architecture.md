@@ -9,7 +9,7 @@ procurement data.
 
 Version 1 is a modular monolith, operated through a CLI and executed in
 batches. It includes immutable raw evidence, PostgreSQL for normalized data,
-auditing, and quality results, and a future Docker Compose setup for local
+auditing, and quality results, and a Docker Compose setup for local
 PostgreSQL infrastructure. It excludes microservices, Kafka, Redis,
 Kubernetes, authentication, and a load balancer.
 
@@ -71,9 +71,16 @@ holds the local-disk adapter. Compression and retention are not decided.
 ## Infrastructure boundary
 
 PostgreSQL is the planned system of record for normalized procurement data,
-audit information, and quality results. Docker Compose will later provide
-the local PostgreSQL execution environment; it is part of the v1 operational
-architecture but outside this documentation task.
+audit information, and quality results. Docker Compose provides the local
+PostgreSQL execution environment and is part of the v1 operational
+architecture.
+
+[ADR 0007](adr/0007-postgresql-persistence.md) fixes how the application
+reaches the database and how it is run locally: `psycopg` 3 with explicit SQL,
+imported only by `infrastructure`; schema changes as numbered SQL files applied
+by a runner owned by the project; and `compose.yaml` with PostgreSQL 18 as its
+only service. The schema and the runner's contract belong to F3. Raw evidence
+stays in the local store described above, not in PostgreSQL.
 
 No distributed infrastructure is justified until measurable workload,
 reliability, or operational requirements demonstrate a need. See
