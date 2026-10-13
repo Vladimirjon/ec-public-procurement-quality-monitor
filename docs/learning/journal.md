@@ -1157,6 +1157,11 @@ Ver [plan.md](plan.md).
     (`c00fa2d`).
   - **Aprobación:** dije "apruebo" sobre la revisión 2; quedó registrada en la
     línea `Approval` de `intent.md`.
+  - **PR de Dependabot:** al agregar el ecosistema `uv` aparecieron tres PR
+    (#19, #20 y #21). Pregunté "qué pasó con los PR" y dije "sigue". Se
+    mergearon #19 (`setup-uv`), #20 (`uv-build` 0.13) y #21 (`ruff` 0.17.0); el
+    #21 fallaba porque `ruff` 0.17 reporta dos `# noqa: DTZ001` sobrantes en
+    pruebas de F1, y se quitaron en su propia rama.
 - **Qué aprendí (con mis palabras):**
   - **Hoy no expliqué nada con mis palabras.** Lo que sí hice fue una pregunta
     ("está bien que el `.env.example` se mantenga en el repo en público") y
@@ -1184,9 +1189,12 @@ Ver [plan.md](plan.md).
     cambia lo que decía el plan del Día 17.
   - **Revisión 2:** aprobada hoy.
 - **Verificación (comando y resultado):**
-  - `uv run pytest`: 961 pasan, sin cambios de código hoy.
+  - `uv run pytest`: 961 pasan, sin cambios de código míos hoy (solo los dos
+    `# noqa` que se quitaron en el #21).
   - `uv run ruff check .`, `uv run ruff format --check .` (81 archivos) y
-    `uv run mypy .` (20 archivos): sin errores. `ruff format` encontró un bloque
+    `uv run mypy .` (20 archivos): sin errores, también con `ruff` 0.17.0 y
+    `uv-build` 0.13 después de actualizar la rama con `main`. `ruff format`
+    encontró un bloque
     de código sin formato dentro de `execution-plan.md` (ruff también formatea
     los bloques de Python de los `.md`) y lo corregí con el formateador.
   - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
