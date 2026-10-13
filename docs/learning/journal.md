@@ -1128,7 +1128,93 @@ Ver [plan.md](plan.md).
   - **Pendiente de tu parte:** corregir lo que no sea cierto y añadir con tus
     palabras qué te costó entender de hoy.
 - **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
-- **Siguiente paso:** merge de este PR con tu OK explícito; después, Día 16: F3
-  `postgres-persistence`, specs. Diseñar en papel `ingestion_run`,
-  `raw_evidence` y `audit_event` con sus claves y restricciones, y luego las
-  specs y la puerta 1.
+- **Siguiente paso:** Día 16: F3 `postgres-persistence`, specs. Diseñar en
+  papel `ingestion_run`, `raw_evidence` y `audit_event` con sus claves y
+  restricciones, y luego las specs y la puerta 1. (Corregido el 2026-10-13: el
+  merge del PR #17 ya se hizo, `main` en `3aac942`; antes decía que faltaba.)
+
+## Día 16: F3 `postgres-persistence`, specs (2026-10-13)
+
+- **Objetivo:** dejar diseñadas las tablas de F3 y llevar sus specs hasta la
+  puerta 1.
+- **Qué hice:**
+  - **Merge del PR #17** (ADR 0007 y Compose) con mi OK; `main` quedó en
+    `3aac942`.
+  - **Diseño de tablas:** el agente me dio un borrador y yo decidí: cuatro tablas
+    (`ingestion_run`, `raw_evidence`, `observation` y `audit_event`),
+    inmutabilidad en la base de datos y tres estados de ejecución (`running`,
+    `succeeded` y `failed`).
+  - **Specs de F3:** el architect las escribió (revisión 1) con 17 criterios, 12
+    resultados y 10 puntos abiertos para mí.
+  - **Puerta 1, mis respuestas:** acepté `psycopg[binary]`; en el punto 6 elegí
+    la B (la migración inicial la escribe el executor y yo la reviso línea por
+    línea); acepté los otros ocho puntos.
+  - **Tres hallazgos:** pegué tres hallazgos sobre la revisión 1 (AC11, el
+    aislamiento de las pruebas y la igualdad de JSON). Los verifiqué contra las
+    specs, eran ciertos y el architect los cerró en la revisión 2.
+  - **Dependabot:** pedí que el punto 10 quedara fuera de F3 pero que su
+    corrección abarcara el ADR 0006 y el ADR 0007; el PR #18 se mergeó
+    (`c00fa2d`).
+  - **Aprobación:** dije "apruebo" sobre la revisión 2; quedó registrada en la
+    línea `Approval` de `intent.md`.
+  - **PR de Dependabot:** al agregar el ecosistema `uv` aparecieron tres PR
+    (#19, #20 y #21). Pregunté "qué pasó con los PR" y dije "sigue". Se
+    mergearon #19 (`setup-uv`), #20 (`uv-build` 0.13) y #21 (`ruff` 0.17.0); el
+    #21 fallaba porque `ruff` 0.17 reporta dos `# noqa: DTZ001` sobrantes en
+    pruebas de F1, y se quitaron en su propia rama.
+- **Qué aprendí (con mis palabras):**
+  - **Hoy no expliqué nada con mis palabras.** Lo que sí hice fue una pregunta
+    ("está bien que el `.env.example` se mantenga en el repo en público") y
+    decisiones: cuatro tablas, inmutabilidad, estados, `psycopg` y la opción B.
+  - **Lo que me explicaron (no es mi redacción):** `.env.example` es normal en un
+    repo público porque solo lleva valores falsos y el escaneo de secretos corre
+    en cada commit; en Python `True == 1`, así que repetir una ejecución con
+    `{"x": true}` pasaba como la misma que `{"x": 1}` y por eso la comparación
+    tiene que distinguir tipos; si la conexión se cae justo durante el commit el
+    resultado queda desconocido, y un error de conexión no prueba que no se
+    escribió nada; y Dependabot solo vigilaba `github-actions`, no los paquetes
+    de Python.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **D-10 (concretada):** `psycopg[binary]>=3.3.6`; el `uv.lock` pasa de 22 a 25
+    paquetes. La dependencia la agrega la tarea O1, no hoy.
+  - **D-11 (concretada):** una transacción por archivo de migración con su fila
+    de control, checksum de lo ya aplicado, un candado que falla al instante y
+    función de biblioteca, sin comando de CLI.
+  - **Puntos 3, 4, 5, 7, 8 y 9 de la puerta 1:** aceptados como se
+    recomendaron (ajustes de conexión sin contraseña visible, pruebas de
+    integración que se saltan en local y fallan en CI, servicio `postgres:18` en
+    el job `tests`, hora guardada como instante, eventos sin clave de
+    idempotencia y restricciones extra en el esquema).
+  - **Migración inicial:** la escribe el executor y yo la reviso línea por línea;
+    cambia lo que decía el plan del Día 17.
+  - **Revisión 2:** aprobada hoy.
+- **Verificación (comando y resultado):**
+  - `uv run pytest`: 961 pasan, sin cambios de código míos hoy (solo los dos
+    `# noqa` que se quitaron en el #21).
+  - `uv run ruff check .`, `uv run ruff format --check .` (81 archivos) y
+    `uv run mypy .` (20 archivos): sin errores, también con `ruff` 0.17.0 y
+    `uv-build` 0.13 después de actualizar la rama con `main`. `ruff format`
+    encontró un bloque
+    de código sin formato dentro de `execution-plan.md` (ruff también formatea
+    los bloques de Python de los `.md`) y lo corregí con el formateador.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio.
+  - La base de Compose sigue `healthy` y no quedaron bases ni esquemas de
+    prueba.
+- **Dudas abiertas:**
+  - La caída durante el commit queda documentada y sin prueba, porque haría
+    falta un proxy que entienda el protocolo de PostgreSQL.
+  - El glosario dice "ejecución de ingesta" y la tabla se llama
+    `ingestion_run`; falta decidir si se agrega "run" como palabra de la tabla.
+  - `specs/current/_index.md` sigue diciendo que los ADR llegan hasta el 0006; se
+    regenera con `harny-sync` al archivar F3.
+  - Siguen abiertas las dudas del Día 14 (N-21, R-6, R-7, R-11 y la
+    verificación contra el portal real) y las heredadas del Día 7.
+  - **Pendiente de tu parte:** corregir lo que no sea cierto y añadir con tus
+    palabras qué te costó entender de hoy.
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
+- **Siguiente paso:** merge del PR del Día 16 con tu OK explícito; después, Día
+  17: el test-writer escribe las pruebas en rojo contra PostgreSQL real (puerta
+  2), el executor agrega `psycopg` y escribe la migración inicial (yo la reviso
+  línea por línea), se agrega el servicio `postgres:18` al job `tests`, y luego
+  auditoría (puerta 3) y documentación.
