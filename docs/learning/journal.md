@@ -1060,5 +1060,75 @@ Ver [plan.md](plan.md).
   - **Pendiente de tu parte:** corregir lo que no sea cierto y añadir con tus
     palabras qué fue lo que más te costó entender.
 - **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
-- **Siguiente paso:** merge del PR #16 con tu OK explícito; después, Día 15:
-  PostgreSQL y Docker Compose.
+- **Siguiente paso:** Día 15: PostgreSQL y Docker Compose. (Corregido el
+  2026-10-13: el merge del PR #16 ya se hizo el 2026-10-12, `main` en `6a9e64d`;
+  antes decía que faltaba.)
+
+## Día 15: PostgreSQL y Docker Compose (2026-10-13)
+
+- **Objetivo:** decidir D-10, D-11 y D-12, dejar escrito el ADR de persistencia,
+  tener un `compose.yaml` solo con PostgreSQL y conectarme a la base. Hoy no hay
+  feature SDD ni puertas: es preparación de F3.
+- **Qué hice:**
+  - **Bitácora del Día 14:** corregí la línea "Siguiente paso" (el merge del
+    PR #16 ya se había hecho) en la rama `docs/day-15-postgres-compose`.
+  - **Decisiones:** aprobé D-10, D-11 y D-12 tal como las recomendó la tabla.
+  - **Docker:** estaba instalado pero apagado; abrí Docker Desktop y la base
+    quedó arriba y `healthy` (PostgreSQL 18.6). No tengo `psql` en Windows: me
+    conecté con el que trae el contenedor.
+  - **`.env`:** lo creé yo mismo y era igual que `.env.example`. Después cambié
+    la contraseña y DBeaver me dijo `password authentication failed`.
+  - **Interfaz:** pedí ver la base en una interfaz y me conecté con DBeaver, que
+    ya tenía instalado.
+  - **ADR 0007:** lo revisé y dije "apruebo"; pasó a `Accepted`.
+  - **Plan frente a hoy:** el plan decía que yo escribía a mano el ADR y el
+    `compose.yaml`; hoy los redactó el agente por mi pedido y yo los revisé y
+    aprobé.
+- **Qué aprendí (con mis palabras):**
+  - **Hoy no expliqué nada con mis palabras.** Lo que sí hice fueron preguntas:
+    "no tengo ni creado usuario ni nada, o tú ya lo creaste" y "qué es lo del
+    ADR 0007 que me dices".
+  - **Lo que me explicaron (no es mi redacción):** el usuario `ecpq_dev` lo creó
+    el propio contenedor al arrancar la primera vez, con lo que decía `.env`
+    entonces; PostgreSQL guarda la contraseña dentro del volumen, así que
+    cambiar `.env` después no la cambia y hay que usar `ALTER ROLE` o borrar el
+    volumen; y un ADR es la hoja donde queda escrito qué se decidió, por qué y
+    qué se descartó.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **D-10:** `psycopg` 3 síncrono con SQL explícito, sin ORM; solo
+    `infrastructure` lo importa.
+  - **D-11:** archivos SQL numerados en `migrations/` y un ejecutor propio
+    mínimo; un archivo ya aplicado no se edita.
+  - **D-12:** Docker Compose solo con PostgreSQL, imagen `postgres:18`, puerto
+    solo en `127.0.0.1` y volumen nombrado.
+  - **ADR 0007:** aceptado. El esquema de tablas, la variante `binary` o de
+    código fuente de `psycopg` y el contrato exacto del ejecutor quedan para la
+    spec de F3.
+  - **Interfaz:** DBeaver, sin agregar servicios al repositorio.
+- **Verificación (comando y resultado):**
+  - `uv run pytest`: 961 pasan, igual que el Día 14.
+  - `uv run ruff check .`, `uv run ruff format --check .` (78 archivos) y
+    `uv run mypy .` (20 archivos): sin errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - `git diff --check` limpio.
+  - `docker compose config` válido; `docker compose up -d --wait` deja el
+    servicio `healthy`; `psql` conecta como `ecpq_dev` a `ecpq_dev`.
+  - Autenticación por red: acepta la contraseña vigente y rechaza una
+    incorrecta.
+- **Dudas abiertas:**
+  - `specs/current/_index.md` dice que los ADR van de 0001 a 0006; es un archivo
+    derivado y se regenera con `harny-sync` al archivar F3.
+  - Variante de `psycopg` y contrato del ejecutor de migraciones: a la spec de
+    F3 (Día 16).
+  - La contraseña de mi `.env` es mía y local; `.env.example` solo lleva valores
+    falsos. Hoy `.env.example` desapareció del disco al crear mi `.env` y hubo
+    que volver a crearlo.
+  - Siguen abiertas las dudas del Día 14 (N-21, R-6, R-7, R-11 y la
+    verificación contra el portal real) y las heredadas del Día 7.
+  - **Pendiente de tu parte:** corregir lo que no sea cierto y añadir con tus
+    palabras qué te costó entender de hoy.
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
+- **Siguiente paso:** merge de este PR con tu OK explícito; después, Día 16: F3
+  `postgres-persistence`, specs. Diseñar en papel `ingestion_run`,
+  `raw_evidence` y `audit_event` con sus claves y restricciones, y luego las
+  specs y la puerta 1.
