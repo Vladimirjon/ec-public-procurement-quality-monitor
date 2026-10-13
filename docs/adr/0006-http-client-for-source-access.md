@@ -58,7 +58,8 @@ downloading.
 ## Consequences
 
 The project gains its first third-party runtime dependency, plus the packages
-it pulls in, all recorded in `uv.lock` and watched by Dependabot. Adapter tests
+it pulls in, all recorded in `uv.lock` and watched by Dependabot version
+updates (the `uv` entry of `.github/dependabot.yml`). Adapter tests
 stay offline and fast, and the choice of client is isolated in one layer, so
 replacing it later touches only the adapter.
 
