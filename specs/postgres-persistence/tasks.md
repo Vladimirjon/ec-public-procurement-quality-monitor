@@ -30,8 +30,13 @@ Order and ownership:
 5. Then **O8 to O11 (executor)** and **O12 (auditor)**.
 6. No role reads, prints or commits `.env`, or edits `compose.yaml`, `.env.example`, `.github/dependabot.yml`, ADR 0006, ADR 0007, or the F1 and F2 modules. The Dependabot correction (resolved question 10) is a separate change by the human's session, not an F3 outcome.
 
-- [ ] **O1** (AC13, AC16) — executor: add the approved dependency (human, 2026-10-13) with `uv add "psycopg[binary]>=3.3.6"`, and declare the `integration` marker in `[tool.pytest]` of `pyproject.toml`. Expected lock change: `psycopg` 3.3.6, `psycopg-binary` 3.3.6 and `tzdata` 2026.5 added (25 packages).
-  - Evidence: `git diff main -- pyproject.toml uv.lock`; `uv sync --locked` and `uv lock --check` exit 0; `uv run python -c "import psycopg; print(psycopg.__version__, psycopg.pq.__impl__)"` prints `3.3.6 binary`.
+- [x] **O1** (AC13, AC16) — executor: add the approved dependency (human, 2026-10-13) with `uv add "psycopg[binary]>=3.3.6"`, and declare the `integration` marker in `[tool.pytest]` of `pyproject.toml`. Expected lock change: `psycopg` 3.3.6, `psycopg-binary` 3.3.6 and `tzdata` 2026.5 added (25 packages).
+  - Evidence (2026-10-13): `uv add "psycopg[binary]>=3.3.6"` installed `psycopg==3.3.6`, `psycopg-binary==3.3.6`, `tzdata==2026.5` (resolved 25 packages).
+    - `git diff main --stat -- pyproject.toml uv.lock`: `pyproject.toml` +4, `uv.lock` +74/-2. `pyproject.toml` gains `"psycopg[binary]>=3.3.6"` in `dependencies` and `markers = ["integration: needs a real PostgreSQL 18 (see README)"]` in `[tool.pytest]` (`testpaths` kept).
+    - `uv sync --locked` exit 0; `uv lock --check` exit 0 (`Resolved 25 packages`).
+    - `uv run python -c "import psycopg; print(psycopg.__version__, psycopg.pq.__impl__)"` -> `3.3.6 binary`.
+    - `uv run pytest -q` -> `961 passed`; `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `81 files already formatted`; `uv run mypy .` -> `Success: no issues found in 20 source files`.
+    - Nothing left: no other dependency and no other file changed; not committed.
 - [ ] **O2** (AC14) — test-writer: the red tests of O3 to O8 and the integration harness in `tests/integration/conftest.py`:
   - settings from the five `POSTGRES_*` variables;
   - the admin connection;
@@ -91,11 +96,11 @@ Order and ownership:
 
 ## Working state
 - Updated: 2026-10-13
-- Outcome: none started
-- Phase: specs Revision 2 approved at gate 1 (2026-10-13); next is the test-writer (red phase, gate 2)
+- Outcome: O1 done (working tree, not committed)
+- Phase: specs Revision 2 approved at gate 1 (2026-10-13); O1 done; next is the test-writer (red phase, gate 2)
 - In progress: nothing
-- Last command: the template probe on PostgreSQL 18.6, using `f3_probe_*` databases that were dropped afterwards (count 0; `.env` never read); the earlier baseline checks at `3aac942` are in § Baseline.
-- Next step: the test-writer writes the red-phase tests named in `execution-plan.md` § Validation, and the human reviews them at gate 2. Then O1 (the approved dependency).
+- Last command: `uv run mypy .` -> `Success: no issues found in 20 source files` (after O1; `.env` never read).
+- Next step: the test-writer writes the red-phase tests named in `execution-plan.md` § Validation (O2), and the human reviews them at gate 2.
 
 ## Finding responses
 | Finding | Response | Evidence |
