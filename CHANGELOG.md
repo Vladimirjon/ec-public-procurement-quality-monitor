@@ -50,6 +50,11 @@ The project has not been released yet, so every entry is under `Unreleased`.
 - `httpx` as the first runtime dependency (`httpx>=0.28.1` in
   `[project] dependencies`, resolved to 0.28.1 in `uv.lock`), imported only in
   `infrastructure`. The development dependencies do not change.
+- Local PostgreSQL environment, following
+  [ADR 0007](docs/adr/0007-postgresql-persistence.md): `compose.yaml` with one
+  service (`postgres:18`, port published on `127.0.0.1` only, named volume) and
+  `.env.example` with fake values; `.env` is git-ignored. Nothing in the
+  application uses the database yet, and no dependency was added.
 
 ### Changed
 
