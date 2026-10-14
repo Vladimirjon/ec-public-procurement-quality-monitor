@@ -113,17 +113,31 @@ Order and ownership:
     - `uv run --env-file .env pytest tests/integration/test_postgres_ingestion_repository.py -q` -> `90 passed`; `uv run --env-file .env pytest tests/integration/test_postgres_isolation.py -q` -> `5 passed`.
     - `uv run pytest tests/unit/test_layers.py -q -k layer` -> `8 passed` (the psycopg layer test passes: the three new modules import `psycopg`, and only `infrastructure` does).
     - `uv run mypy .` -> `Success: no issues found in 34 source files` (`satisfies_port` is checked here; no `arg-type` on `same_json`).
-- [ ] **O8** (AC15) — executor: the `postgres:18` service and the job environment in `.github/workflows/tests.yml` (resolved question 5), with a placeholder password that is not a secret.
-  - Evidence: `gh pr checks <number>` and `gh run view <run-id> --log` on the F3 pull request (to fill)
-- [ ] **O9** Migration (AC13, AC14, AC16): existing consumers keep working.
+- [x] **O8** (AC15) — executor: the `postgres:18` service and the job environment in `.github/workflows/tests.yml` (resolved question 5), with a placeholder password that is not a secret.
+  - Evidence (2026-10-14, pull request #23, run `38604003779`, job `tests`): `gh pr checks 23` -> `feedback pass`, `tests pass`. `gh run view 38604003779 --log`: "Starting postgres service container" with `docker pull postgres:18`; `Run tests` ran `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing` and ended `1298 passed in 13.05s`, with no skipped count and the four integration files shown as all dots (repository, isolation, migrations, schema). Coverage rows: `postgres_ingestion_repository.py` 93%, `postgres_migrations.py` 93%, `postgres_settings.py` 92%, TOTAL 96%.
+- [x] **O9** Migration (AC13, AC14, AC16): existing consumers keep working.
   - `tests/unit/test_layers.py` gains `test_layer_only_infrastructure_imports_psycopg`; the existing tests keep their names and behavior.
   - These stay unchanged: the F1 and F2 modules and tests, `compose.yaml`, `.env.example`, `.github/dependabot.yml`, ADR 0006 and ADR 0007.
   - No new file directly in `src/ec_procurement_quality/`.
   - The AC14 commands show the skip and fail policy.
   - `isolation` shows one database per test, the template unreachable, nothing left behind, and the configured database untouched.
-  - Evidence: (to fill)
-- [ ] **O10** Docs (AC17): `README.md` (including the query to remove leftover `ecpq_test_` databases), `AGENTS.md` § Current commands, `docs/architecture.md`, `CHANGELOG.md`. `CHANGELOG.md` includes the known limitations: unknown outcome after a connection lost during a commit, audit events not idempotent, and triggers that do not bind a superuser.
-  - Evidence: (to fill)
+  - Evidence (2026-10-14, branch `feat/postgres-persistence` at `891270e`, working tree with the O10 docs; `.env` never read or printed):
+    - Layers (AC13): `uv run pytest tests/unit -q -k layer` -> `8 passed` (the seven existing layer tests plus `test_layer_only_infrastructure_imports_psycopg`). `git diff main -- tests/unit/test_layers.py` keeps the existing test names; the helper `_names_http_client_library` keeps its name and now calls the generalized `_names_library`.
+    - Skip policy (AC14), variables unset (`POSTGRES_*` not in the environment, `CI` unset): `uv run pytest tests/integration -q -rs` -> `172 skipped`, each with the reason `POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD not set: integration tests need the Compose database; run uv run --env-file .env pytest tests/integration`; exit 0.
+    - Fail policy (AC14): `CI=true uv run pytest tests/integration -q` -> `172 errors`, each `Failed: POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD not set ...`; exit 1; no `skipped` in the output.
+    - Isolation (AC14): `uv run --env-file .env pytest tests/integration -q -k isolation` -> `5 passed`.
+    - Unchanged files (AC16): `git diff main --stat -- compose.yaml .env.example .github/dependabot.yml docs/adr <the seven F1 and F2 modules of the AC16 row>` -> empty. `git diff main --name-status -- src` shows only six added files (the three `domain`/`application` F3 modules and the three `infrastructure` ones), none directly in `src/ec_procurement_quality/`.
+    - `git diff main -- pyproject.toml` -> only `"psycopg[binary]>=3.3.6"` in `dependencies` and `markers = ["integration: needs a real PostgreSQL 18 (see README)"]` in `[tool.pytest]`. `uv lock --check` -> `Resolved 25 packages`; `uv sync --locked` -> `Checked 25 packages`.
+    - `git ls-files .env` -> empty. `git grep -n -i -e datosabiertos -e compraspublicas -- tests` -> no match (exit 1). `uv run ec-procurement-quality --version` -> `ec-procurement-quality 0.1.0`.
+    - Nothing left: no deviation; no file changed by this outcome.
+- [x] **O10** Docs (AC17): `README.md` (including the query to remove leftover `ecpq_test_` databases), `AGENTS.md` § Current commands, `docs/architecture.md`, `CHANGELOG.md`. `CHANGELOG.md` includes the known limitations: unknown outcome after a connection lost during a commit, audit events not idempotent, and triggers that do not bind a superuser.
+  - Evidence (2026-10-14, not committed):
+    - `README.md`: § Version 1 scope and § Architecture say the schema, runner and adapter exist as a library and nothing calls them; § Technologies has a PostgreSQL persistence bullet (the four tables and triggers, `apply_migrations`, the port and the adapter, hashes and sizes only, raw bytes stay local), `psycopg[binary]` among the runtime dependencies, the `postgres:18` service of the `tests` job, and the Compose bullet no longer says "no migrations ... no code that connects"; § Planned drops F3; § Development commands has the `uv run --env-file .env pytest tests/integration` row, the skip and fail policy, the throwaway `ecpq_test_<hex>` databases, and the leftover-database list and `DROP DATABASE ... WITH (FORCE)` statements.
+    - `AGENTS.md` § Current commands: the integration command and the skip and fail policy.
+    - `docs/architecture.md` § Infrastructure boundary: the schema, the runner's contract, the port and the adapter exist, library only, raw bytes stay local. § Open questions: the audit-event question stays open (event catalogue and run scope contents).
+    - `CHANGELOG.md` § Unreleased: an Added entry for F3, an Added entry for the `psycopg[binary]` dependency, and § Known limitations with the unknown outcome after a connection lost during a commit, audit events not idempotent, triggers that do not bind a superuser (or the table owner), and no reconnect.
+    - `uv run ruff format --check .` -> `95 files already formatted`. `git grep -n -i -e psycopg -e migration -- README.md AGENTS.md docs/architecture.md CHANGELOG.md` shows the mentions above.
+    - Not verified: the leftover-database statements were not executed (a probe that drops a database was refused by the sandbox); they are plain `SELECT` and `DROP DATABASE ... WITH (FORCE)` as in PostgreSQL 13 or later. The glossary was left alone as instructed.
 - [ ] **O11** Broader suite vs baseline (AC16):
   - `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing` passes with the 961 baseline tests plus the new ones, none skipped;
   - `uv run pytest -q` passes with the integration tests skipped and their reason shown;
@@ -132,16 +146,23 @@ Order and ownership:
   - `git diff --check` is clean;
   - no `ecpq_test_` database remains after the run;
   - on the F3 pull request, `tests` and `feedback` are green.
-  - Evidence: (to fill)
+  - Evidence (2026-10-14, working tree on `891270e` plus the O10 docs; `.env` never read or printed). Every item except the last (the pull request checks) holds:
+    - `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `1298 passed` (961 baseline + 337 new), 0 skipped, exit 0. Coverage of the new modules: `ingestion_repository` 100%, `persistence_errors` 100%, `ingestion_audit` 97%, `postgres_ingestion_repository` 93%, `postgres_migrations` 93%, `postgres_settings` 92%; `TOTAL` 96%.
+    - `uv run pytest -q` -> `1126 passed, 172 skipped` (the 172 integration tests, with their reason).
+    - `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `95 files already formatted`; `uv run mypy .` -> `Success: no issues found in 34 source files`.
+    - `uv run node .sdd/doctor/run-doctor.mjs` -> `summary: 31 ok, 0 skipped, 0 warned, 0 failed`.
+    - `git diff --check` -> clean (exit 0).
+    - `docker compose exec -T postgres sh -c 'psql -X -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select count(*) from pg_database where datname like ...ecpq\_test\_%..."'` after the runs -> `0`.
+    - On the F3 pull request #23 (commit `891270e`, before the O9 to O11 docs): `tests` and `feedback` are green (`gh pr checks 23`). To be re-confirmed on the final head after the docs commit and the audit changes.
 - [ ] **O12** Independent audit: verdict from `specs/postgres-persistence/audit.md` (to fill by the auditor).
 
 ## Working state
 - Updated: 2026-10-14
-- Outcome: O1 to O7 done (O1, O2, O3 and O4 committed; O5 migration, O6 and O7 written, not committed); O5 ticked after the human's review and a green `test_postgres_schema.py`
-- Phase: green phase; the executor part of the code is complete; O8 to O11 remain (CI service, migration checks, docs, broader suite)
+- Outcome: O1 to O7, O9 and O10 done; O11 done except its pull request checks item (pending, recorded by the human); O8 written and committed (`891270e`), its CI evidence pending. O9 to O11 changes (the docs of O10 and this file) are not committed
+- Phase: green phase complete locally; the executor part is complete; CI evidence (O8, last item of O11) and the audit (O12) remain
 - In progress: nothing
-- Last command: `uv run --env-file .env pytest -q` -> `1298 passed` (961 earlier + 337 new, 0 skipped); `uv run pytest -q` -> `1126 passed, 172 skipped` (the 172 integration tests, reason naming `uv run --env-file .env pytest tests/integration`); `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `95 files already formatted`; `uv run mypy .` -> `Success: no issues found in 34 source files`; `git diff --check` clean; databases named `ecpq_test_%` left: `0`
-- Next step: O8 (the `postgres:18` service in `.github/workflows/tests.yml`), then O9 to O11 and the audit (O12)
+- Last command: `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `1298 passed`, 0 skipped, `TOTAL` 96%; `uv run pytest -q` -> `1126 passed, 172 skipped`; `uv run ruff check .` -> `All checks passed!`; `uv run ruff format --check .` -> `95 files already formatted`; `uv run mypy .` -> `Success: no issues found in 34 source files`; doctor `31 ok, 0 skipped, 0 warned, 0 failed`; `git diff --check` clean; databases named `ecpq_test_%` left: `0`
+- Next step: O8 CI evidence (`gh pr checks`, `gh run view --log` on PR #23), then the human records `tests` and `feedback` green for O11, then the audit (O12)
 - Notes for the architect (spec gaps found while writing the tests; none blocks gate 2):
   - AC6 says `TRUNCATE` on `raw_evidence` and on `ingestion_run` -> SQLSTATE `23000`. PostgreSQL checks foreign keys before it fires `BEFORE TRUNCATE` triggers, so a plain `TRUNCATE` of a referenced table fails with `0A000` (probed on 18.6 in a scratch database, dropped afterwards). The tests expect `23000` for `TRUNCATE ... CASCADE` on those two tables and for a plain `TRUNCATE` of `observation` and `audit_event`; for a plain `TRUNCATE` of `raw_evidence` or `ingestion_run` they accept `23000` or `0A000` and require that no row changes.
   - O5's green needs the O6 runner: the migrated template is built with `apply_migrations` (as pinned), which O6 delivers after O5. The schema tests can run only once `postgres_migrations` exists, so O5 and O6 may need to be verified together.
@@ -156,4 +177,4 @@ Order and ownership:
 | O3 (executor, 2026-10-14): the pinned `same_json(left: JsonValue, right: JsonValue)` gives 10 `arg-type` errors under `uv run mypy .` in the approved red tests (`run.scope` and `event.detail` are `Mapping[str, JsonValue]`; literals infer types that are not `JsonValue` under invariance; a `float` is passed to prove `ValueError`) | Clarification of Revision 2, execution-plan only, pending the human's review (NOT yet approved): the parameters are `object`, because `same_json` checks the JSON object rule itself at run time and raises `ValueError`; `JsonValue` stays the type of stored values and of the port. Behavior unchanged; tests unchanged; no `# type: ignore` or cast | `execution-plan.md` § Binding constraints (`same_json`), § Revision log; O3 Green (the 10 errors); to verify: `uv run mypy .` shows no `arg-type` on `same_json` and `uv run pytest tests/unit/test_ingestion_audit.py -q` still passes |
 
 ## Checkpoint
-O1 to O7 are green on the working tree (O5 to O7 not committed). Resume at O8 (CI service), then O9 to O11 and the audit.
+O1 to O7, O9 and O10 are done; O11 is done except the pull request checks item. O8 is committed and waits for its CI evidence. Resume at the O8 CI evidence, then the human's record of `tests` and `feedback` green, then the audit (O12).

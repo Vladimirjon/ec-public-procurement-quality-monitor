@@ -38,6 +38,14 @@ uv run pytest --cov=ec_procurement_quality --cov-report=term-missing
 The last command is what the `Tests` workflow runs in CI. It reports coverage
 and sets no minimum percentage.
 
+The integration tests need the Compose PostgreSQL (`docker compose up -d --wait`
+and a `.env` copied from `.env.example`). Without it, plain `uv run pytest`
+skips them with a reason, and they fail when `CI` is `true`. Run them with:
+
+```powershell
+uv run --env-file .env pytest tests/integration
+```
+
 Other available checks:
 
 ```powershell
