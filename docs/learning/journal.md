@@ -1213,8 +1213,90 @@ Ver [plan.md](plan.md).
   - **Pendiente de tu parte:** corregir lo que no sea cierto y añadir con tus
     palabras qué te costó entender de hoy.
 - **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
-- **Siguiente paso:** merge del PR del Día 16 con tu OK explícito; después, Día
-  17: el test-writer escribe las pruebas en rojo contra PostgreSQL real (puerta
-  2), el executor agrega `psycopg` y escribe la migración inicial (yo la reviso
-  línea por línea), se agrega el servicio `postgres:18` al job `tests`, y luego
-  auditoría (puerta 3) y documentación.
+- **Siguiente paso:** Día 17: el executor agrega `psycopg` (O1), el
+  test-writer escribe las pruebas en rojo contra PostgreSQL real (puerta 2), el
+  executor escribe la migración inicial (yo la reviso línea por línea) y el
+  resto de F3, se agrega el servicio `postgres:18` al job `tests`, y luego
+  auditoría (puerta 3) y documentación. (Corregido el 2026-10-13: el merge del
+  PR #22 ya se hizo, `main` en `e74a41a`; antes decía que faltaba.)
+
+## Día 17: F3 `postgres-persistence`, implementación e integración en CI (2026-10-14)
+
+- **Objetivo:** llevar F3 desde las pruebas en rojo hasta la auditoría
+  (puerta 3), con el servicio `postgres:18` en CI y la documentación.
+- **Qué hice:**
+  - **Línea base nueva:** `tasks.md` § Baseline decía `3aac942`; la registré
+    sobre `e74a41a` (ruff 0.17.0, `uv_build` 0.13, 81 archivos de formato, 961
+    pruebas).
+  - **O1:** `psycopg[binary]` 3.3.6 y el marcador `integration`; el `uv.lock`
+    pasó de 22 a 25 paquetes.
+  - **Puerta 2:** el test-writer escribió las pruebas en rojo contra la base de
+    Compose. Las revisé y las aprobé. Aprobé también la aclaración de AC6 y
+    pedí que quedara en `intent.md` y `execution-plan.md`, no solo en
+    `tasks.md`.
+  - **O3 a O7:** tipos de dominio y puerto, la migración inicial, el runner, los
+    ajustes y el adaptador. En O5 paré y revisé `0001_initial_schema.sql` línea
+    por línea.
+  - **O8 y PR #23:** el servicio `postgres:18` en el job `tests`; abrí el PR y
+    activé Auto-fix sin auto-merge.
+  - **O9 a O11 y O12:** evidencias, documentación y la auditoría independiente.
+  - **Puerta 3:** aprobé F1 y la puerta. Luego vino la documentación, el
+    archivo de las specs en `specs/archived/postgres-persistence/` y la
+    regeneración de `specs/current/_index.md`.
+- **Qué aprendí (con mis palabras):**
+  - **Lo que escribí yo (mi revisión de la migración):** el CHECK de
+    `headers` solo exige que sea un arreglo y rechaza `Set-Cookie` en el índice
+    0; no valida que cada elemento sea un par `[nombre, valor]` ni que sean
+    texto. Esa forma completa la valida el dominio y el adaptador. Pedí cambiar
+    solo el comentario, sin ampliar el alcance de la spec aprobada. También
+    comprobé que el `$` de la expresión regular de PostgreSQL exige el final
+    real de la cadena.
+  - **Lo que me explicaron (no es mi redacción):**
+    - Un `TRUNCATE` simple sobre una tabla referenciada por otra falla con
+      `0A000` antes de llegar al trigger; con `CASCADE` o sobre las tablas
+      hoja sí llega y da `23000`. La tabla queda igual de protegida.
+    - `same_json` acepta `object` en sus parámetros porque valida el valor él
+      mismo en ejecución; con `JsonValue` las pruebas aprobadas no pasaban
+      `mypy`.
+    - Las pruebas de integración se saltan en local y fallan en CI: sin eso, CI
+      podría quedar verde sin probar la base.
+  - **Lo que me costó entender:** nada de hoy; lo dije el 2026-10-14, al
+    aprobar el merge.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **O5, revisión de la migración:** ajustar solo el comentario del CHECK de
+    `headers`; ningún SQL cambió.
+  - **AC6:** `TRUNCATE` simple sobre `raw_evidence` o `ingestion_run` acepta
+    `23000` o `0A000` con las filas intactas; con `CASCADE` y sobre
+    `observation` y `audit_event` se exige `23000`.
+  - **F1 de la auditoría:** aprobada la firma `same_json(object, object)`, junto
+    con las reglas ratificadas en F3 y F4 (sustituto suelto en los ajustes, NUL
+    y archivo solo de espacios en las migraciones, texto no ASCII y enteros JSON
+    demasiado largos).
+  - **Puerta 3:** aprobada con la auditoría "aprobado con reservas".
+- **Verificación (comando y resultado):**
+  - `uv run --env-file .env pytest --cov=ec_procurement_quality
+    --cov-report=term-missing`: 1307 pasan, 0 saltadas, cobertura total 96 %
+    (961 de la línea base y 346 nuevas).
+  - `uv run pytest -q` sin base: 1132 pasan y 175 saltadas, cada una con su
+    motivo.
+  - `CI=true uv run pytest tests/integration -q`: errores y salida distinta de
+    cero, ninguna saltada.
+  - `uv run ruff check .`, `uv run ruff format --check .` y `uv run mypy .`
+    (34 archivos): sin errores.
+  - `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok, 0 avisos, 0 fallos.
+  - PR #23: `tests` y `feedback` en verde; el log de CI muestra el servicio
+    `postgres:18` y las pruebas de integración pasando sin saltadas.
+  - Sin bases `ecpq_test_` sobrantes en Compose.
+- **Dudas abiertas:**
+  - El glosario sigue diciendo "ejecución de ingesta" y la tabla se llama
+    `ingestion_run`; no lo toqué, falta decidir.
+  - F5 de la auditoría: aquí los hooks de `ruff` y `mypy` salen "skipped"
+    porque `.venv` no está en el `PATH`; lo cubre el job `feedback` de CI.
+  - La caída justo durante el commit sigue documentada y sin prueba.
+  - La conexión compartida en `postgres_settings.py` y `REPEATABLE READ` para
+    lecturas quedan como recomendaciones para F4 (N3 y N5 de la auditoría).
+  - Siguen abiertas las dudas del Día 14 y las heredadas del Día 7.
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
+- **Siguiente paso:** el merge del PR #23 solo con tu OK explícito. Luego Día
+  18: F4 `ingest-command`, specs; escribir con tus palabras los criterios de
+  idempotencia y reanudación antes de pedírselos al agente (D-09).

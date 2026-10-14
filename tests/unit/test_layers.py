@@ -117,22 +117,22 @@ def test_layer_application_imports_only_stdlib_domain_and_itself() -> None:
 INFRASTRUCTURE_PACKAGE = f"{ROOT_PACKAGE}.infrastructure"
 SERCOP_ADAPTER_MODULE = "sercop_source.py"
 HTTP_CLIENT_LIBRARY = "httpx"
+DATABASE_DRIVER_LIBRARY = "psycopg"
 
 
-def _names_http_client_library(source: str) -> bool:
-    """True when `source` imports `httpx` in any form.
+def _names_library(source: str, library: str) -> bool:
+    """True when `source` imports `library` in any form.
 
-    Covers `import httpx`, `import httpx.x`, `from httpx import x`,
-    `from httpx.x import y` (also relative), `from package import httpx` and a
-    string-literal dynamic import (`__import__("httpx")`,
-    `importlib.import_module("httpx")`).
+    Covers `import lib`, `import lib.x`, `from lib import x`, `from lib.x import
+    y` (also relative), `from package import lib` and a string-literal dynamic
+    import (`__import__("lib")`, `importlib.import_module("lib")`).
     """
     for name, _level in _imported_modules(source):
-        if name.split(".")[0] == HTTP_CLIENT_LIBRARY:
+        if name.split(".")[0] == library:
             return True
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom) and any(
-            alias.name.split(".")[0] == HTTP_CLIENT_LIBRARY for alias in node.names
+            alias.name.split(".")[0] == library for alias in node.names
         ):
             return True
         if isinstance(node, ast.Call) and node.args:
@@ -149,10 +149,15 @@ def _names_http_client_library(source: str) -> bool:
                 called in {"__import__", "import_module"}
                 and isinstance(first, ast.Constant)
                 and isinstance(first.value, str)
-                and first.value.split(".")[0] == HTTP_CLIENT_LIBRARY
+                and first.value.split(".")[0] == library
             ):
                 return True
     return False
+
+
+def _names_http_client_library(source: str) -> bool:
+    """True when `source` imports `httpx` in any form."""
+    return _names_library(source, HTTP_CLIENT_LIBRARY)
 
 
 def test_layer_only_infrastructure_imports_httpx() -> None:
@@ -183,6 +188,38 @@ def test_layer_only_infrastructure_imports_httpx() -> None:
         str(path.relative_to(root))
         for path in guarded
         if _names_http_client_library(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == []
+
+
+def test_layer_only_infrastructure_imports_psycopg() -> None:
+    """Feature postgres-persistence (F3), AC13 and ADR 0007: the PostgreSQL
+    driver is imported only in `infrastructure`; `domain`, `application`,
+    `interfaces` and the root package never import it, in any form.
+    """
+    root_package = importlib.import_module(ROOT_PACKAGE)
+    assert root_package.__file__ is not None, "the root package needs an __init__.py"
+    root = Path(root_package.__file__).parent
+
+    # The check must not pass vacuously: at least one infrastructure module is
+    # supposed to import the driver.
+    importers = [
+        path.name
+        for path in sorted((root / "infrastructure").rglob("*.py"))
+        if _names_library(path.read_text(encoding="utf-8"), DATABASE_DRIVER_LIBRARY)
+    ]
+    assert importers, f"an infrastructure module must import {DATABASE_DRIVER_LIBRARY}"
+
+    guarded = sorted(root.glob("*.py"))
+    for layer in ("domain", "application", "interfaces"):
+        guarded.extend(sorted((root / layer).rglob("*.py")))
+    assert guarded, "no module was checked"
+
+    offenders = [
+        str(path.relative_to(root))
+        for path in guarded
+        if _names_library(path.read_text(encoding="utf-8"), DATABASE_DRIVER_LIBRARY)
     ]
 
     assert offenders == []

@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28.1",
+    "psycopg[binary]>=3.3.6",
 ]
 
 [project.scripts]
@@ -44,3 +45,6 @@ dev = [
 
 [tool.pytest]
 testpaths = ["tests"]
+markers = [
+    "integration: needs a real PostgreSQL 18 (see README)",
+]

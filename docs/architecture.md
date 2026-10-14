@@ -79,8 +79,16 @@ architecture.
 reaches the database and how it is run locally: `psycopg` 3 with explicit SQL,
 imported only by `infrastructure`; schema changes as numbered SQL files applied
 by a runner owned by the project; and `compose.yaml` with PostgreSQL 18 as its
-only service. The schema and the runner's contract belong to F3. Raw evidence
-stays in the local store described above, not in PostgreSQL.
+only service. Raw evidence stays in the local store described above, not in
+PostgreSQL.
+
+F3 delivers the first schema (`migrations/0001_initial_schema.sql`: runs,
+evidence content hashes and sizes, observations and audit events, with
+append-only triggers), the runner's contract (`apply_migrations` in
+`infrastructure`: numbered files, a recorded checksum per file, one transaction
+per file, a non-waiting advisory lock), the `IngestionRepository` port in
+`application` and its `psycopg` adapter. They are a library: no CLI command or
+use case calls them yet, and the response bytes are not stored in PostgreSQL.
 
 No distributed infrastructure is justified until measurable workload,
 reliability, or operational requirements demonstrate a need. See
@@ -93,7 +101,11 @@ reliability, or operational requirements demonstrate a need. See
   with the buyer-name query and `api/record`, as recorded in
   [the source observations](sources/sercop-observations.md) and implemented by
   the source adapter. Other response variants stay open until observed.)
-- What are the minimum audit events and quality-rule contracts?
+- What are the minimum audit events and quality-rule contracts? (Partly
+  answered for storage: an audit event is stored with a non-empty type and a
+  JSON object, and the catalogue of event types and the content of a run's
+  scope stay open until the ingestion defines them. The quality-rule contracts
+  stay open.)
 - Which raw-storage compression and retention policies are supported by
   observed usage and legal or operational requirements? (The paths and
   metadata fields of the local store are answered by

@@ -55,6 +55,38 @@ The project has not been released yet, so every entry is under `Unreleased`.
   service (`postgres:18`, port published on `127.0.0.1` only, named volume) and
   `.env.example` with fake values; `.env` is git-ignored. Nothing in the
   application uses the database yet, and no dependency was added.
+- PostgreSQL persistence (F3), following
+  [ADR 0007](docs/adr/0007-postgresql-persistence.md):
+  - `migrations/0001_initial_schema.sql` with the tables `ingestion_run`,
+    `raw_evidence`, `observation` and `audit_event`, their constraints, and
+    triggers that make evidence, observations and audit events append-only and
+    let a run change only from `running` to `succeeded` or `failed`;
+  - in `domain`, the run status, `IngestionRun`, `AuditEvent`, the JSON value
+    rule with `same_json` (booleans are not numbers), and the five persistence
+    errors; in `application`, the `IngestionRepository` port; and in
+    `infrastructure`, `PostgresSettings`, `apply_migrations` and
+    `PostgresIngestionRepository`, on `psycopg`, with typed errors that carry
+    no secret, setting or stored value;
+  - input that the domain or PostgreSQL cannot store as given is rejected with
+    `ValueError` before anything is written: a float, text with U+0000 or a lone
+    surrogate, or an integer of more than 4300 digits in a scope or detail.
+    Non-ASCII text is stored and read back unchanged. Connection settings with a
+    lone surrogate are refused, and a migration file that is empty,
+    whitespace-only, holds U+0000 or is not UTF-8 is refused before any
+    connection is opened;
+  - integration tests under `tests/integration/` with one throwaway
+    `ecpq_test_<hex>` database per test, skipped with a reason when the
+    variables are unset and failing when `CI` is `true`, the `integration`
+    pytest marker, and a layer test that only `infrastructure` imports
+    `psycopg`;
+  - a `postgres:18` service and its environment in the `tests` job of
+    `.github/workflows/tests.yml`.
+  It is a library only: no CLI command or use case calls the runner or the
+  adapter yet, and the response bytes stay in the local raw evidence store.
+- `psycopg[binary]` as the second runtime dependency (`psycopg[binary]>=3.3.6`
+  in `[project] dependencies`, resolved to 3.3.6 with `psycopg-binary` 3.3.6 and
+  `tzdata` 2026.5 in `uv.lock`), imported only in `infrastructure`. The
+  development dependencies do not change.
 
 ### Changed
 
@@ -102,3 +134,17 @@ The project has not been released yet, so every entry is under `Unreleased`.
   - The adapter was tested only with fixtures and simulated transports. That
     the real source answers its requests as it answered the earlier
     observations is not verified until the first real ingestion.
+- PostgreSQL persistence (F3):
+  - A connection lost while a commit is in flight leaves the outcome unknown:
+    the write may or may not have happened, so `PersistenceConnectionError` is
+    not proof that nothing was written. This case is documented and not tested.
+    A connection lost before the statements are sent, or while the transaction
+    is open, writes nothing (tested).
+  - Audit events are not idempotent: appending the same event twice stores two
+    events. An idempotency key is not part of F3.
+  - The append-only and run-transition triggers do not bind a superuser or the
+    table owner, who can disable them, and the migration bookkeeping table can
+    be edited the same way. No least-privilege database role exists yet.
+  - Nothing calls the runner or the adapter, so no ingestion, reconnection,
+    retry or pooling behavior exists; an adapter that lost its connection must be
+    closed and replaced.

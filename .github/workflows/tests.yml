@@ -13,6 +13,32 @@ jobs:
   tests:
     runs-on: ubuntu-latest
 
+    # PostgreSQL 18 for the integration tests (ADR 0007). The password is a
+    # fixed placeholder, not a secret: the service lives only for this job.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: ecpq_ci
+          POSTGRES_USER: ecpq_ci
+          POSTGRES_PASSWORD: ci-placeholder
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ecpq_ci -d ecpq_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # The integration fixtures read these variables. CI is "true" on GitHub
+    # Actions, so a missing database fails the job instead of skipping tests.
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ecpq_ci
+      POSTGRES_USER: ecpq_ci
+      POSTGRES_PASSWORD: ci-placeholder
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
