@@ -67,6 +67,13 @@ The project has not been released yet, so every entry is under `Unreleased`.
     `infrastructure`, `PostgresSettings`, `apply_migrations` and
     `PostgresIngestionRepository`, on `psycopg`, with typed errors that carry
     no secret, setting or stored value;
+  - input that the domain or PostgreSQL cannot store as given is rejected with
+    `ValueError` before anything is written: a float, text with U+0000 or a lone
+    surrogate, or an integer of more than 4300 digits in a scope or detail.
+    Non-ASCII text is stored and read back unchanged. Connection settings with a
+    lone surrogate are refused, and a migration file that is empty,
+    whitespace-only, holds U+0000 or is not UTF-8 is refused before any
+    connection is opened;
   - integration tests under `tests/integration/` with one throwaway
     `ecpq_test_<hex>` database per test, skipped with a reason when the
     variables are unset and failing when `CI` is `true`, the `integration`

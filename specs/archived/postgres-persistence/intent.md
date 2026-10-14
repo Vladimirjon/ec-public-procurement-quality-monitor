@@ -1,5 +1,6 @@
 # Intent: PostgreSQL persistence (F3)
 
+Shipped: 2026-10-14
 Revision: 2
 Approval: Approved revision 2 by Vladimirjon on 2026-10-13 (gate 1), with `psycopg[binary]>=3.3.6` approved, option B for open question 6, and the recommendation accepted on open questions 1, 3, 4, 5, 7, 8 and 9; the clarification of Revision 2 (AC6 `TRUNCATE` SQLSTATE) approved by the human at gate 2 in chat on 2026-10-14; the clarifications of Revision 2 from the audit (`same_json(left: object, right: object)`, and the lone-surrogate, NUL and whitespace-only rules with their tests, findings F1, F3 and F4) approved by the human at gate 3 in chat on 2026-10-14
 
