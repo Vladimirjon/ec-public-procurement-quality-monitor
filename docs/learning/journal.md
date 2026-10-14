@@ -1260,8 +1260,8 @@ Ver [plan.md](plan.md).
       `mypy`.
     - Las pruebas de integración se saltan en local y fallan en CI: sin eso, CI
       podría quedar verde sin probar la base.
-  - **Pendiente de tu parte:** escribir con tus palabras qué te costó entender
-    de las restricciones y los triggers de la migración.
+  - **Lo que me costó entender:** nada de hoy; lo dije el 2026-10-14, al
+    aprobar el merge.
 - **Decisiones tomadas (ID del plan y resumen):**
   - **O5, revisión de la migración:** ajustar solo el comentario del CHECK de
     `headers`; ningún SQL cambió.
