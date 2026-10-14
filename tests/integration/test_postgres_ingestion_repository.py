@@ -19,6 +19,7 @@ the statements are sent, and lost while the transaction waits on a lock.
 """
 
 import logging
+import re
 import socket
 import time
 import traceback
@@ -592,6 +593,49 @@ def test_observation_read_of_a_stored_row_that_fails_domain_validation_is_refuse
     assert HEADER_MARKER not in str(caught.value)
 
 
+def test_observation_non_ascii_text_round_trips_in_url_headers_scope_and_detail(
+    repository: PostgresIngestionRepository,
+    migrated_database: PostgresSettings,
+    open_connection: OpenConnection,
+) -> None:
+    scope = {
+        "entidad": "Ministerio de Educación",
+        "año": 2025,
+        "nota": "contratación pública \U0001f4c4",
+    }
+    url = "https://source.invalid/búsqueda?año=2025&categoría=obras"
+    headers = (
+        ("Content-Type", "application/json"),
+        ("X-Descripción", "Adquisición de equipos — ñandú"),
+    )
+    detail = {"descripción": "Página 1 — adquisición"}
+    observation = make_observation(url=url, headers=headers)
+    started = _start(repository, scope=scope)
+    recorded = repository.record_observation(observation)
+    event = repository.append_audit_event(
+        execution_id=EXEC_1,
+        occurred_at=STARTED_AT,
+        event_type="synthetic-page-stored",
+        detail=detail,
+    )
+
+    run = repository.read_run(EXEC_1)
+    read = repository.read_observation(EXEC_1, 1)
+    (listed,) = repository.list_audit_events(EXEC_1)
+
+    assert run == started
+    assert same_json(run.scope, scope)
+    assert read == recorded
+    assert read.url == url
+    assert read.headers == headers
+    assert listed == event
+    assert same_json(listed.detail, detail)
+    before = _counts(open_connection, migrated_database)
+    assert _start(repository, scope=scope) == started
+    assert repository.record_observation(observation) == recorded
+    assert _counts(open_connection, migrated_database) == before
+
+
 # --- AC9: audit events -------------------------------------------------------
 
 
@@ -813,6 +857,34 @@ def test_invalid_input_is_a_value_error_and_writes_nothing(
         call(repository)
 
     assert NUL_MARKER not in str(caught.value)
+    assert _counts(open_connection, migrated_database) == before
+
+
+@pytest.mark.parametrize(
+    ("field", "call"),
+    [
+        pytest.param("scope", _start_with(scope={"n": 10**5000}), id="scope"),
+        pytest.param("detail", _append_with(detail={"n": 10**5000}), id="detail"),
+    ],
+)
+def test_invalid_json_integer_too_long_to_write_is_a_value_error_naming_the_field(
+    repository: PostgresIngestionRepository,
+    migrated_database: PostgresSettings,
+    open_connection: OpenConnection,
+    field: str,
+    call: Callable[[PostgresIngestionRepository], object],
+) -> None:
+    _start(repository, EXEC_1)
+    before = _counts(open_connection, migrated_database)
+
+    with pytest.raises(ValueError) as caught:
+        call(repository)
+
+    error = caught.value
+    assert field in str(error)
+    assert re.search(r"10{20}", str(error)) is None
+    assert error.__cause__ is None
+    assert error.__context__ is None
     assert _counts(open_connection, migrated_database) == before
 
 

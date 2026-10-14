@@ -136,6 +136,22 @@ def test_settings_reject_an_invalid_field_naming_it(field: str, value: Any) -> N
     assert PASSWORD not in message
 
 
+@pytest.mark.parametrize("field", ["host", "dbname", "user", "password"])
+def test_settings_reject_a_lone_surrogate_naming_the_field(field: str) -> None:
+    value = f"{VALUE_MARKER}\ud800"
+
+    with pytest.raises(ValueError) as caught:
+        PostgresSettings(**_fields(**{field: value}))
+
+    error = caught.value
+    assert field in str(error)
+    assert VALUE_MARKER not in str(error)
+    assert VALUE_MARKER not in repr(error)
+    assert all(VALUE_MARKER not in str(argument) for argument in error.args)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

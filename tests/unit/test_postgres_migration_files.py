@@ -132,6 +132,24 @@ def test_migration_files_file_that_is_not_utf8_is_named(tmp_path: Path) -> None:
     assert "0001_a.sql" in _message_naming_a_file(directory)
 
 
+def test_migration_files_file_holding_a_nul_is_named(tmp_path: Path) -> None:
+    directory = _directory(
+        tmp_path,
+        {
+            "0001_a.sql": VALID_SQL,
+            "0002_b.sql": b"CREATE TABLE synthetic_b (id integer);\x00\n",
+        },
+    )
+
+    assert "0002_b.sql" in _message_naming_a_file(directory)
+
+
+def test_migration_files_whitespace_only_file_is_named(tmp_path: Path) -> None:
+    directory = _directory(tmp_path, {"0001_a.sql": b" \n\t\r\n"})
+
+    assert "0001_a.sql" in _message_naming_a_file(directory)
+
+
 def test_migration_files_missing_directory_is_a_migration_error(
     tmp_path: Path,
 ) -> None:
