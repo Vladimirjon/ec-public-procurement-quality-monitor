@@ -5,12 +5,12 @@ Approval: Approved revision 1 by Vladimirjon on 2026-10-15 (gate 1: design, crit
 Intent: [intent.md](intent.md) Revision 6 · Plan: [execution-plan.md](execution-plan.md) Revision 4
 
 ## Status
-Awaiting intent approval.
+Gate 1 approved on 2026-10-15. No outcome of F4 has been started.
 - **The spec set:**
   - `intent.md` Revision 6 (AC1 to AC25; Q1 to Q15, findings 1 to 22 and P-1 to P-5 decided by the human on 2026-10-14 and 2026-10-15);
   - `execution-plan.md` Revision 4;
   - this file.
-- **Approval:** the human reviewed and accepted intent Revision 6 and plan Revision 4 on 2026-10-15, and confirmed Q14 (reconciliation never restores `page-completed`). The `Approval` lines of all three files stay `Pending` until the human closes gate 1.
+- **Approval:** the human closed gate 1 on 2026-10-15 for `intent.md` Revision 6, `execution-plan.md` Revision 4 and this file Revision 1, and confirmed Q14 (reconciliation never restores `page-completed`). The `Approval` line of each file records it. The approval covers design, criteria and execution order; it does not claim that F4 is implemented or tested. The Day 18 journal entry and the Day 17 correction are written. PR #24 awaits only the final review and the human's explicit merge OK; after the merge, O1 starts on a new implementation branch cut from the updated `main`.
 - **Nothing implemented yet:** no code, test or configuration has changed. The work is split into outcomes O1 to O11, with O6 split into O6a, O6b and O6c (decision T-2 of the human, 2026-10-15).
 
 ## Baseline
@@ -52,9 +52,9 @@ Awaiting intent approval.
 
 ## Gates and review stops (harny pipeline, `docs/learning/plan.md` § 3)
 - **Gate 1, the specs** (human).
-  - The human reviews and approves this spec set and records the approval in the `Approval` line of `intent.md` (and of the plan and this file).
+  - The human reviewed and approved this spec set on 2026-10-15; the approval is recorded in the `Approval` line of `intent.md`, of the plan and of this file.
   - Required: every AC maps to an outcome and to a Validation row; no open question is left.
-  - 🧑 At gate 1 close, the human's session writes in `docs/learning/journal.md`, in the human's words: the correction of the Day 17 "Siguiente paso" and the Day 18 entry. This is a deliverable of the spec work (intent § Scope In), not of the code.
+  - 🧑 At gate 1 close, the human's words went into `docs/learning/journal.md`: the correction of the Day 17 "Siguiente paso" and the Day 18 entry (done on 2026-10-15). This was a deliverable of the spec work (intent § Scope In), not of the code.
 - **Review stops of O1 and O2** (human).
   - The human reviews the recorded red evidence of the M1 and M2 tests (AC22; AC23 and AC16 P-1), then the green evidence.
   - Right red reasons: the missing operation or class (`AttributeError`, `ImportError` inside a test), never a missing database, a typo or a socket attempt.
@@ -275,10 +275,10 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
 ## Working state
 - Updated: 2026-10-15
 - Outcome: none started
-- Phase: gate 1 (the human reviews `intent.md` Revision 6, `execution-plan.md` Revision 4 and this file)
+- Phase: gate 1 closed on 2026-10-15 (`intent.md` Revision 6, `execution-plan.md` Revision 4 and this file Revision 1); PR #24 awaits the final review and the human's explicit merge OK
 - In progress: nothing
-- Last command: `uv run ruff format --check .` -> clean (architect, 2026-10-15)
-- Next step: the human closes gate 1 and writes the journal entries (Day 17 correction, Day 18); then O1 (M1: the test-writer first, then the executor)
+- Last command: `uv run ruff format --check .` -> clean, 100 files (2026-10-15)
+- Next step: after the merge of PR #24, create a new implementation branch from the updated `main` and start O1 (M1: the test-writer first, then the executor)
 
 ## Finding responses
 | Finding | Response | Evidence |
@@ -287,4 +287,4 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
 | T-2 (architect, 2026-10-15): after M3 the CLI tests could fail only because `interfaces/ingest_command.py` did not exist | Decided by the human on 2026-10-15, option 3: the CLI tests are a second red phase inside M5. O6a is the executor's importable skeleton (no behavior) and the `ingest` subparser. O6b is the test-writer's CLI and end-to-end tests with functional red evidence, then the stop M5-red. O6c is the executor's green, without editing the tests. M3 gets no `ingest_command` stub | § Outcomes O3, O4, O6a, O6b and O6c; § Gates and review stops |
 
 ## Checkpoint
-Gate 1 is open. After the human's approval, resume at O1 (M1): the test-writer writes and records the listing tests red, then the executor makes them green.
+Gate 1 was approved on 2026-10-15 and the Day 18 journal is written. After the human's explicit merge OK of PR #24, resume at O1 (M1) on a new implementation branch cut from the updated `main`: the test-writer writes and records the listing tests red, then the executor makes them green.
