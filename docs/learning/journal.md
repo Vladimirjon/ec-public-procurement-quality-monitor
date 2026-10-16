@@ -1297,6 +1297,120 @@ Ver [plan.md](plan.md).
     lecturas quedan como recomendaciones para F4 (N3 y N5 de la auditoría).
   - Siguen abiertas las dudas del Día 14 y las heredadas del Día 7.
 - **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
-- **Siguiente paso:** el merge del PR #23 solo con tu OK explícito. Luego Día
-  18: F4 `ingest-command`, specs; escribir con tus palabras los criterios de
-  idempotencia y reanudación antes de pedírselos al agente (D-09).
+- **Siguiente paso:** Día 18, F4 `ingest-command`: definir y aprobar
+  `intent.md`, `execution-plan.md` y `tasks.md`, incluidos los criterios de
+  idempotencia y reanudación. (Corregido el 2026-10-15: el PR #23 ya fue
+  integrado y `main` quedó en `2e6edcd`; antes decía que el merge seguía
+  pendiente).
+
+## Día 18: F4 `ingest-command`, specs (2026-10-14 al 2026-10-15)
+
+- **Objetivo:** llevar F4 hasta la puerta 1: `intent.md`, `execution-plan.md` y
+  `tasks.md` aprobados por mí, sin escribir código ni pruebas.
+- **Qué hice:**
+  - Actualicé `main` (`2e6edcd`, con el PR #23 integrado) y creé la rama
+    `docs/day-18-f4-ingest-command-specs` antes de tocar nada.
+  - **Línea base:** 1132 pruebas pasan y 175 se saltan sin base; 1307 pasan con
+    la base de Compose (cobertura 96 %); `ruff`, `ruff format` y `mypy` (34
+    archivos) sin errores; doctor con 31 ok. El contenedor de PostgreSQL estaba
+    detenido y lo levanté con `docker compose up -d --wait`.
+  - **D-09:** `argparse` de la biblioteca estándar, sin dependencias.
+  - Escribí yo los criterios de idempotencia, reanudación, fallo parcial, códigos
+    de salida y evidencia antes de pedírselos al agente. El architect los tomó
+    como entrada, sin reescribirlos, y devolvió 22 hallazgos y 15 decisiones.
+  - Revisé las specs por partes: `intent.md` pasó de la revisión 1 a la 6,
+    `execution-plan.md` a la revisión 4 y `tasks.md` a la revisión 1.
+  - **Puerta 1:** la cerré el 2026-10-15 sobre las tres specs y quedó
+    registrada en sus líneas `Approval`. La aprobación cubre el diseño, los
+    criterios y el orden de ejecución, no afirma que F4 esté implementada ni
+    probada.
+- **Qué aprendí (con mis palabras):**
+  - Entendí que una ingesta idempotente no significa reutilizar la misma
+    ejecución ni borrar el historial. Cada intento conserva su propia ejecución
+    y auditoría, mientras que los mismos bytes se reutilizan por su hash y los
+    resultados no deben duplicarse.
+  - Entendí que reanudar no consiste simplemente en continuar después del
+    último archivo encontrado. Para saltar una página debe existir evidencia
+    válida de que se completó, y un `last-page-reached` solo puede limitar la
+    reanudación si la cadena demuestra cobertura continua desde la primera
+    página del alcance.
+  - También entendí que la reconciliación puede recuperar en PostgreSQL una
+    observación que ya existe en el almacén local, pero no puede inventar un
+    evento `page-completed`. Tener los bytes no demuestra por sí solo que la
+    página terminó correctamente.
+  - Una prueba en rojo debe fallar por el comportamiento pendiente, no porque
+    falte un módulo o porque el archivo no se pueda importar. Por eso separamos
+    los contratos de M3, las pruebas del caso de uso y la segunda fase roja del
+    CLI.
+  - **Lo que me costó entender:**
+    - Lo que más me costó fue separar idempotencia, reanudación y
+      reconciliación. En particular, entender por qué una respuesta guardada en
+      disco no equivale a una página completada y cómo una cadena de ejecuciones
+      puede demostrar que no existen huecos antes de continuar.
+    - También me costó decidir dónde ubicar las pruebas del CLI: debían
+      respetar el orden del plan, pero necesitaban un esqueleto importable para
+      que el rojo fuera funcional y no un error de recolección.
+- **Decisiones tomadas (ID del plan y resumen):**
+  - **D-09:** `argparse`, sin dependencias.
+  - **Q1 a Q15 (puerta 1):**
+    - `ingest` aplica las migraciones antes de crear el repositorio.
+    - Orden de escritura: almacén local, `record_observation`, evento de página
+      y cierre de la ejecución.
+    - Tras `PersistenceConnectionError` se abre una sola conexión nueva y solo
+      se repiten operaciones idempotentes.
+    - Una sola ingesta activa por base, con la extensión de persistencia
+      necesaria para listar ejecuciones por estado y para la exclusión.
+    - Después de `finish_run` no se agrega nada a esa ejecución.
+    - El almacén es el fijo `data/raw/`; no hay `--raw-root`.
+    - Códigos de salida 0, 1, 2 y 130 (Ctrl+C).
+    - Sin reintentos dentro de una ejecución; `--resume <id>` es el nuevo
+      intento auditado.
+    - Solo páginas de búsqueda; `api/record` queda para una feature posterior.
+    - Q14: F1 gana una operación de listado por `execution_id`, y la
+      reconciliación nunca restaura un `page-completed`.
+  - **Hallazgos 15, 19, 20, 21 y 22:**
+    - Se ejecuta desde la raíz del repositorio y `data/raw/` se resuelve una vez
+      a ruta absoluta.
+    - Un destino de `--resume` inválido sale con 2; solo una cadena existente
+      pero rota sale con 1.
+    - `POSTGRES_HOST` es opcional (`127.0.0.1`) y no se edita `.env.example`.
+  - **P-1 a P-5:**
+    - P-1: `MigrationLockError(MigrationError)` para el lock ocupado.
+    - P-2: salida 0 si la repetición exacta de `finish_run(SUCCEEDED)` confirma
+      la ejecución como `succeeded`.
+    - P-3: `last-page-reached` se emite siempre que `p >= pages`.
+    - P-4: centinela `first_page = last_page + 1`.
+    - P-5: `<id> running` tras un segundo Ctrl+C.
+  - **Validez de `last-page-reached`:** detalle exacto, único en la cadena y con
+    cobertura continua desde la primera página del alcance.
+  - **T-1 y T-2:**
+    - El test-writer escribe primero las pruebas de O1 y O2 y el executor las
+      lleva a verde sin tocarlas.
+    - Las pruebas del CLI son una segunda fase roja dentro de M5, con su propia
+      parada de revisión.
+- **Verificación (comando y resultado):**
+  - `uv run pytest -q` sin base: 1132 pasan y 175 saltadas.
+  - `uv run --env-file .env pytest --cov=ec_procurement_quality
+    --cov-report=term`: 1307 pasan, cobertura total 96 %.
+  - `uv run ruff check .`, `uv run ruff format --check .` y `uv run mypy .`
+    (34 archivos): sin errores. `uv run node .sdd/doctor/run-doctor.mjs`: 31 ok,
+    0 avisos, 0 fallos.
+  - Las tres specs: sin espacios finales, sin CR y sin menciones a herramientas
+    de IA; cobertura de AC1 a AC25 y P-1 a P-5 en `tasks.md`; `ruff format
+    --check .` sin diferencias. `git diff --check` no inspecciona archivos sin
+    seguimiento, así que no lo cito para ellas.
+  - SHA-256 aprobados en la puerta 1 (primeros 16 caracteres): `intent.md`
+    `fd22c65ba49c07e5`, `execution-plan.md` `e12a1758c7877353` y `tasks.md`
+    `008386f4dc1106d2`. Al registrar la aprobación solo cambió su línea
+    `Approval`; los hashes resultantes son `7101336667ba49d8`,
+    `a7d4d6cd50c3632b` y `3b98735491eff7a9`.
+- **Dudas abiertas:**
+  - El glosario sigue diciendo "ejecución de ingesta" y la tabla se llama
+    `ingestion_run`; no lo toqué, falta decidir.
+  - El comportamiento frente al SERCOP real sigue sin verificarse (reserva U1 de
+    `source-access`); se compara en la primera ingesta real del Día 20.
+  - Siguen abiertas las dudas del Día 14 y las heredadas del Día 7.
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
+- **Siguiente paso:** el merge del PR de las specs solo con tu OK explícito.
+  Luego Día 19: F4 en rojo y verde según `tasks.md` (O1 y O2 con sus pruebas,
+  O3 contratos, O4 pruebas en rojo y puerta 2, O5 `run_ingest` escrito por ti).
