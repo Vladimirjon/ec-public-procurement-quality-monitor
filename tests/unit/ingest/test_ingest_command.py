@@ -45,6 +45,15 @@ The audit round 2 of 2026-10-18 added, at the end of the file (plan Revision 7):
 - `single_result_line` (AC15, F-16 b): a Ctrl+C while the source closes adds no
   second result line.
 
+The audit round 3 of 2026-10-18 added, at the end of the file (plan Revision 8):
+
+- `exit_code_reconnect_exclusion_interrupt` and `exit_code_reconnect_open_interrupt`
+  (AC7, AC8 c, AC15, F-18, F-19): an interrupt or an exception while a lost
+  connection is recovered prints `<A> running` (nothing while `start_run` is the lost
+  operation), exits 130 or 1, and names the operation that raised on one stderr line;
+- `exit_code_start_run_unconfirmed` (AC8, AC15, F-20): a lost `start_run` whose
+  recovery fails prints `<id> running`, exit 1, and no `run <id> started` line.
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and the markers `synthetic-password-marker`,
 `synthetic-body-marker` and `synthetic-header-marker`.
@@ -2517,3 +2526,211 @@ def test_single_result_line_a_command_that_announced_no_run_prints_nothing(
     assert result.out == ""
     assert "interrupted" in result.err
     assert rig.calls == ["make_source", "migrate"]
+
+
+# === exit_code_reconnect_* and exit_code_start_run_unconfirmed (F-18, F-19, F-20) ==
+#
+# Plan Revision 8: a Ctrl+C, a `MemoryError` or another exception that arrives while a
+# lost connection is being recovered (the second connection being opened, or the
+# exclusion being taken on it) leaves the run `running` and writes nothing to it. The
+# result line is `<A> running`, exit 130 for Ctrl+C and 1 otherwise, and exactly one
+# stderr line names the operation that raised. While `start_run` itself is the lost
+# operation no run was confirmed, so stdout stays empty.
+
+RECOVERY_ERRORS = [
+    pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c"),
+    pytest.param(lambda: MemoryError(), 1, id="memory-error"),
+    pytest.param(
+        lambda: SyntheticDefect(f"database text {BODY_MARKER} {HEADER_MARKER}"),
+        1,
+        id="synthetic-defect",
+    ),
+]
+EXCLUSION_STATES = pytest.mark.parametrize(
+    "other_session", [False, True], ids=["exclusion-free", "exclusion-held"]
+)
+CLEANUP_WORDS = ("run-interrupted", "read_run", "append_audit_event", "finish_run")
+
+
+def lose_the_second_observation(lab: Lab, *, other_session: bool) -> None:
+    """The first connection is lost at observation 2, before the commit.
+
+    With `other_session`, another session takes the exclusion at that moment (the
+    auditor's experiment X1).
+    """
+    lab.opener.faults[1] = [
+        lab.faults.lost_before_commit(
+            "record_observation",
+            detail="2",
+            hook=lab.database.hold_exclusion_elsewhere if other_session else None,
+        )
+    ]
+
+
+def lose_start_run(lab: Lab, *, other_session: bool) -> None:
+    """The first connection is lost at `start_run`, before the commit."""
+    lab.opener.faults[1] = [
+        lab.faults.lost_before_commit(
+            "start_run",
+            hook=lab.database.hold_exclusion_elsewhere if other_session else None,
+        )
+    ]
+
+
+def assert_the_run_stays_running(result: Result, lab: Lab, code: int) -> str:
+    """`<A> running` on stdout, nothing written after the loss, nothing left open."""
+    run_id = the_run(lab)
+    assert result.code == code
+    assert result.out == f"{run_id} running\n"
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert lab.event_types(run_id) == ["run-started", "page-completed"]
+    assert lab.sequences(run_id) == (1,)
+    assert lab.opener.all_closed
+    assert_safe_stderr(result)
+    return run_id
+
+
+@EXCLUSION_STATES
+@pytest.mark.parametrize(("make_error", "code"), RECOVERY_ERRORS)
+def test_exit_code_reconnect_exclusion_interrupt_prints_running_and_names_the_call(
+    rig: Rig,
+    make_error: Callable[[], BaseException],
+    code: int,
+    other_session: bool,
+) -> None:
+    """F-18: the second exclusion raises -> `<A> running`, 130 for Ctrl+C else 1.
+
+    One stderr line holds `try_acquire_ingest_exclusion`; none holds a cleanup step.
+    """
+    lab = rig.lab
+    lose_the_second_observation(lab, other_session=other_session)
+    lab.opener.faults[2] = [
+        lab.faults.raises("try_acquire_ingest_exclusion", make_error)
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert_the_run_stays_running(result, lab, code)
+    assert len(stderr_lines(result, "try_acquire_ingest_exclusion")) == 1, result.err
+    for word in CLEANUP_WORDS:
+        assert stderr_lines(result, word) == [], result.err
+    assert lab.opener.opens == 2
+
+
+@EXCLUSION_STATES
+@pytest.mark.parametrize(("make_error", "code"), RECOVERY_ERRORS)
+def test_exit_code_reconnect_open_interrupt_prints_running_and_names_the_opening(
+    rig: Rig,
+    make_error: Callable[[], BaseException],
+    code: int,
+    other_session: bool,
+) -> None:
+    """F-19: the second `open_repository()` raises -> `<A> running`, 130 or 1.
+
+    One stderr line holds `open_repository`; none names a read of the run.
+    """
+    lab = rig.lab
+    lose_the_second_observation(lab, other_session=other_session)
+    lab.opener.open_errors[2] = make_error
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert_the_run_stays_running(result, lab, code)
+    assert len(stderr_lines(result, "open_repository")) == 1, result.err
+    for word in CLEANUP_WORDS:
+        assert stderr_lines(result, word) == [], result.err
+    assert "RuntimeError" not in result.err
+    assert lab.opener.opens == 2
+
+
+@EXCLUSION_STATES
+@pytest.mark.parametrize(("make_error", "code"), RECOVERY_ERRORS)
+def test_exit_code_reconnect_exclusion_interrupt_while_start_run_is_lost_prints_nothing(
+    rig: Rig,
+    make_error: Callable[[], BaseException],
+    code: int,
+    other_session: bool,
+) -> None:
+    """`start_run` lost, then the second exclusion raises: no run was confirmed.
+
+    stdout is empty; Ctrl+C gives 130 and anything else 1; one stderr line names the
+    call; the run was never announced; nothing is written.
+    """
+    lab = rig.lab
+    lose_start_run(lab, other_session=other_session)
+    lab.opener.faults[2] = [
+        lab.faults.raises("try_acquire_ingest_exclusion", make_error)
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == code
+    assert result.out == ""
+    assert len(stderr_lines(result, "try_acquire_ingest_exclusion")) == 1, result.err
+    assert stderr_lines(result, "started") == []
+    assert_safe_stderr(result)
+    assert lab.database.runs == {}
+    assert lab.source.calls == []
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+@EXCLUSION_STATES
+@pytest.mark.parametrize(("make_error", "code"), RECOVERY_ERRORS)
+def test_exit_code_reconnect_open_interrupt_while_start_run_is_lost_prints_nothing(
+    rig: Rig,
+    make_error: Callable[[], BaseException],
+    code: int,
+    other_session: bool,
+) -> None:
+    """`start_run` lost, then the second `open_repository()` raises: stdout is empty."""
+    lab = rig.lab
+    lose_start_run(lab, other_session=other_session)
+    lab.opener.open_errors[2] = make_error
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == code
+    assert result.out == ""
+    assert len(stderr_lines(result, "open_repository")) == 1, result.err
+    assert stderr_lines(result, "started") == []
+    assert_safe_stderr(result)
+    assert lab.database.runs == {}
+    assert lab.source.calls == []
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("recovery", ["open-refused", "exclusion-held"])
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_exit_code_start_run_unconfirmed_prints_running_without_a_started_line(
+    rig: Rig, when: str, recovery: str
+) -> None:
+    """AC8, AC15: `start_run` is lost and the recovery fails -> exit 1, `<id> running`.
+
+    The run was never announced, so stderr has no `run <id> started` line; one line
+    names the lost `start_run` and the id.
+    """
+    lab = rig.lab
+    hook = (
+        lab.database.hold_exclusion_elsewhere if recovery == "exclusion-held" else None
+    )
+    lab.opener.faults[1] = [
+        lab.faults.lost_before_commit("start_run", hook=hook)
+        if when == "before"
+        else lab.faults.lost_after_commit("start_run", hook=hook)
+    ]
+    if recovery == "open-refused":
+        lab.opener.fail_opens.add(2)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 1
+    assert result.out == f"{FIRST_DRAWN_ID} running\n"
+    assert f"run {FIRST_DRAWN_ID} started" not in result.err
+    assert stderr_lines(result, "started") == []
+    assert len(stderr_lines(result, "start_run", FIRST_DRAWN_ID)) == 1, result.err
+    assert_safe_stderr(result)
+    assert lab.source.calls == []
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
