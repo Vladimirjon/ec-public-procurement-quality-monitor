@@ -17,6 +17,17 @@ Acceptance criteria covered (intent AC1 to AC13, AC17, AC24), by `-k` token:
 - `resume` (AC9), `reconcile` (AC10), `closed_run` (AC11), `identity` (AC12);
 - `chain` (AC24, decision P-4), `chain_last_page` (AC24, `last-page-reached`).
 
+The audit round 1 of 2026-10-18 added, at the end of the file (plan Revision 6):
+
+- `interrupt_during_record` (AC7, F-01), `cleanup_read_back` (AC7, AC15, F-02);
+- `interrupt_after_finish` (AC7, AC11, F-05);
+- `database_refusal` (AC6 e, AC13, F-11), `reconcile_os_error` (AC10, F-10);
+- `chain_unreadable_record` (AC24, F-06), `progress_line` (AC6 c, AC15, F-07).
+
+The two tests that were vacuous (`progress_text` in `storage`, and
+`text_never_reaches_the_reporter` in `unexpected`) now assert first that the
+reporter received messages.
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and page bodies report `pages` 9 unless a
 test says another value. Runs `A`, `B`, `C` and `D` are the seeded runs of `Lab`.
@@ -33,7 +44,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 
@@ -64,8 +75,12 @@ from ec_procurement_quality.domain.ingestion_catalogue import (
 from ec_procurement_quality.domain.persistence_errors import (
     PersistenceError,
     PersistenceIntegrityError,
+    PersistenceNotFoundError,
 )
-from ec_procurement_quality.domain.raw_evidence import EvidenceIntegrityError
+from ec_procurement_quality.domain.raw_evidence import (
+    EvidenceIntegrityError,
+    EvidenceNotFoundError,
+)
 from ec_procurement_quality.infrastructure.local_disk_raw_evidence_store import (
     LocalDiskRawEvidenceStore,
 )
@@ -73,6 +88,7 @@ from ec_procurement_quality.infrastructure.local_disk_raw_evidence_store import 
 if TYPE_CHECKING:
     from tests.unit.ingest.conftest import (
         Lab,
+        ReadFaultStore,
         TransportScript,
         WireFailure,
         WireReply,
@@ -987,6 +1003,13 @@ def test_storage_progress_text_holds_no_url_body_or_header_value(lab: Lab) -> No
 
     call(lab, fresh(lab, 1, 3))
 
+    assert lab.reporter.messages, "the refusal was reported to nobody"
+    assert any(
+        "record_observation" in message
+        and lab.reporter.started[0] in message
+        and number_in(message, 1)
+        for message in lab.reporter.messages
+    ), lab.reporter.messages
     for message in lab.reporter.messages:
         assert not any(text in message for text in FORBIDDEN_TEXT)
 
@@ -1139,6 +1162,7 @@ def test_unexpected_exception_text_never_reaches_the_reporter(lab: Lab) -> None:
 
     call(lab, fresh(lab, 1, 3))
 
+    assert lab.reporter.messages, "page 1 was completed and nothing was reported"
     assert not any(BODY_MARKER in message for message in lab.reporter.messages)
 
 
@@ -2661,3 +2685,906 @@ def test_chain_last_page_a_valid_event_leaves_nothing_to_request_and_succeeds(
         lab.details(created(outcome), "run-started")[0],
         {"resumes": target, "first_page": 5},
     )
+
+
+# === Audit round 1 (2026-10-18), findings F-01 to F-07, F-10 and F-11 ========
+#
+# The tests below were written red against the Revision 6 specs after the audit of
+# 2026-10-18 rejected the implementation. Tokens: `interrupt_during_record` (F-01),
+# `cleanup_read_back` (F-02), `interrupt_after_finish` (F-05),
+# `chain_unreadable_record` (F-06), `progress_line` (F-07), `reconcile_os_error`
+# (F-10) and `database_refusal` (F-11).
+
+REFUSAL_TEXT = "synthetic database refusal text"
+REFUSALS = [PersistenceIntegrityError, PersistenceNotFoundError, PersistenceError]
+Moment = Literal["before", "after"]
+
+
+def number_in(text: str, number: int) -> bool:
+    """`number` stands on its own in `text`: not inside a word or a content hash."""
+    return re.search(rf"(?<![0-9A-Za-z]){number}(?![0-9A-Za-z])", text) is not None
+
+
+def progress_lines(lab: Lab, *words: str, numbers: tuple[int, ...] = ()) -> list[str]:
+    """The progress messages that hold every word and every stand-alone number."""
+    return [
+        message
+        for message in lab.reporter.messages
+        if all(word in message for word in words)
+        and all(number_in(message, number) for number in numbers)
+    ]
+
+
+def assert_clean_messages(lab: Lab) -> None:
+    """No progress message holds a marker, a URL, a traceback or an error text."""
+    for message in lab.reporter.messages:
+        assert not any(text in message for text in FORBIDDEN_TEXT), message
+        assert REFUSAL_TEXT not in message
+        assert "synthetic:" not in message
+
+
+def refuse(
+    lab: Lab,
+    operation: str,
+    error: Callable[[str], PersistenceError],
+    *,
+    detail: str | None = None,
+    nth: int = 1,
+) -> None:
+    """The first repository refuses a call: nothing is delegated, nothing is written."""
+    lab.opener.faults.setdefault(1, []).append(
+        lab.faults.refuses(
+            operation, lambda: error(REFUSAL_TEXT), detail=detail, nth=nth
+        )
+    )
+
+
+# === interrupt_during_record (AC7, F-01) =====================================
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_interrupt_during_record_the_cleanup_records_the_pending_observation(
+    lab: Lab, when: Moment
+) -> None:
+    """AC7, K, P step 3: Ctrl+C while `record_observation` of sequence 2 runs.
+
+    The observation is pending until that call has returned, so the cleanup reads
+    it back from the local store and records it before it closes the run.
+    """
+    lab.opener.faults[1] = [
+        lab.faults.interrupts("record_observation", detail="2", when=when)
+    ]
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    run_id = created(outcome)
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.sequences(run_id) == (1, 2)
+    assert lab.database.observations[(run_id, 2)] == lab.store.read_observation(
+        run_id, 2
+    )
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+    assert same_json(lab.details(run_id, "run-interrupted")[0], {"page": 2})
+    assert lab.opener.all_closed
+
+
+def test_interrupt_during_record_the_observation_is_in_postgresql_before_the_close(
+    lab: Lab,
+) -> None:
+    """AC7: in the journal, observation 2 is recorded before `finish_run(FAILED)`."""
+    lab.opener.faults[1] = [lab.faults.interrupts("record_observation", detail="2")]
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    run_id = created(outcome)
+    assert lab.journal.labels(run_id)[-4:] == [
+        "store:2",
+        "record_observation:2",
+        "append:run-interrupted",
+        "finish_run:failed",
+    ]
+
+
+def test_interrupt_during_record_the_repeat_after_a_connection_loss_is_covered(
+    lab: Lab,
+) -> None:
+    """P step 3: pending lasts through the repeat of State machine C as well."""
+    lab.opener.faults[1] = [
+        lab.faults.lost_before_commit("record_observation", detail="2")
+    ]
+    lab.opener.faults[2] = [lab.faults.interrupts("record_observation", detail="2")]
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    run_id = created(outcome)
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.sequences(run_id) == (1, 2)
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === cleanup_read_back (AC7, AC15, F-02) =====================================
+
+INSIDE_STORE = [
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        IngestEnd.INTERRUPTED,
+        "run-interrupted",
+        {"page": 2},
+        id="keyboard-interrupt",
+    ),
+    pytest.param(
+        lambda: MemoryError(),
+        IngestEnd.RUN_FAILED,
+        "unexpected-error",
+        {"page": 2, "error_type": "MemoryError"},
+        id="memory-error",
+    ),
+]
+
+
+@pytest.mark.parametrize(("make_error", "end", "event_type", "detail"), INSIDE_STORE)
+def test_cleanup_read_back_nothing_published_still_audits_and_closes_the_run(
+    lab: Lab,
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    event_type: str,
+    detail: dict[str, JsonValue],
+) -> None:
+    """AC7, K step 2: `store` of sequence 2 is cut short before it publishes.
+
+    The cleanup's read-back finds nothing; it records nothing for sequence 2, and
+    still appends its event and closes the run. Nothing escapes `run_ingest`.
+    """
+    store = lab.refuses_to_store(on_call=2, error=make_error)
+
+    outcome = call(lab, fresh(lab, 1, 3), store=store)
+
+    run_id = created(outcome)
+    assert outcome.end is end
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.sequences(run_id) == (1,)
+    assert lab.local_sequences(run_id) == (1,)
+    assert lab.event_types(run_id) == ["run-started", "page-completed", event_type]
+    assert same_json(lab.details(run_id, event_type)[0], detail)
+    assert lab.journal.labels(run_id)[-2:] == [
+        f"append:{event_type}",
+        "finish_run:failed",
+    ]
+    assert lab.source.requests == [1, 2]
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("read_error", [EvidenceIntegrityError, OSError])
+@pytest.mark.parametrize(("make_error", "end", "event_type", "detail"), INSIDE_STORE)
+def test_cleanup_read_back_an_unreadable_record_is_absorbed_and_the_run_closed(
+    lab: Lab,
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    event_type: str,
+    detail: dict[str, JsonValue],
+    read_error: Callable[[str], BaseException],
+) -> None:
+    """AC7, K step 2: the file was published but the cleanup cannot read it.
+
+    The read-back error is absorbed: sequence 2 stays out of PostgreSQL (a
+    resumption requests page 2 again), and the event and the close still follow.
+    """
+    store = lab.fails_read_back(
+        on_call=2,
+        read_errors=[lambda: read_error("synthetic read-back failure")],
+        publish=True,
+        store_error=make_error,
+    )
+
+    outcome = call(lab, fresh(lab, 1, 3), store=store)
+
+    run_id = created(outcome)
+    assert outcome.end is end
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.sequences(run_id) == (1,)
+    assert lab.local_sequences(run_id) == (1, 2)
+    assert lab.event_types(run_id) == ["run-started", "page-completed", event_type]
+    assert same_json(lab.details(run_id, event_type)[0], detail)
+    assert lab.opener.all_closed
+
+
+# === interrupt_after_finish (AC7, AC11, F-05) ================================
+
+
+def test_interrupt_after_finish_a_succeeded_run_gets_nothing_more(lab: Lab) -> None:
+    """AC11, K step 1: Ctrl+C right after `finish_run(SUCCEEDED)` committed."""
+    lab.opener.faults[1] = [
+        lab.faults.interrupts("finish_run", detail="succeeded", when="after")
+    ]
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    run_id = created(outcome)
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.run_status is RunStatus.SUCCEEDED
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "page-completed",
+    ]
+    assert lab.sequences(run_id) == (1, 2)
+    assert len(lab.opener.attempts_of("finish_run")) == 1
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+def test_interrupt_after_finish_a_failed_run_gets_nothing_more(lab: Lab) -> None:
+    """AC11, K step 1: the same after the failure path's `finish_run(FAILED)`."""
+    lab.source.script(2, lab.status_failure(2, 500))
+    lab.opener.faults[1] = [
+        lab.faults.interrupts("finish_run", detail="failed", when="after")
+    ]
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    run_id = created(outcome)
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.event_types(run_id) == ["run-started", "page-completed", "page-failed"]
+    assert len(lab.opener.attempts_of("finish_run")) == 1
+    assert lab.opener.all_closed
+
+
+def test_interrupt_after_finish_an_unexpected_exception_adds_nothing_either(
+    lab: Lab,
+) -> None:
+    """K step 1: a `MemoryError` after the commit -> `RUN_FAILED`, stored status."""
+    lab.opener.faults[1] = [
+        lab.faults.raises(
+            "finish_run", lambda: MemoryError(), detail="succeeded", when="after"
+        )
+    ]
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    run_id = created(outcome)
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.SUCCEEDED
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "page-completed",
+    ]
+    assert len(lab.opener.attempts_of("finish_run")) == 1
+
+
+def refuse_the_cleanup_read_run(lab: Lab) -> None:
+    # The first `read_run` is the identity check; the second is the cleanup's.
+    refuse(lab, "read_run", PersistenceError, nth=2)
+
+
+def lose_the_cleanup_read_run(lab: Lab) -> None:
+    lab.opener.faults[1] = [lab.faults.lost_before_commit("read_run", nth=2)]
+
+
+@pytest.mark.parametrize(
+    "break_read_run",
+    [
+        pytest.param(refuse_the_cleanup_read_run, id="refused"),
+        pytest.param(lose_the_cleanup_read_run, id="lost-connection"),
+    ],
+)
+def test_interrupt_after_finish_a_read_run_that_fails_leaves_the_run_untouched(
+    lab: Lab, break_read_run: Callable[[Lab], None]
+) -> None:
+    """AC11, K: the cleanup cannot show the run is open -> it writes nothing."""
+    lab.source.script(2, KeyboardInterrupt())
+    break_read_run(lab)
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    run_id = created(outcome)
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.run_status is RunStatus.RUNNING
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert lab.event_types(run_id) == ["run-started", "page-completed"]
+    assert lab.sequences(run_id) == (1,)
+    assert lab.opener.attempts_of("finish_run") == []
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+# === chain_unreadable_record (AC24, F-06) ====================================
+
+UNREADABLE = [EvidenceIntegrityError, EvidenceNotFoundError, OSError]
+
+
+@pytest.mark.parametrize("error", UNREADABLE)
+def test_chain_unreadable_record_ends_not_started_and_names_the_target(
+    lab: Lab, error: Callable[[str], BaseException]
+) -> None:
+    """AC24, H step 2: the local record of a `page-completed` cannot be read."""
+    seed_run(lab, lab.A, pages=(1, 2))
+    store = lab.faulty_reads()
+    store.fail_observation(lab.A, 2, lambda: error("synthetic unreadable record"))
+
+    outcome = call(lab, resume(lab.A), store=store)
+
+    assert_not_started(outcome)
+    assert lab.A in outcome.message
+    assert outcome.message != error.__name__
+    if error is OSError:
+        assert "synthetic unreadable record" not in outcome.message
+    assert lab.execution_ids.drawn == []
+    assert lab.reporter.started == []
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("error", UNREADABLE)
+def test_chain_unreadable_record_requests_nothing_and_adds_nothing_to_any_run(
+    lab: Lab, error: Callable[[str], BaseException]
+) -> None:
+    """AC24, AC11: no request, no `start_run`, every run as it was."""
+    seed_run(lab, lab.A, pages=(1, 2))
+    store = lab.faulty_reads()
+    store.fail_observation(lab.A, 2, lambda: error("synthetic unreadable record"))
+    before = lab.snapshot()
+
+    call(lab, resume(lab.A), store=store)
+
+    assert lab.source.requests == []
+    assert written(lab, "start_run") == []
+    assert lab.snapshot() == before
+
+
+# === reconcile_os_error (AC10, F-10) =========================================
+
+
+def os_error_in_the_listing(lab: Lab) -> tuple[ReadFaultStore, int | None, str]:
+    seed_crashed_run(lab, lab.A, local_only=())
+    store = lab.faulty_reads()
+    store.fail_listing(lab.A, lambda: PermissionError("synthetic listing refusal"))
+    return store, None, "local-listing-failed"
+
+
+def os_error_reading_a_listed_record(
+    lab: Lab,
+) -> tuple[ReadFaultStore, int | None, str]:
+    seed_crashed_run(lab, lab.A, local_only=())
+    store = lab.faulty_reads()
+    store.fail_observation(lab.A, 2, lambda: PermissionError("synthetic refusal"))
+    return store, 2, "local-observation-unreadable"
+
+
+def a_listed_record_that_vanished(lab: Lab) -> tuple[ReadFaultStore, int | None, str]:
+    seed_crashed_run(lab, lab.A, local_only=())
+    store = lab.faulty_reads()
+    store.fail_observation(lab.A, 2, lambda: EvidenceNotFoundError("synthetic: gone"))
+    return store, 2, "local-observation-unreadable"
+
+
+def os_error_reading_an_object(lab: Lab) -> tuple[ReadFaultStore, int | None, str]:
+    seed_crashed_run(lab, lab.A, local_only=())
+    store = lab.faulty_reads()
+    content_hash = lab.store.read_observation(lab.A, 1).content_hash
+    store.fail_content(content_hash, lambda: PermissionError("synthetic refusal"))
+    return store, 1, "object-integrity"
+
+
+RECONCILE_OS_ERRORS = [
+    pytest.param(os_error_in_the_listing, id="listing"),
+    pytest.param(os_error_reading_a_listed_record, id="record-os-error"),
+    pytest.param(a_listed_record_that_vanished, id="record-vanished"),
+    pytest.param(os_error_reading_an_object, id="object-os-error"),
+]
+
+
+@pytest.mark.parametrize("break_it", RECONCILE_OS_ERRORS)
+def test_reconcile_os_error_is_a_problem_of_the_closed_list(
+    lab: Lab, break_it: Callable[[Lab], tuple[ReadFaultStore, int | None, str]]
+) -> None:
+    """AC10, R: `reconciliation-failed`, run `failed`, no new run; nothing escapes."""
+    store, sequence, problem = break_it(lab)
+
+    outcome = call(lab, fresh(lab, 1, 2), store=store)
+
+    assert_not_started(outcome)
+    assert lab.event_types(lab.A) == ["reconciliation-failed"]
+    assert same_json(
+        lab.details(lab.A, "reconciliation-failed")[0],
+        {"sequence": sequence, "problem": problem},
+    )
+    assert lab.database.runs[lab.A].status is RunStatus.FAILED
+    assert lab.journal.labels(lab.A)[-2:] == [
+        "append:reconciliation-failed",
+        "finish_run:failed",
+    ]
+    assert list(lab.database.runs) == [lab.A]
+    assert written(lab, "start_run") == []
+    assert lab.source.requests == []
+    assert lab.reporter.started == []
+    assert_follows_catalogue(lab.events(lab.A))
+    assert lab.opener.all_closed
+
+
+# === database_refusal (AC6 e, AC13, F-11) ====================================
+
+
+def assert_refusal_audit(lab: Lab, run_id: str) -> None:
+    """Catalogue values only, never `unexpected-error`, one `postgresql` failure."""
+    events = lab.events(run_id)
+    assert_follows_catalogue(events)
+    assert "unexpected-error" not in [event.event_type for event in events]
+    postgresql_failures = [
+        detail
+        for detail in lab.details(run_id, "storage-failed")
+        if detail["store"] == "postgresql"
+    ]
+    assert len(postgresql_failures) <= 1
+
+
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_of_start_run_ends_not_started_with_no_run(
+    lab: Lab, error: Callable[[str], PersistenceError]
+) -> None:
+    """P "Refused writes": nothing is written and the run is never announced."""
+    lab.script_ids(FREE_ID)
+    refuse(lab, "start_run", error)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    assert lab.reporter.started == []
+    assert lab.database.runs == {}
+    assert lab.source.requests == []
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+    assert progress_lines(lab, "start_run", FREE_ID)
+    assert_clean_messages(lab)
+
+
+# What each refused normal-path write leaves behind: the operation and detail of the
+# fault, `pages` of the source for page 1, the events the run holds, and the page and
+# sequence of the one `storage-failed` (`postgresql`).
+NORMAL_REFUSALS = [
+    pytest.param(
+        "append_audit_event",
+        "run-started",
+        None,
+        ["storage-failed"],
+        1,
+        None,
+        [],
+        id="run-started",
+    ),
+    pytest.param(
+        "append_audit_event",
+        "page-completed",
+        None,
+        ["run-started", "storage-failed"],
+        1,
+        1,
+        [1],
+        id="page-completed",
+    ),
+    pytest.param(
+        "append_audit_event",
+        "last-page-reached",
+        1,
+        ["run-started", "page-completed", "storage-failed"],
+        1,
+        1,
+        [1],
+        id="last-page-reached",
+    ),
+    pytest.param(
+        "finish_run",
+        "succeeded",
+        None,
+        ["run-started", "page-completed", "page-completed", "storage-failed"],
+        2,
+        None,
+        [1, 2],
+        id="final-finish-at-the-end-of-the-range",
+    ),
+    pytest.param(
+        "finish_run",
+        "succeeded",
+        1,
+        ["run-started", "page-completed", "last-page-reached", "storage-failed"],
+        1,
+        None,
+        [1],
+        id="final-finish-after-last-page-reached",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("operation", "detail", "pages", "events", "page", "sequence", "requests"),
+    NORMAL_REFUSALS,
+)
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_of_a_normal_path_write_adds_one_failure_and_closes_failed(
+    lab: Lab,
+    error: Callable[[str], PersistenceError],
+    operation: str,
+    detail: str,
+    pages: int | None,
+    events: list[str],
+    page: int,
+    sequence: int | None,
+    requests: list[int],
+) -> None:
+    """P "Refused writes": `storage-failed` (`postgresql`) once, then `finish_run`."""
+    lab.script_ids(FREE_ID)
+    if pages is not None:
+        lab.source.script(1, lab.ok(1, pages=pages))
+    refuse(lab, operation, error, detail=detail)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.FAILED
+    assert outcome.execution_id == FREE_ID
+    assert lab.database.runs[FREE_ID].status is RunStatus.FAILED
+    assert lab.event_types(FREE_ID) == events
+    assert same_json(
+        lab.details(FREE_ID, "storage-failed")[0],
+        {"page": page, "sequence": sequence, "store": "postgresql"},
+    )
+    assert lab.journal.labels(FREE_ID)[-2:] == [
+        "append:storage-failed",
+        "finish_run:failed",
+    ]
+    assert lab.source.requests == requests
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+    assert_refusal_audit(lab, FREE_ID)
+    words = (operation, detail) if operation == "append_audit_event" else (operation,)
+    assert progress_lines(lab, *words, FREE_ID)
+    assert_clean_messages(lab)
+
+
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_of_the_final_finish_closes_with_a_new_clock_reading(
+    lab: Lab, error: Callable[[str], PersistenceError]
+) -> None:
+    """P "Refused writes": `finish_run(FAILED)` carries a new `finished_at`."""
+    refuse(lab, "finish_run", error, detail="succeeded")
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    run_id = created(outcome)
+    attempts = lab.opener.attempts_of("finish_run")
+    assert [attempt.detail for attempt in attempts] == ["succeeded", "failed"]
+    assert attempts[1].args[2] != attempts[0].args[2]
+    assert lab.database.runs[run_id].finished_at == attempts[1].args[2]
+
+
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_of_page_failed_adds_no_further_event(
+    lab: Lab, error: Callable[[str], PersistenceError]
+) -> None:
+    """P "Refused writes": a refused failure-path append -> `finish_run(FAILED)`."""
+    lab.script_ids(FREE_ID)
+    lab.source.script(2, lab.status_failure(2, 500))
+    refuse(lab, "append_audit_event", error, detail="page-failed")
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed"]
+    assert lab.sequences(FREE_ID) == (1, 2)
+    assert lab.journal.labels(FREE_ID)[-1:] == ["finish_run:failed"]
+    assert lab.source.requests == [1, 2]
+    assert_refusal_audit(lab, FREE_ID)
+    assert progress_lines(lab, "append_audit_event", "page-failed", FREE_ID)
+    assert_clean_messages(lab)
+
+
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_of_the_storage_failed_answer_adds_no_further_event(
+    lab: Lab, error: Callable[[str], PersistenceError]
+) -> None:
+    """P "Refused writes": no event answers a refused `storage-failed` append."""
+    lab.script_ids(FREE_ID)
+    refuse(lab, "record_observation", error, detail="1")
+    refuse(lab, "append_audit_event", error, detail="storage-failed")
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.event_types(FREE_ID) == ["run-started"]
+    assert lab.journal.labels(FREE_ID)[-1:] == ["finish_run:failed"]
+    assert lab.source.requests == [1]
+    assert_refusal_audit(lab, FREE_ID)
+    assert progress_lines(lab, "record_observation", FREE_ID, numbers=(1,))
+    assert progress_lines(lab, "append_audit_event", "storage-failed", FREE_ID)
+    assert_clean_messages(lab)
+
+
+def source_fails_page_two(lab: Lab) -> None:
+    lab.source.script(2, lab.status_failure(2, 500))
+
+
+def refuse_the_record_of_page_one(lab: Lab) -> None:
+    refuse(lab, "record_observation", PersistenceIntegrityError, detail="1")
+
+
+@pytest.mark.parametrize(
+    ("setup", "events"),
+    [
+        pytest.param(
+            source_fails_page_two,
+            ["run-started", "page-completed", "page-failed"],
+            id="after-page-failed",
+        ),
+        pytest.param(
+            refuse_the_record_of_page_one,
+            ["run-started", "storage-failed"],
+            id="after-storage-failed",
+        ),
+    ],
+)
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_of_the_failing_finish_leaves_the_run_running(
+    lab: Lab,
+    error: Callable[[str], PersistenceError],
+    setup: Callable[[Lab], None],
+    events: list[str],
+) -> None:
+    """P "Refused writes": nothing more is written; AC10 closes it next time."""
+    lab.script_ids(FREE_ID)
+    setup(lab)
+    refuse(lab, "finish_run", error, detail="failed")
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.RUNNING
+    assert outcome.execution_id == FREE_ID
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.event_types(FREE_ID) == events
+    assert len(lab.opener.attempts_of("finish_run", "failed")) == 1
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+    assert_refusal_audit(lab, FREE_ID)
+    assert progress_lines(lab, "finish_run", FREE_ID)
+    assert_clean_messages(lab)
+
+
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_of_a_reconciled_observation_is_a_conflict(
+    lab: Lab, error: Callable[[str], PersistenceError]
+) -> None:
+    """R step 5: any refusal of `record_observation` is a PostgreSQL conflict."""
+    seed_crashed_run(lab, lab.A, local_only=(3,))
+    refuse(lab, "record_observation", error, detail="3")
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    assert lab.event_types(lab.A) == ["reconciliation-failed"]
+    assert same_json(
+        lab.details(lab.A, "reconciliation-failed")[0],
+        {"sequence": 3, "problem": "postgresql-observation-conflict"},
+    )
+    assert lab.database.runs[lab.A].status is RunStatus.FAILED
+    assert list(lab.database.runs) == [lab.A]
+    assert lab.sequences(lab.A) == (1, 2)
+    assert lab.source.requests == []
+    assert_refusal_audit(lab, lab.A)
+    assert progress_lines(lab, "record_observation", lab.A, numbers=(3,))
+    assert_clean_messages(lab)
+
+
+def reconcile_with_a_local_only_observation(lab: Lab) -> None:
+    seed_crashed_run(lab, lab.A, local_only=(3,))
+
+
+def reconcile_to_a_clean_close(lab: Lab) -> None:
+    seed_crashed_run(lab, lab.A, local_only=())
+
+
+def reconcile_to_a_problem(lab: Lab) -> None:
+    break_a_missing_local(lab)
+
+
+# What a refused reconciliation write leaves in run A: the setup, the refused
+# operation and detail, and the events A holds afterwards. A stays `running`.
+RECONCILE_REFUSALS = [
+    pytest.param(
+        reconcile_with_a_local_only_observation,
+        "append_audit_event",
+        "observation-reconciled",
+        [],
+        id="observation-reconciled",
+    ),
+    pytest.param(
+        reconcile_to_a_clean_close,
+        "append_audit_event",
+        "run-closed-by-reconciliation",
+        [],
+        id="run-closed-by-reconciliation",
+    ),
+    pytest.param(
+        reconcile_to_a_clean_close,
+        "finish_run",
+        "failed",
+        ["run-closed-by-reconciliation"],
+        id="finish-after-the-close-event",
+    ),
+    pytest.param(
+        reconcile_to_a_problem,
+        "append_audit_event",
+        "reconciliation-failed",
+        [],
+        id="reconciliation-failed",
+    ),
+    pytest.param(
+        reconcile_to_a_problem,
+        "finish_run",
+        "failed",
+        ["reconciliation-failed"],
+        id="finish-after-reconciliation-failed",
+    ),
+    pytest.param(
+        reconcile_to_a_clean_close,
+        "list_observations",
+        None,
+        [],
+        id="list-observations",
+    ),
+]
+
+
+@pytest.mark.parametrize(("setup", "operation", "detail", "events"), RECONCILE_REFUSALS)
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_during_reconciliation_writes_nothing_more_to_the_run(
+    lab: Lab,
+    error: Callable[[str], PersistenceError],
+    setup: Callable[[Lab], None],
+    operation: str,
+    detail: str | None,
+    events: list[str],
+) -> None:
+    """R: a refusal -> `NOT_STARTED` naming the run; the run stays as it was."""
+    setup(lab)
+    refuse(lab, operation, error, detail=detail)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    assert lab.A in outcome.message
+    assert lab.event_types(lab.A) == events
+    assert lab.database.runs[lab.A].status is RunStatus.RUNNING
+    assert list(lab.database.runs) == [lab.A]
+    assert lab.source.requests == []
+    assert lab.reporter.started == []
+    assert written(lab, "start_run") == []
+    assert_refusal_audit(lab, lab.A)
+    words = (operation, detail) if operation == "append_audit_event" else (operation,)
+    assert progress_lines(lab, *[word for word in words if word], lab.A)
+    assert_clean_messages(lab)
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("error", REFUSALS)
+def test_database_refusal_of_list_runs_ends_not_started_and_writes_nothing(
+    lab: Lab, error: Callable[[str], PersistenceError]
+) -> None:
+    """R: a refused `list_runs` -> `NOT_STARTED`, no run, nothing written."""
+    seed_crashed_run(lab, lab.A, local_only=())
+    refuse(lab, "list_runs", error)
+    before = lab.snapshot()
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    assert lab.snapshot() == before
+    assert lab.source.requests == []
+    assert lab.opener.all_closed
+
+
+# === progress_line (AC6 c, AC15, F-07) =======================================
+
+
+def test_progress_line_each_page_names_its_page_sequence_status_and_hash(
+    lab: Lab,
+) -> None:
+    """Required progress 1: the page is not the sequence, so both must show."""
+    outcome = call(lab, fresh(lab, 3, 4))
+
+    run_id = created(outcome)
+    for page, sequence in ((3, 1), (4, 2)):
+        observation = lab.database.observations[(run_id, sequence)]
+        assert progress_lines(
+            lab, observation.content_hash.hexdigest, numbers=(page, sequence, 200)
+        ), (page, sequence, lab.reporter.messages)
+    assert_clean_messages(lab)
+
+
+def test_progress_line_a_failed_page_with_a_response_names_status_and_hash(
+    lab: Lab,
+) -> None:
+    """Required progress 1: a stored response is named even when the page failed."""
+    lab.source.script(4, lab.status_failure(4, 429, HTML_429))
+
+    outcome = call(lab, fresh(lab, 3, 4))
+
+    observation = lab.database.observations[(created(outcome), 2)]
+    assert progress_lines(
+        lab, observation.content_hash.hexdigest, numbers=(4, 2, 429)
+    ), lab.reporter.messages
+    assert_clean_messages(lab)
+
+
+def test_progress_line_a_page_without_a_response_is_named_without_a_hash(
+    lab: Lab,
+) -> None:
+    """Required progress 1: `page 4 no response`: the page, and nothing stored."""
+    lab.source.script(4, lab.failure_without_response())
+
+    call(lab, fresh(lab, 3, 4))
+
+    lines = [
+        message
+        for message in lab.reporter.messages
+        if number_in(message, 4) and re.search(r"[0-9a-f]{64}", message) is None
+    ]
+    assert lines, lab.reporter.messages
+    assert_clean_messages(lab)
+
+
+@pytest.mark.parametrize("error", REFUSALS)
+def test_progress_line_a_refused_observation_names_the_operation_and_identity(
+    lab: Lab, error: Callable[[str], PersistenceError]
+) -> None:
+    """AC6 (c): operation and identity (run, sequence); at most the class name."""
+    lab.script_ids(FREE_ID)
+    refuse(lab, "record_observation", error, detail="1")
+
+    call(lab, fresh(lab, 1, 3))
+
+    assert progress_lines(lab, "record_observation", FREE_ID, numbers=(1,)), (
+        lab.reporter.messages
+    )
+    assert_clean_messages(lab)
+
+
+@pytest.mark.parametrize(
+    ("operation", "detail"),
+    [
+        pytest.param("start_run", None, id="start_run"),
+        pytest.param("record_observation", "2", id="record_observation"),
+        pytest.param("append_audit_event", "page-completed", id="append_audit_event"),
+        pytest.param("finish_run", "succeeded", id="finish_run"),
+    ],
+)
+def test_progress_line_a_lost_connection_names_the_operation_and_the_run(
+    lab: Lab, operation: str, detail: str | None
+) -> None:
+    """Required progress 3: each loss from `start_run` on is reported on stderr."""
+    lab.script_ids(FREE_ID)
+    lost_at(lab, operation, detail, "before")
+
+    call(lab, fresh(lab, 1, 2))
+
+    assert progress_lines(lab, operation, FREE_ID), lab.reporter.messages
+    assert_clean_messages(lab)

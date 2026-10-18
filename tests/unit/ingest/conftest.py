@@ -14,9 +14,11 @@ What this file provides, as `execution-plan.md` § Tests and its seams table pin
 - `FakeSource`, `FixedClock`, `ScriptedExecutionIds`, `RecordingReporter` and
   `RepositoryOpenerDouble`;
 - the fault-injection seams: `PublishThenFailStore`, `RefusingStore`,
-  `FailingReadBackStore` (a failed `store` whose read-back fails too) and
-  `FlakyRepository` (commit-then-raise or raise-before-commit on the n-th call
-  of an operation, a refusal, a `KeyboardInterrupt`);
+  `FailingReadBackStore` (a failed `store` whose read-back fails too),
+  `ReadFaultStore` (reads of a listed record, of an object or of a listing that
+  fail: audit round 1, F-06 and F-10) and `FlakyRepository` (commit-then-raise or
+  raise-before-commit on the n-th call of an operation, a refusal, a
+  `KeyboardInterrupt` or any other exception);
 - `Seeder`, which writes runs, observations and events straight into the doubles
   for the resume, reconcile and chain cases, and `TransportScript`, the
   `httpx.MockTransport` handler for the cases that go through `SercopSource`.
@@ -465,7 +467,9 @@ class FailingReadBackStore:
     The failing `store` publishes nothing, unless `publish` is true (then it
     publishes through `inner` first, as `PublishThenFailStore` does). The next
     reads of that sequence raise the errors of `read_errors`, one per read, in
-    order; once they are used up, reads go to `inner`.
+    order; once they are used up, reads go to `inner`. `store_error` replaces the
+    `OSError` of the failing `store` (a `KeyboardInterrupt` or a `MemoryError`
+    makes it the read-back of the interruption cleanup, audit finding F-02).
     """
 
     def __init__(
@@ -475,11 +479,13 @@ class FailingReadBackStore:
         on_call: int,
         read_errors: Sequence[Callable[[], BaseException]],
         publish: bool = False,
+        store_error: Callable[[], BaseException] | None = None,
     ) -> None:
         self._inner = inner
         self._on_call = on_call
         self._read_errors = list(read_errors)
         self._publish = publish
+        self._store_error = store_error
         self._calls = 0
         self._failed_sequence: int | None = None
 
@@ -509,6 +515,8 @@ class FailingReadBackStore:
                     captured_at=captured_at,
                     content=content,
                 )
+            if self._store_error is not None:
+                raise self._store_error()
             raise OSError("synthetic: the disk failed")
         return self._inner.store(
             execution_id=execution_id,
@@ -530,6 +538,84 @@ class FailingReadBackStore:
         return self._inner.read_observation(execution_id, sequence)
 
     def list_observation_sequences(self, execution_id: str) -> tuple[int, ...]:
+        return self._inner.list_observation_sequences(execution_id)
+
+
+class ReadFaultStore:
+    """Wraps a store and makes chosen reads fail every time (audit findings F-06, F-10).
+
+    `fail_observation` makes `read_observation` of one record raise, `fail_content`
+    makes `read_content` of one object raise, and `fail_listing` makes the listing of
+    one execution raise. The records stay listed and stored in `inner`, so a failing
+    read stands for a file that is there but cannot be read, or that vanished between
+    the listing and the read. Writes are delegated untouched.
+    """
+
+    def __init__(self, inner: RawEvidenceStore) -> None:
+        self._inner = inner
+        self._observation_errors: dict[
+            tuple[str, int], Callable[[], BaseException]
+        ] = {}
+        self._content_errors: dict[ContentHash, Callable[[], BaseException]] = {}
+        self._listing_errors: dict[str, Callable[[], BaseException]] = {}
+
+    def fail_observation(
+        self,
+        execution_id: str,
+        sequence: int,
+        error: Callable[[], BaseException],
+    ) -> None:
+        self._observation_errors[(execution_id, sequence)] = error
+
+    def fail_content(
+        self, content_hash: ContentHash, error: Callable[[], BaseException]
+    ) -> None:
+        self._content_errors[content_hash] = error
+
+    def fail_listing(
+        self, execution_id: str, error: Callable[[], BaseException]
+    ) -> None:
+        self._listing_errors[execution_id] = error
+
+    def store(
+        self,
+        *,
+        execution_id: str,
+        sequence: int,
+        method: str,
+        url: str,
+        status: int,
+        headers: Sequence[tuple[str, str]],
+        captured_at: datetime,
+        content: bytes,
+    ) -> Observation:
+        return self._inner.store(
+            execution_id=execution_id,
+            sequence=sequence,
+            method=method,
+            url=url,
+            status=status,
+            headers=headers,
+            captured_at=captured_at,
+            content=content,
+        )
+
+    def read_content(self, content_hash: ContentHash) -> bytes:
+        failure = self._content_errors.get(content_hash)
+        if failure is not None:
+            raise failure()
+        return self._inner.read_content(content_hash)
+
+    def read_observation(self, execution_id: str, sequence: int) -> Observation:
+        failure = self._observation_errors.get((execution_id, sequence))
+        if failure is not None:
+            raise failure()
+        return self._inner.read_observation(execution_id, sequence)
+
+    def list_observation_sequences(self, execution_id: str) -> tuple[int, ...]:
+        failure = self._listing_errors.get(execution_id)
+        if failure is not None:
+            raise failure()
         return self._inner.list_observation_sequences(execution_id)
 
 
@@ -919,6 +1005,18 @@ class FaultKit:
         when: Literal["before", "after"] = "before",
     ) -> Fault:
         return Fault(operation, when, nth, detail, error=lambda: KeyboardInterrupt())
+
+    @staticmethod
+    def raises(
+        operation: str,
+        error: Callable[[], BaseException],
+        *,
+        detail: str | None = None,
+        nth: int = 1,
+        when: Literal["before", "after"] = "before",
+    ) -> Fault:
+        """Any exception (a `MemoryError`, for one) on the n-th matching call."""
+        return Fault(operation, when, nth, detail, error=error)
 
 
 class FlakyRepository:
@@ -1643,11 +1741,20 @@ class Lab:
         on_call: int,
         read_errors: Sequence[Callable[[], BaseException]],
         publish: bool = False,
+        store_error: Callable[[], BaseException] | None = None,
     ) -> FailingReadBackStore:
         """The store of this lab: the n-th write fails, then its read-back fails."""
         return FailingReadBackStore(
-            self.store, on_call=on_call, read_errors=read_errors, publish=publish
+            self.store,
+            on_call=on_call,
+            read_errors=read_errors,
+            publish=publish,
+            store_error=store_error,
         )
+
+    def faulty_reads(self) -> ReadFaultStore:
+        """The store of this lab, with reads that a test makes fail on demand."""
+        return ReadFaultStore(self.store)
 
     def other_session_finishes(
         self, execution_id: str, status: RunStatus, finished_at: datetime
@@ -1679,6 +1786,7 @@ def _the_doubles_implement_the_ports(lab: Lab) -> None:
     unreadable: RawEvidenceStore = FailingReadBackStore(
         store, on_call=1, read_errors=[]
     )
+    faulty: RawEvidenceStore = ReadFaultStore(store)
     repository: IngestionRepository = InMemoryIngestionRepository(lab.database)
     closable: ClosableIngestionRepository = InMemoryIngestionRepository(lab.database)
     flaky: ClosableIngestionRepository = FlakyRepository(
@@ -1689,5 +1797,5 @@ def _the_doubles_implement_the_ports(lab: Lab) -> None:
     clock: Clock = lab.clock
     ids: ExecutionIdSource = lab.execution_ids
     reporter: IngestReporter = lab.reporter
-    del wrapped, refusing, unreadable, repository, closable, flaky, opener, source
-    del clock, ids, reporter
+    del wrapped, refusing, unreadable, faulty, repository, closable, flaky, opener
+    del source, clock, ids, reporter

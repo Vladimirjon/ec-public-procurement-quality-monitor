@@ -22,6 +22,19 @@ stdout parts of AC7 and decisions P-1, P-2 and P-5), by `-k` token:
   traceback, no chain, no marker;
 - `logger` (AC15, R-7): `httpcore` stays above `DEBUG` and no handler is added.
 
+The audit round 1 of 2026-10-18 added, at the end of the file (plan Revision 6):
+
+- `source_configuration` and `order_of_invocation` (AC14, AC16, F-03): the source
+  is built before the migrations, and a malformed proxy or certificate setting
+  exits 2;
+- `exit_code_cleanup_read_back` (AC7, F-02), `exit_code_interrupt_after_finish`
+  (AC7, AC11, F-05), `output_escaping_exception` (AC15, F-04), `output_progress`
+  (AC6 c, AC15, F-07) and `chain_unreadable_record_message` (AC24, F-06).
+
+Six older tests (`migrations` error, real runner, interrupt in the migrations, the
+migration failures, and the two `order_of_invocation` ones) were migrated to the
+new order: `make_source` once before `migrate`, the source closed once.
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and the markers `synthetic-password-marker`,
 `synthetic-body-marker` and `synthetic-header-marker`.
@@ -42,7 +55,11 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-from ec_procurement_quality.application.ingest_ports import ClosableIngestionRepository
+from ec_procurement_quality.application.ingest_ports import (
+    ClosableIngestionRepository,
+    IngestReporter,
+)
+from ec_procurement_quality.application.ingest_use_case import IngestOutcome
 from ec_procurement_quality.application.procurement_source import (
     ProcurementSource,
     RecordResponse,
@@ -56,13 +73,19 @@ from ec_procurement_quality.domain.persistence_errors import (
     PersistenceConnectionError,
     PersistenceError,
     PersistenceIntegrityError,
+    PersistenceNotFoundError,
+)
+from ec_procurement_quality.domain.raw_evidence import (
+    EvidenceIntegrityError,
+    EvidenceNotFoundError,
 )
 from ec_procurement_quality.infrastructure.postgres_migrations import apply_migrations
 from ec_procurement_quality.infrastructure.postgres_settings import PostgresSettings
 from ec_procurement_quality.infrastructure.sercop_source import SercopSource
-from ec_procurement_quality.interfaces import cli
+from ec_procurement_quality.interfaces import cli, ingest_command
 from ec_procurement_quality.interfaces.ingest_command import (
     IngestWiring,
+    default_wiring,
     run_ingest_command,
 )
 
@@ -195,6 +218,8 @@ class Rig:
         )
         self.repository_error: BaseException | None = None
         self.store_error: BaseException | None = None
+        # The store `make_store` hands out; a test may put a faulty one here.
+        self.store: RawEvidenceStore = lab.store
         self.source_builder: Callable[[Callable[[], datetime]], SourceBuild] = (
             lambda now: (lab.source, lambda: None)
         )
@@ -219,7 +244,7 @@ class Rig:
         self.store_roots.append(root)
         if self.store_error is not None:
             raise self.store_error
-        return self.lab.store
+        return self.store
 
     def make_repository(
         self, settings: PostgresSettings
@@ -624,13 +649,17 @@ def test_environment_the_settings_carry_the_values_given(rig: Rig) -> None:
 def test_environment_a_migrations_error_exits_2_and_builds_nothing_else(
     rig: Rig,
 ) -> None:
-    """AC14, AC16: an invalid migrations history stops the command at exit 2."""
+    """AC14, AC16: an invalid migrations history stops the command at exit 2.
+
+    The source is built first (plan Revision 6, invocation step 2) and closed once;
+    no store and no repository is built.
+    """
 
     def refuse(settings: PostgresSettings, directory: Path) -> tuple[str, ...]:
         raise MigrationError("migration file 'bad.sql' is not named NNNN_description")
 
     rig.migrate_impl = refuse
-    rig.forbid("make_source", "make_store", "make_repository")
+    rig.forbid("make_store", "make_repository")
 
     result = rig.invoke([*SCOPE_ARGS, "--migrations-dir", "bad-migrations"])
 
@@ -638,7 +667,8 @@ def test_environment_a_migrations_error_exits_2_and_builds_nothing_else(
     assert result.out == ""
     assert result.err.strip() != ""
     assert PASSWORD_MARKER not in result.err
-    assert rig.calls == ["migrate"]
+    assert rig.calls == ["make_source", "migrate"]
+    assert [source.closes for source in rig.sources] == [1]
     assert rig.lab.source.calls == []
     assert rig.lab.opener.opens == 0
 
@@ -676,7 +706,7 @@ def test_environment_the_real_runner_refuses_a_bad_directory_before_a_connection
     (PS-3), and the port in the environment is one nothing listens on.
     """
     rig.migrate_impl = apply_migrations
-    rig.forbid("make_source", "make_store", "make_repository")
+    rig.forbid("make_store", "make_repository")
     directory = make_directory(tmp_path)
 
     result = rig.invoke(
@@ -688,7 +718,8 @@ def test_environment_the_real_runner_refuses_a_bad_directory_before_a_connection
     assert result.out == ""
     assert result.err.strip() != ""
     assert PASSWORD_MARKER not in result.err
-    assert rig.calls == ["migrate"]
+    assert rig.calls == ["make_source", "migrate"]
+    assert [source.closes for source in rig.sources] == [1]
     assert rig.lab.source.calls == []
     assert rig.lab.store.observations == {}
     assert rig.lab.database.runs == {}
@@ -991,7 +1022,10 @@ def test_exit_code_130_an_interrupt_before_the_run_exists_prints_nothing(
 
 
 def test_exit_code_130_an_interrupt_while_the_migrations_run(rig: Rig) -> None:
-    """Exit table: a `KeyboardInterrupt` in steps 1 to 4 -> 130, nothing built."""
+    """Exit table: a `KeyboardInterrupt` in steps 1 to 4 -> 130, no store or repository.
+
+    The source built at step 2 is still closed, once.
+    """
 
     def interrupted(settings: PostgresSettings, directory: Path) -> tuple[str, ...]:
         raise KeyboardInterrupt
@@ -1002,7 +1036,8 @@ def test_exit_code_130_an_interrupt_while_the_migrations_run(rig: Rig) -> None:
 
     assert result.code == 130
     assert result.out == ""
-    assert rig.calls == ["migrate"]
+    assert rig.calls == ["make_source", "migrate"]
+    assert [source.closes for source in rig.sources] == [1]
     assert rig.lab.opener.opens == 0
 
 
@@ -1071,7 +1106,7 @@ def test_exit_code_migration_failures_map_to_1_or_2_before_anything_is_built(
         raise make_error()
 
     rig.migrate_impl = fail
-    rig.forbid("make_source", "make_store", "make_repository")
+    rig.forbid("make_store", "make_repository")
 
     result = rig.invoke(SCOPE_ARGS)
 
@@ -1079,19 +1114,22 @@ def test_exit_code_migration_failures_map_to_1_or_2_before_anything_is_built(
     assert result.out == ""
     assert result.err.strip() != ""
     assert PASSWORD_MARKER not in result.err
-    assert rig.calls == ["migrate"]
-    assert rig.sources == []
+    assert rig.calls == ["make_source", "migrate"]
+    assert [source.closes for source in rig.sources] == [1]
     assert rig.lab.opener.opens == 0
 
 
 def test_exit_code_order_of_invocation_migrate_returns_before_the_repository(
     rig: Rig,
 ) -> None:
-    """AC16: `apply_migrations` returns before `make_repository` is called."""
+    """AC16: `apply_migrations` returns before `make_repository` is called.
+
+    The source is built before the migrations (plan Revision 6, step 2).
+    """
     result = rig.invoke(SCOPE_ARGS)
 
     assert result.code == 0
-    assert rig.calls[0] == "migrate"
+    assert rig.calls[:2] == ["make_source", "migrate"]
     assert "migrate:done" in rig.calls
     assert rig.calls.index("migrate:done") < rig.calls.index("make_repository")
     assert rig.calls.count("migrate") == 1
@@ -1103,7 +1141,10 @@ def test_exit_code_order_of_invocation_migrate_returns_before_the_repository(
 def test_exit_code_order_of_invocation_a_refused_migration_builds_no_repository(
     rig: Rig,
 ) -> None:
-    """AC16: a failing runner means no repository, source or store was built."""
+    """AC16: a failing runner means no repository or store was built.
+
+    The source was built at step 2, once, before the runner, and is closed once.
+    """
 
     def fail(settings: PostgresSettings, directory: Path) -> tuple[str, ...]:
         raise MigrationLockError("another migration run holds the lock")
@@ -1114,7 +1155,9 @@ def test_exit_code_order_of_invocation_a_refused_migration_builds_no_repository(
 
     assert result.code == 1
     assert "make_repository" not in rig.calls
-    assert "make_source" not in rig.calls
+    assert "make_store" not in rig.calls
+    assert rig.calls.count("make_source") == 1
+    assert [source.closes for source in rig.sources] == [1]
 
 
 def test_exit_code_1_an_exception_that_escapes_the_use_case_names_its_class_only(
@@ -1593,3 +1636,562 @@ def test_logger_a_failed_invocation_adds_no_handler_either(rig: Rig) -> None:
 
     assert (failed.code, refused.code) == (1, 2)
     assert _logging_handlers() == before
+
+
+# === Audit round 1 (2026-10-18), findings F-02 to F-07 =========================
+#
+# Written red against the Revision 6 specs. Tokens: `source_configuration` and
+# `order_of_invocation` (F-03), `exit_code_cleanup_read_back` (F-02),
+# `exit_code_interrupt_after_finish` (F-05), `output_escaping_exception` (F-04),
+# `output_progress` (F-07) and `chain_unreadable_record_message` (F-06).
+
+PROXY_AND_CERTIFICATE_VARIABLES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+)
+
+
+def number_in(text: str, number: int) -> bool:
+    """`number` stands on its own in `text`: not inside a word or a content hash."""
+    return re.search(rf"(?<![0-9A-Za-z]){number}(?![0-9A-Za-z])", text) is not None
+
+
+def stderr_lines(
+    result: Result, *words: str, numbers: tuple[int, ...] = ()
+) -> list[str]:
+    """The lines of stderr that hold every word and every stand-alone number."""
+    return [
+        line
+        for line in result.err.splitlines()
+        if all(word in line for word in words)
+        and all(number_in(line, number) for number in numbers)
+    ]
+
+
+@pytest.fixture
+def clean_source_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No proxy or certificate variable is set, in either case."""
+    for name in PROXY_AND_CERTIFICATE_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
+
+def real_source(now: Callable[[], datetime]) -> SourceBuild:
+    """The `make_source` of `default_wiring()`: construction only, no request."""
+    source = default_wiring().make_source(now)
+    return source, source.close
+
+
+def unbuildable_source(
+    make_error: Callable[[], BaseException],
+) -> Callable[[Callable[[], datetime]], SourceBuild]:
+    def build(now: Callable[[], datetime]) -> SourceBuild:
+        raise make_error()
+
+    return build
+
+
+def assert_configuration_message(error_text: str) -> None:
+    """The fixed message: the setting kind and the six variable names."""
+    for name in PROXY_AND_CERTIFICATE_VARIABLES:
+        assert name in error_text, (name, error_text)
+    assert names(error_text, r"proxy")
+    assert names(error_text, r"certificate")
+
+
+def assert_nothing_written(rig: Rig) -> None:
+    lab = rig.lab
+    assert lab.opener.opens == 0
+    assert lab.source.calls == []
+    assert lab.store.observations == {}
+    assert lab.store.objects == {}
+    assert lab.database.runs == {}
+    assert rig.sources == []
+
+
+# === source_configuration (AC14, F-03) =========================================
+
+MALFORMED_SETTINGS = [
+    pytest.param(
+        "HTTPS_PROXY", lambda tmp: "http://[zz]:1", ("[zz]",), id="proxy-bad-url"
+    ),
+    pytest.param(
+        "HTTPS_PROXY",
+        lambda tmp: "ftp://proxy.invalid:21",
+        ("proxy.invalid", "ftp://"),
+        id="proxy-ftp",
+    ),
+    pytest.param(
+        "ALL_PROXY",
+        lambda tmp: "socks5://proxy.invalid:1080",
+        ("proxy.invalid", "socks5://"),
+        id="proxy-socks",
+    ),
+    pytest.param(
+        "SSL_CERT_FILE",
+        lambda tmp: str(tmp / "missing.pem"),
+        ("missing.pem",),
+        id="certificate-missing-file",
+    ),
+]
+
+
+@pytest.mark.usefixtures("clean_source_environment")
+@pytest.mark.parametrize(("variable", "make_value", "leaks"), MALFORMED_SETTINGS)
+def test_source_configuration_a_malformed_setting_exits_2_before_anything_is_written(
+    rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    variable: str,
+    make_value: Callable[[Path], str],
+    leaks: tuple[str, ...],
+) -> None:
+    """AC14, F-03: the real `make_source` fails on the environment -> exit 2.
+
+    Nothing is migrated, built, requested or written, and the message names the
+    six variables and holds no value, path or URL.
+    """
+    monkeypatch.setenv(variable, make_value(tmp_path))
+    rig.source_builder = real_source
+    rig.forbid("migrate", "make_store", "make_repository")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 2
+    assert result.out == ""
+    assert_configuration_message(result.err)
+    for text in (*leaks, str(tmp_path), PASSWORD_MARKER):
+        assert text not in result.err
+    assert "Traceback" not in result.err
+    assert rig.calls == ["make_source"]
+    assert_nothing_written(rig)
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(ValueError, id="value-error"),
+        pytest.param(OSError, id="os-error"),
+        pytest.param(ImportError, id="import-error"),
+        pytest.param(SyntheticDefect, id="any-other-exception"),
+    ],
+)
+def test_source_configuration_an_exception_from_make_source_exits_2_naming_no_value(
+    rig: Rig, make_error: Callable[[str], BaseException]
+) -> None:
+    """AC14, F-03: every `Exception` but `MemoryError` is a configuration error."""
+    secret = "http://secret-proxy.invalid:8080 synthetic-body-marker"
+
+    def build(now: Callable[[], datetime]) -> SourceBuild:
+        error = make_error(secret)
+        error.__cause__ = ValueError(f"{HEADER_MARKER} cause")
+        raise error
+
+    rig.source_builder = build
+    rig.forbid("migrate", "make_store", "make_repository")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 2
+    assert result.out == ""
+    assert_configuration_message(result.err)
+    for text in ("secret-proxy", "8080", BODY_MARKER, HEADER_MARKER, PASSWORD_MARKER):
+        assert text not in result.err
+    assert "Traceback" not in result.err
+    assert rig.calls == ["make_source"]
+    assert_nothing_written(rig)
+
+
+def test_source_configuration_a_memory_error_exits_1_naming_only_the_class(
+    rig: Rig,
+) -> None:
+    """Exit table, step 2: `MemoryError` is not a configuration error."""
+    rig.source_builder = unbuildable_source(lambda: MemoryError(BODY_MARKER))
+    rig.forbid("migrate", "make_store", "make_repository")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 1
+    assert result.out == ""
+    assert "MemoryError" in result.err
+    assert BODY_MARKER not in result.err
+    assert "Traceback" not in result.err
+    assert rig.calls == ["make_source"]
+    assert_nothing_written(rig)
+
+
+def test_source_configuration_a_keyboard_interrupt_exits_130_with_empty_stdout(
+    rig: Rig,
+) -> None:
+    """Exit table, step 2: Ctrl+C while the source is built -> 130."""
+    rig.source_builder = unbuildable_source(lambda: KeyboardInterrupt())
+    rig.forbid("migrate", "make_store", "make_repository")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 130
+    assert result.out == ""
+    assert rig.calls == ["make_source"]
+    assert_nothing_written(rig)
+
+
+def test_source_configuration_a_system_exit_is_not_caught(rig: Rig) -> None:
+    """Step 2: `SystemExit` from the construction propagates to the caller."""
+    rig.source_builder = unbuildable_source(lambda: SystemExit(3))
+    rig.forbid("migrate", "make_store", "make_repository")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 3
+    assert result.out == ""
+    assert rig.calls == ["make_source"]
+    assert_nothing_written(rig)
+
+
+# === order_of_invocation (AC14, AC16, F-03) ====================================
+
+
+def test_exit_code_order_of_invocation_the_source_comes_first_then_the_migrations(
+    rig: Rig,
+) -> None:
+    """Step 2 before 3 and 4: `make_source`, `migrate`, then store and repository."""
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 0
+    assert rig.calls == [
+        "make_source",
+        "migrate",
+        "migrate:done",
+        "make_store",
+        "make_repository",
+    ]
+    assert [source.closes for source in rig.sources] == [1]
+
+
+@pytest.mark.usefixtures("restore_logging")
+def test_exit_code_order_of_invocation_httpcore_is_guarded_while_the_source_is_built(
+    rig: Rig,
+) -> None:
+    """Step 2.1 before 2.2: `httpcore` is above `DEBUG` when `make_source` runs."""
+    levels: list[int] = []
+
+    def build(now: Callable[[], datetime]) -> SourceBuild:
+        levels.append(logging.getLogger("httpcore").getEffectiveLevel())
+        return rig.lab.source, lambda: None
+
+    rig.source_builder = build
+    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger("httpcore").setLevel(logging.NOTSET)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 0
+    assert len(levels) == 1
+    assert levels[0] > logging.DEBUG
+
+
+# === exit_code_cleanup_read_back (AC7, F-02) ===================================
+
+
+def test_exit_code_cleanup_read_back_an_interrupt_inside_store_exits_130(
+    rig: Rig,
+) -> None:
+    """AC7: Ctrl+C inside `store` before publication -> 130 and `<A> failed`."""
+    lab = rig.lab
+    rig.store = lab.refuses_to_store(on_call=2, error=lambda: KeyboardInterrupt())
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} failed\n"
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+    assert "Traceback" not in result.err
+
+
+def test_exit_code_cleanup_read_back_a_memory_error_inside_store_exits_1(
+    rig: Rig,
+) -> None:
+    """AC7, AC15: `MemoryError` there -> 1, `<A> failed`, the class name only."""
+    lab = rig.lab
+    rig.store = lab.refuses_to_store(on_call=2, error=lambda: MemoryError(BODY_MARKER))
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 1
+    assert result.out == f"{run_id} failed\n"
+    assert "MemoryError" in result.err
+    assert BODY_MARKER not in result.err
+    assert "Traceback" not in result.err
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "unexpected-error",
+    ]
+    assert same_json(
+        lab.details(run_id, "unexpected-error")[0],
+        {"page": 2, "error_type": "MemoryError"},
+    )
+
+
+# === exit_code_interrupt_after_finish (AC7, AC11, AC15, F-05) ==================
+
+
+def test_exit_code_interrupt_after_finish_a_succeeded_run_exits_130_and_prints_succeeded(
+    rig: Rig,
+) -> None:
+    """AC7, AC11: Ctrl+C after the final `finish_run` committed -> `<A> succeeded`."""
+    lab = rig.lab
+    lab.opener.faults[1] = [
+        lab.faults.interrupts("finish_run", detail="succeeded", when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} succeeded\n"
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "page-completed",
+    ]
+
+
+def test_exit_code_interrupt_after_finish_a_failed_run_exits_130_and_prints_failed(
+    rig: Rig,
+) -> None:
+    """AC7, AC11: the same after the failure path's `finish_run(FAILED)`."""
+    lab = rig.lab
+    lab.source.script(2, lab.status_failure(2, 500))
+    lab.opener.faults[1] = [
+        lab.faults.interrupts("finish_run", detail="failed", when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} failed\n"
+    assert lab.event_types(run_id) == ["run-started", "page-completed", "page-failed"]
+
+
+def test_exit_code_interrupt_after_finish_an_unexpected_exception_exits_1(
+    rig: Rig,
+) -> None:
+    """AC15, K step 1: a `MemoryError` after the commit -> 1 and `<A> succeeded`."""
+    lab = rig.lab
+    lab.opener.faults[1] = [
+        lab.faults.raises(
+            "finish_run", lambda: MemoryError(), detail="succeeded", when="after"
+        )
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 1
+    assert result.out == f"{run_id} succeeded\n"
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "page-completed",
+    ]
+
+
+# === output_escaping_exception (AC15, F-04) ====================================
+
+
+def escaping(
+    execution_id: str | None, make_error: Callable[[], BaseException]
+) -> Callable[..., IngestOutcome]:
+    """A `run_ingest` that announces the run (or not) and then raises."""
+
+    def run_ingest_that_raises(
+        request: object, *, reporter: IngestReporter, **ports: object
+    ) -> IngestOutcome:
+        if execution_id is not None:
+            reporter.run_started(execution_id)
+        raise make_error()
+
+    return run_ingest_that_raises
+
+
+def _escaping_defect() -> BaseException:
+    defect = SyntheticDefect(f"{BODY_MARKER} {PASSWORD_MARKER}")
+    defect.__cause__ = ValueError(HEADER_MARKER)
+    return defect
+
+
+ESCAPING = [
+    pytest.param(_escaping_defect, 1, "SyntheticDefect", id="synthetic-defect"),
+    pytest.param(
+        lambda: EvidenceNotFoundError(f"no observation {BODY_MARKER}"),
+        1,
+        "EvidenceNotFoundError",
+        id="project-error",
+    ),
+    pytest.param(lambda: KeyboardInterrupt(), 130, None, id="keyboard-interrupt"),
+]
+
+
+@pytest.mark.parametrize(("make_error", "code", "class_name"), ESCAPING)
+def test_output_escaping_exception_after_the_run_was_announced_prints_it_running(
+    rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    make_error: Callable[[], BaseException],
+    code: int,
+    class_name: str | None,
+) -> None:
+    """AC15, P-5: whatever escapes after `run_started`, stdout is `<A> running`."""
+    monkeypatch.setattr(ingest_command, "run_ingest", escaping(rig.lab.A, make_error))
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == code
+    assert result.out == f"{rig.lab.A} running\n"
+    if class_name is not None:
+        assert class_name in result.err
+    for text in (BODY_MARKER, PASSWORD_MARKER, HEADER_MARKER, "Traceback"):
+        assert text not in result.err
+    assert "ValueError" not in result.err
+
+
+@pytest.mark.parametrize(("make_error", "code", "class_name"), ESCAPING)
+def test_output_escaping_exception_before_the_run_was_announced_prints_nothing(
+    rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    make_error: Callable[[], BaseException],
+    code: int,
+    class_name: str | None,
+) -> None:
+    """AC15: no `run_started`, no run to name: stdout stays empty."""
+    monkeypatch.setattr(ingest_command, "run_ingest", escaping(None, make_error))
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == code
+    assert result.out == ""
+    if class_name is not None:
+        assert class_name in result.err
+    for text in (BODY_MARKER, PASSWORD_MARKER, HEADER_MARKER, "Traceback"):
+        assert text not in result.err
+
+
+# === output_progress (AC6 c, AC15, F-07) =======================================
+
+
+def test_output_progress_the_page_lines_reach_stderr(rig: Rig) -> None:
+    """Required progress 1: each page, with its sequence, status and content hash."""
+    lab = rig.lab
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 0
+    for sequence in (1, 2):
+        digest = lab.database.observations[(run_id, sequence)].content_hash.hexdigest
+        assert stderr_lines(result, digest, numbers=(sequence, 200)), result.err
+    assert "://" not in result.err
+
+
+def test_output_progress_a_failed_page_is_named_and_no_marker_appears(rig: Rig) -> None:
+    """AC15: with every marker in play, the page line shows and no marker does."""
+    lab = rig.lab
+    rig.use_transport(_marker_handler(lab, status_of_page_2=429))
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    digest = lab.database.observations[(run_id, 2)].content_hash.hexdigest
+    assert result.code == 1
+    assert stderr_lines(result, digest, numbers=(2, 429)), result.err
+    for marker in (PASSWORD_MARKER, BODY_MARKER, HEADER_MARKER, COOKIE_NAME):
+        assert marker not in result.out
+        assert marker not in result.err
+    assert "://" not in result.err
+    assert "source.invalid" not in result.err
+
+
+@pytest.mark.parametrize(
+    "error", [PersistenceIntegrityError, PersistenceNotFoundError, PersistenceError]
+)
+def test_output_progress_a_refused_write_names_the_operation_and_the_identity(
+    rig: Rig, error: Callable[[str], PersistenceError]
+) -> None:
+    """AC6 (c): stderr names the refused operation and the run, nothing of the error."""
+    lab = rig.lab
+    lab.opener.faults[1] = [
+        lab.faults.refuses(
+            "record_observation",
+            lambda: error(f"refused {BODY_MARKER} {HEADER_MARKER}"),
+            detail="1",
+        )
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 1
+    assert result.out == f"{run_id} failed\n"
+    assert stderr_lines(result, "record_observation", run_id), result.err
+    for text in (BODY_MARKER, HEADER_MARKER, PASSWORD_MARKER, "Traceback"):
+        assert text not in result.err
+
+
+def test_output_progress_a_lost_connection_is_named_on_stderr(rig: Rig) -> None:
+    """Required progress 3: the lost operation and the run, no driver text."""
+    lab = rig.lab
+    lab.opener.faults[1] = [
+        lab.faults.lost_before_commit("record_observation", detail="2")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 1
+    assert stderr_lines(result, "record_observation", run_id), result.err
+    assert "synthetic:" not in result.err
+    assert PASSWORD_MARKER not in result.err
+
+
+# === chain_unreadable_record_message (AC24, F-06) ==============================
+
+
+@pytest.mark.parametrize(
+    "error", [EvidenceIntegrityError, EvidenceNotFoundError, OSError]
+)
+def test_chain_unreadable_record_message_names_the_target_on_stderr(
+    rig: Rig, error: Callable[[str], BaseException]
+) -> None:
+    """AC24: an unreadable local record -> exit 1, nothing on stdout, `<A>` on stderr."""
+    lab = rig.lab
+    lab.seed.run(lab.A, scope=lab.scope(1, 4))
+    lab.seed.started(lab.A)
+    lab.seed.completed(lab.A, 1, 2)
+    store = lab.faulty_reads()
+    store.fail_observation(lab.A, 2, lambda: error(f"unreadable {BODY_MARKER}"))
+    rig.store = store
+    before = lab.snapshot()
+
+    result = rig.invoke(["--resume", lab.A])
+
+    assert result.code == 1
+    assert result.out == ""
+    assert lab.A in result.err
+    assert BODY_MARKER not in result.err
+    assert "Traceback" not in result.err
+    assert lab.snapshot() == before
+    assert lab.source.calls == []

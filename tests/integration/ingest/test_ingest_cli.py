@@ -4,7 +4,8 @@ Names to focus on, by `-k`:
 
 - `migrations` (AC16, decision P-1): the pending migrations are applied before the
   repository is built, a changed or missing applied file exits 2, the migration lock
-  held elsewhere exits 1;
+  held elsewhere exits 1. Since plan Revision 6 the source is built first (invocation
+  step 2), so a refused migration records `["make_source", "migrate"]`;
 - `root` (AC25): the store root is `data/raw/` resolved once against the current
   directory, from a synthetic repository root `<T>` that holds a copy of the
   repository's `migrations/`;
@@ -129,6 +130,20 @@ def test_migrations_return_before_the_repository_is_built(
     assert lab.calls.count("migrate") == 1
 
 
+def test_migrations_the_source_is_built_before_the_migrations_run(
+    empty_lab: IngestLab,
+) -> None:
+    """AC14, AC16 (plan Revision 6, step 2): `make_source` comes before `migrate`."""
+    lab = empty_lab
+
+    result = lab.run(scope(1, 2))
+
+    assert result.code == 0
+    assert lab.calls.count("make_source") == 1
+    assert lab.calls[:3] == ["make_source", "migrate", "migrate:done"]
+    assert lab.calls.index("migrate:done") < lab.calls.index("make_store")
+
+
 def test_migrations_a_changed_applied_file_exits_2_and_creates_no_run(
     migrated_lab: IngestLab, tmp_path: Path
 ) -> None:
@@ -144,7 +159,7 @@ def test_migrations_a_changed_applied_file_exits_2_and_creates_no_run(
     assert result.out == ""
     assert result.err.strip() != ""
     assert_no_setting_leaked(lab, result.err)
-    assert lab.calls == ["migrate"]
+    assert lab.calls == ["make_source", "migrate"]
     assert lab.run_ids() == []
     assert lab.pages.requests == []
     assert lab.files() == {}
@@ -162,7 +177,7 @@ def test_migrations_a_missing_applied_file_exits_2(
 
     assert result.code == 2
     assert result.out == ""
-    assert lab.calls == ["migrate"]
+    assert lab.calls == ["make_source", "migrate"]
     assert lab.run_ids() == []
     assert lab.pages.requests == []
 
@@ -203,7 +218,7 @@ def test_migrations_an_invalid_directory_exits_2_and_the_database_stays_empty(
     assert result.out == ""
     assert not lab.table_exists("schema_migration")
     assert not lab.table_exists("ingestion_run")
-    assert lab.calls == ["migrate"]
+    assert lab.calls == ["make_source", "migrate"]
     assert lab.pages.requests == []
     assert lab.files() == {}
 
@@ -221,7 +236,7 @@ def test_migrations_the_lock_held_elsewhere_exits_1_and_creates_no_run(
     assert result.out == ""
     assert result.err.strip() != ""
     assert_no_setting_leaked(lab, result.err)
-    assert lab.calls == ["migrate"]
+    assert lab.calls == ["make_source", "migrate"]
     assert lab.run_ids() == []
     assert lab.pages.requests == []
     assert lab.files() == {}
