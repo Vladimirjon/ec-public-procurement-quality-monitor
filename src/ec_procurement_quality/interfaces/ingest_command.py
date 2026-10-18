@@ -1,9 +1,9 @@
 """The ``ingest`` command: composition of the F4 use case.
 
 This is the composition root of ``ingest``. It reads the environment from the
-mapping it is given, resolves the paths once, applies the migrations, builds the
-source, the store and the repository opener through an ``IngestWiring``, runs
-``run_ingest`` and maps its outcome to an exit code (0, 1, 2 or 130), one result
+mapping it is given, resolves the paths once, builds the source, applies the
+migrations, builds the store and the repository opener through an
+``IngestWiring``, runs ``run_ingest`` and maps its outcome to an exit code (0, 1, 2 or 130), one result
 line on stdout and progress on stderr. Nothing here prints a traceback, an
 exception chain, a URL, a header, a body, a setting or the password: an
 exception that escapes is reported by its class name only.
@@ -202,6 +202,15 @@ class _StderrReporter:
         print(message, file=self._stderr)
 
 
+# `interfaces` may not import `httpx`, and `SercopSource` lets the library's own
+# construction errors through, so any `Exception` from building the source is
+# reported as configuration. Only the class name follows: `httpx` quotes the URL.
+_SOURCE_CONFIGURATION_MESSAGE = (
+    "error: the source cannot be built from the proxy or certificate settings of "
+    "the environment (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY, SSL_CERT_FILE, "
+    "SSL_CERT_DIR)"
+)
+
 _EXIT_CODES = {
     IngestEnd.SUCCEEDED: EXIT_OK,
     IngestEnd.RUN_FAILED: EXIT_FAILED,
@@ -217,6 +226,12 @@ def _report(outcome: IngestOutcome, stdout: TextIO, stderr: TextIO) -> int:
     if outcome.execution_id is not None and outcome.run_status is not None:
         print(f"{outcome.execution_id} {outcome.run_status.value}", file=stdout)
     return _EXIT_CODES[outcome.end]
+
+
+def _print_running(reporter: _StderrReporter, stdout: TextIO) -> None:
+    """An exception escaped after the run was announced: closing is unconfirmed."""
+    if reporter.execution_id is not None:
+        print(f"{reporter.execution_id} running", file=stdout)
 
 
 def _migrate(
@@ -253,11 +268,17 @@ def _invoke(
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
-    stopped = _migrate(wiring, settings, migrations_dir, stderr)
-    if stopped is not None:
-        return stopped
-    source = wiring.make_source(wiring.clock.now)
     try:
+        source = wiring.make_source(wiring.clock.now)
+    except MemoryError:
+        raise
+    except Exception as error:  # noqa: BLE001 -- see `_SOURCE_CONFIGURATION_MESSAGE`.
+        print(f"{_SOURCE_CONFIGURATION_MESSAGE}: {type(error).__name__}", file=stderr)
+        return EXIT_USAGE
+    try:
+        stopped = _migrate(wiring, settings, migrations_dir, stderr)
+        if stopped is not None:
+            return stopped
         store = wiring.make_store(store_root)
         outcome = run_ingest(
             request,
@@ -286,9 +307,10 @@ def run_ingest_command(
     """Run ``ingest`` and return the exit code: 0, 1, 2 or 130.
 
     The result line ``<execution id> <status>`` goes to ``stdout`` when the
-    outcome names a run. Everything else goes to ``stderr``. A
-    ``KeyboardInterrupt`` that escapes the use case after the run was started
-    prints ``<execution id> running``, because closing was not confirmed.
+    outcome names a run. Everything else goes to ``stderr``. An exception that
+    escapes the use case after the run was started prints
+    ``<execution id> running``, because closing was not confirmed: exit 130 for
+    a ``KeyboardInterrupt``, 1 for any other exception.
     """
     reporter = _StderrReporter(stderr)
     try:
@@ -314,10 +336,10 @@ def run_ingest_command(
                 stderr=stderr,
             )
     except KeyboardInterrupt:
-        if reporter.execution_id is not None:
-            print(f"{reporter.execution_id} running", file=stdout)
+        _print_running(reporter, stdout)
         print("interrupted", file=stderr)
         return EXIT_INTERRUPTED
     except Exception as error:  # noqa: BLE001 -- only the class name is reported.
+        _print_running(reporter, stdout)
         print(f"unexpected error: {type(error).__name__}", file=stderr)
         return EXIT_FAILED

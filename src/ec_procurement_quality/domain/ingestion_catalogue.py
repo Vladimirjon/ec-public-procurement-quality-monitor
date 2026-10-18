@@ -152,7 +152,7 @@ class IngestScope:
 def validate_ingest_execution_id(execution_id: str) -> str:
     """Return `execution_id` if it is an ingest id: `ingest-<UTC time>-<8 hex>`.
 
-    The time is `YYYYMMDDtHHMMSSz`. The id is 33 characters, passes
+    The time is `YYYYMMDDtHHMMSSz`. The id is 32 characters, passes
     `validate_execution_id` and is not a Windows reserved device name.
     """
     if (
