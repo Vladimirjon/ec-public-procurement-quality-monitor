@@ -293,6 +293,8 @@ def test_runner_integrity_unrecorded_file_below_a_recorded_version_is_named(
 def test_runner_lock_held_elsewhere_fails_at_once_and_creates_nothing(
     tmp_path: Path, empty_database: PostgresSettings, open_connection: OpenConnection
 ) -> None:
+    from ec_procurement_quality.domain.persistence_errors import MigrationLockError
+
     directory = _write(tmp_path / "migrations", {"0001_a.sql": SYNTHETIC_A})
     holder = open_connection(empty_database)
     holder.execute("SELECT pg_advisory_lock(%s::bigint)", (MIGRATION_LOCK_KEY,))
@@ -303,6 +305,7 @@ def test_runner_lock_held_elsewhere_fails_at_once_and_creates_nothing(
     elapsed = time.monotonic() - started
 
     assert "lock" in str(caught.value).lower()
+    assert type(caught.value) is MigrationLockError
     assert elapsed < empty_database.connect_timeout
     checker = open_connection(empty_database)
     assert not _exists(checker, "schema_migration")

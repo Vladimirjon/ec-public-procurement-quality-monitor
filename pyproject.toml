@@ -18,6 +18,11 @@ build-backend = "uv_build"
 # Global defaults stay non-strict. Strictness applies to the domain layer only,
 # through explicit flags in the override below ("strict = true" is not applied
 # reliably inside per-module sections).
+# The test folders hold several `conftest.py` files without `__init__.py`; with
+# explicit package bases, mypy names them by path and `src` stays the base of
+# the package.
+explicit_package_bases = true
+mypy_path = "src"
 
 [[tool.mypy.overrides]]
 module = "ec_procurement_quality.domain.*"

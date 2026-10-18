@@ -27,3 +27,7 @@ class PersistenceNotFoundError(PersistenceError):
 
 class MigrationError(PersistenceError):
     """A migration file or the migration bookkeeping is not acceptable."""
+
+
+class MigrationLockError(MigrationError):
+    """Another migration run holds the migration lock."""
