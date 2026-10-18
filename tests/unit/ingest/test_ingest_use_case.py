@@ -887,6 +887,67 @@ def test_storage_a_write_refused_before_publication_records_only_the_failure(
     assert lab.source.requests == [1, 2]
 
 
+@pytest.mark.parametrize("error", [OSError, EvidenceIntegrityError])
+def test_storage_a_failed_read_back_counts_the_observation_as_not_recorded(
+    lab: Lab, error: Callable[[str], BaseException]
+) -> None:
+    """AC6 (d): `store` raises `OSError`, then the read-back itself fails."""
+    store = lab.fails_read_back(
+        on_call=2, read_errors=[lambda: error("synthetic read-back failure")]
+    )
+
+    outcome = call(lab, fresh(lab, 1, 3), store=store)
+
+    run_id = created(outcome)
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "storage-failed",
+    ]
+    assert same_json(
+        lab.details(run_id, "storage-failed")[0],
+        {"page": 2, "sequence": 2, "store": "raw-evidence"},
+    )
+    assert lab.sequences(run_id) == (1,)
+    assert (run_id, 2) not in lab.database.observations
+    assert lab.journal.labels(run_id)[-2:] == [
+        "append:storage-failed",
+        "finish_run:failed",
+    ]
+    assert lab.source.requests == [1, 2]
+    assert lab.opener.all_closed
+
+
+def test_storage_an_interrupt_from_the_read_back_keeps_the_interrupt_handling(
+    lab: Lab,
+) -> None:
+    """AC6 (d), State machine K: the rule does not catch a `KeyboardInterrupt`.
+
+    The first read-back is interrupted; the cleanup reads the published
+    observation back, records it, and closes the run as an interruption.
+    """
+    store = lab.fails_read_back(
+        on_call=2, read_errors=[lambda: KeyboardInterrupt()], publish=True
+    )
+
+    outcome = call(lab, fresh(lab, 1, 3), store=store)
+
+    run_id = created(outcome)
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+    assert same_json(lab.details(run_id, "run-interrupted")[0], {"page": 2})
+    assert lab.sequences(run_id) == (1, 2)
+    assert lab.source.requests == [1, 2]
+
+
 @pytest.mark.parametrize("error", [PersistenceIntegrityError, PersistenceError])
 def test_storage_postgresql_refusing_an_observation_stops_the_run(
     lab: Lab, error: Callable[[str], PersistenceError]

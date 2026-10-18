@@ -13,7 +13,8 @@ What this file provides, as `execution-plan.md` § Tests and its seams table pin
   `InMemoryDatabase`. Both implement the extended ports;
 - `FakeSource`, `FixedClock`, `ScriptedExecutionIds`, `RecordingReporter` and
   `RepositoryOpenerDouble`;
-- the fault-injection seams: `PublishThenFailStore`, `RefusingStore` and
+- the fault-injection seams: `PublishThenFailStore`, `RefusingStore`,
+  `FailingReadBackStore` (a failed `store` whose read-back fails too) and
   `FlakyRepository` (commit-then-raise or raise-before-commit on the n-th call
   of an operation, a refusal, a `KeyboardInterrupt`);
 - `Seeder`, which writes runs, observations and events straight into the doubles
@@ -452,6 +453,80 @@ class RefusingStore:
         return self._inner.read_content(content_hash)
 
     def read_observation(self, execution_id: str, sequence: int) -> Observation:
+        return self._inner.read_observation(execution_id, sequence)
+
+    def list_observation_sequences(self, execution_id: str) -> tuple[int, ...]:
+        return self._inner.list_observation_sequences(execution_id)
+
+
+class FailingReadBackStore:
+    """Fails the n-th `store` with `OSError`, then fails its read-back (AC6 d).
+
+    The failing `store` publishes nothing, unless `publish` is true (then it
+    publishes through `inner` first, as `PublishThenFailStore` does). The next
+    reads of that sequence raise the errors of `read_errors`, one per read, in
+    order; once they are used up, reads go to `inner`.
+    """
+
+    def __init__(
+        self,
+        inner: RawEvidenceStore,
+        *,
+        on_call: int,
+        read_errors: Sequence[Callable[[], BaseException]],
+        publish: bool = False,
+    ) -> None:
+        self._inner = inner
+        self._on_call = on_call
+        self._read_errors = list(read_errors)
+        self._publish = publish
+        self._calls = 0
+        self._failed_sequence: int | None = None
+
+    def store(
+        self,
+        *,
+        execution_id: str,
+        sequence: int,
+        method: str,
+        url: str,
+        status: int,
+        headers: Sequence[tuple[str, str]],
+        captured_at: datetime,
+        content: bytes,
+    ) -> Observation:
+        self._calls += 1
+        if self._calls == self._on_call:
+            self._failed_sequence = sequence
+            if self._publish:
+                self._inner.store(
+                    execution_id=execution_id,
+                    sequence=sequence,
+                    method=method,
+                    url=url,
+                    status=status,
+                    headers=headers,
+                    captured_at=captured_at,
+                    content=content,
+                )
+            raise OSError("synthetic: the disk failed")
+        return self._inner.store(
+            execution_id=execution_id,
+            sequence=sequence,
+            method=method,
+            url=url,
+            status=status,
+            headers=headers,
+            captured_at=captured_at,
+            content=content,
+        )
+
+    def read_content(self, content_hash: ContentHash) -> bytes:
+        return self._inner.read_content(content_hash)
+
+    def read_observation(self, execution_id: str, sequence: int) -> Observation:
+        if sequence == self._failed_sequence and self._read_errors:
+            raise self._read_errors.pop(0)()
         return self._inner.read_observation(execution_id, sequence)
 
     def list_observation_sequences(self, execution_id: str) -> tuple[int, ...]:
@@ -1562,6 +1637,18 @@ class Lab:
             return RefusingStore(self.store, on_call=on_call)
         return RefusingStore(self.store, on_call=on_call, error=error)
 
+    def fails_read_back(
+        self,
+        *,
+        on_call: int,
+        read_errors: Sequence[Callable[[], BaseException]],
+        publish: bool = False,
+    ) -> FailingReadBackStore:
+        """The store of this lab: the n-th write fails, then its read-back fails."""
+        return FailingReadBackStore(
+            self.store, on_call=on_call, read_errors=read_errors, publish=publish
+        )
+
     def other_session_finishes(
         self, execution_id: str, status: RunStatus, finished_at: datetime
     ) -> None:
@@ -1589,6 +1676,9 @@ def _the_doubles_implement_the_ports(lab: Lab) -> None:
     store: RawEvidenceStore = lab.store
     wrapped: RawEvidenceStore = PublishThenFailStore(store, on_call=1)
     refusing: RawEvidenceStore = RefusingStore(store, on_call=1)
+    unreadable: RawEvidenceStore = FailingReadBackStore(
+        store, on_call=1, read_errors=[]
+    )
     repository: IngestionRepository = InMemoryIngestionRepository(lab.database)
     closable: ClosableIngestionRepository = InMemoryIngestionRepository(lab.database)
     flaky: ClosableIngestionRepository = FlakyRepository(
@@ -1599,5 +1689,5 @@ def _the_doubles_implement_the_ports(lab: Lab) -> None:
     clock: Clock = lab.clock
     ids: ExecutionIdSource = lab.execution_ids
     reporter: IngestReporter = lab.reporter
-    del wrapped, refusing, repository, closable, flaky, opener, source, clock, ids
-    del reporter
+    del wrapped, refusing, unreadable, repository, closable, flaky, opener, source
+    del clock, ids, reporter
