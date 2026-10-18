@@ -903,7 +903,7 @@ def run_ingest(
                     published_observation = store.read_observation(
                         execution_id, next_sequence
                     )
-                except (EvidenceNotFoundError, OSError):
+                except (EvidenceNotFoundError, EvidenceIntegrityError, OSError):
                     published_observation = None
                 if published_observation is not None:
                     try:
