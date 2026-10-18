@@ -258,6 +258,11 @@ Output and exit codes:
     connection could not be opened, the ingest exclusion was held elsewhere or
     could not be taken again, or the connection was lost a second time,
     including a lost `start_run` whose outcome is unknown;
+  - Ctrl+C or an unexpected error such as `MemoryError` while a lost connection
+    is being recovered, that is, while the second connection is being opened or
+    the ingest exclusion is being taken on it: nothing more is written to the
+    run, which stays `running` (exit 130 for Ctrl+C, 1 otherwise), and stderr
+    names only `open_repository` or `try_acquire_ingest_exclusion`;
   - a refused `finish_run` that closes a failed run;
   - a refused repeat of the final `finish_run` (`succeeded`) after a lost
     connection, when the stored status could not then be read;
@@ -265,6 +270,11 @@ Output and exit codes:
 
   The next `ingest` closes such a run: it reconciles the run and finishes it as
   `failed`.
+
+  While the recovery of a lost `start_run` is pending, no run has been
+  confirmed, so a Ctrl+C or an unexpected error such as `MemoryError` prints no
+  result line (stdout is empty, exit 130 for Ctrl+C and 1 otherwise) and nothing
+  is written.
 - stderr carries the progress and the errors, each as a fixed message that never
   includes a URL, a header, a body or a setting. It names each database
   operation that was refused or lost, with the run concerned (and the sequence

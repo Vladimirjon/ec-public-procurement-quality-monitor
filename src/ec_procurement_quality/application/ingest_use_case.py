@@ -123,11 +123,23 @@ class _CleanupStopped(Exception):
     """A database operation of the interruption cleanup failed; it was reported."""
 
 
+class _RecoveryEnded(Exception):
+    """Something other than a database error ended the opening of the second connection.
+
+    It carries what was raised (a `KeyboardInterrupt` or another exception) while
+    no repository was current: the run is not touched and its line was written.
+    """
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__(type(error).__name__)
+        self.error = error
+
+
 def _report_failure(
     reporter: IngestReporter,
     operation: str,
     execution_id: str | None,
-    error: Exception,
+    error: BaseException,
     *,
     detail: str | None = None,
     sequence: int | None = None,
@@ -170,6 +182,26 @@ def _reporting_failure(
         raise
 
 
+@contextmanager
+def _recovery_step(reporter: IngestReporter, operation: str) -> Iterator[None]:
+    """One database operation of State machine C steps 2 and 3, before any is current.
+
+    Whatever it raises is reported once, under its own name, and ends the step:
+    a `PersistenceError` as an unconfirmed recovery, anything else as
+    `_RecoveryEnded`. `SystemExit` passes without a line.
+    """
+    try:
+        yield
+    except PersistenceError as error:
+        _report_failure(reporter, operation, None, error)
+        raise _ConnectionUnconfirmed from error
+    except SystemExit:
+        raise
+    except BaseException as error:
+        _report_failure(reporter, operation, None, error)
+        raise _RecoveryEnded(error) from error
+
+
 class _PersistenceSession:
     def __init__(
         self,
@@ -197,24 +229,24 @@ class _PersistenceSession:
         if self._reconnected:
             raise _ConnectionUnconfirmed
         self._reconnected = True
+        # No repository is current until the second one holds the exclusion
+        # (State machine C, "The current repository"): `self.repository` stays the
+        # lost one, which nothing may use, and the second is closed on any failure.
+        second: ClosableIngestionRepository | None = None
         try:
-            with _reporting_failure(self._reporter, "open_repository", None):
-                repository = self._open_repository()
-        except PersistenceError as error:
-            raise _ConnectionUnconfirmed from error
-        self.repository = repository
-        try:
-            with _reporting_failure(
-                self._reporter, "try_acquire_ingest_exclusion", None
-            ):
-                acquired = repository.try_acquire_ingest_exclusion()
-        except PersistenceError as error:
-            repository.close()
-            raise _ConnectionUnconfirmed from error
-        if not acquired:
-            repository.close()
-            raise _ConnectionUnconfirmed
-        return repository
+            with _recovery_step(self._reporter, "open_repository"):
+                second = self._open_repository()
+            with _recovery_step(self._reporter, "try_acquire_ingest_exclusion"):
+                acquired = second.try_acquire_ingest_exclusion()
+            if not acquired:
+                raise _ConnectionUnconfirmed
+        except BaseException:
+            if second is not None:
+                with suppress(Exception):
+                    second.close()
+            raise
+        self.repository = second
+        return second
 
     def safe_repeat(
         self,
@@ -382,6 +414,34 @@ def _unconfirmed(execution_id: str) -> IngestOutcome:
     return _outcome(
         IngestEnd.RUN_FAILED,
         "the database write could not be confirmed",
+        execution_id=execution_id,
+        run_status=RunStatus.RUNNING,
+    )
+
+
+def _recovery_ended(
+    error: BaseException, execution_id: str | None, *, run_created: bool
+) -> IngestOutcome:
+    """The outcome when the second connection could not be made current.
+
+    State machine K is not entered: the run is left `running`, untouched. While
+    `start_run` is still the pending operation no run is known.
+    """
+    interrupted = isinstance(error, KeyboardInterrupt)
+    if not run_created or execution_id is None:
+        if interrupted:
+            return _outcome(IngestEnd.INTERRUPTED, "the ingest was interrupted")
+        return _outcome(IngestEnd.NOT_STARTED, type(error).__name__)
+    if interrupted:
+        return _outcome(
+            IngestEnd.INTERRUPTED,
+            "the ingest was interrupted",
+            execution_id=execution_id,
+            run_status=RunStatus.RUNNING,
+        )
+    return _outcome(
+        IngestEnd.RUN_FAILED,
+        f"unexpected error: {type(error).__name__}",
         execution_id=execution_id,
         run_status=RunStatus.RUNNING,
     )
@@ -1448,6 +1508,8 @@ def run_ingest(
                 )
 
         return _finish_succeeded(session, clock, reporter, execution_id, page=page)
+    except _RecoveryEnded as ended:
+        return _recovery_ended(ended.error, execution_id, run_created=run_created)
     except KeyboardInterrupt:
         if not run_created or execution_id is None:
             return _outcome(IngestEnd.INTERRUPTED, "the ingest was interrupted")
