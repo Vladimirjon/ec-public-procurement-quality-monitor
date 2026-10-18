@@ -673,7 +673,7 @@ Recorded in intent Revision 7 § Findings raised during implementation; no earli
 
 - **F-1, decided by the human on 2026-10-16 (option a).** The two `[tool.mypy]` keys in `pyproject.toml` (§ Ownership, § Other constraints, § Consumers, the AC18 and AC20 rows).
 - **F-2, documentation.** The ingest execution id has 32 characters (§ Public names and signatures).
-- **F-3, proposed in Revision 5, pending the human's approval.** A read-back that raises `EvidenceNotFoundError`, `OSError` or `EvidenceIntegrityError` counts as not recorded (§ State machine P, step 3; the seams table; the AC6 row).
+- **F-3, proposed in Revision 5 and approved by the human on 2026-10-17.** A read-back that raises `EvidenceNotFoundError`, `OSError` or `EvidenceIntegrityError` counts as not recorded (§ State machine P, step 3; the seams table; the AC6 row).
 
 ### Rollout order (for `tasks.md` to slice into outcomes)
 1. **M1, the F1 listing.** Port operation and `LocalDiskRawEvidenceStore` implementation with `test_local_disk_raw_evidence_store_listing.py` (AC22, AC20). It lands first because both reconciliation and the id check need it.
