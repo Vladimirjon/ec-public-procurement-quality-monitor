@@ -188,11 +188,15 @@ def _httpcore_above_debug() -> Iterator[None]:
 
 
 class _StderrReporter:
-    """Writes the progress to stderr and remembers the id of the run it started."""
+    """Writes the progress to stderr and remembers the id of the run it started.
+
+    It also remembers that the result line was written: at most one per invocation.
+    """
 
     def __init__(self, stderr: TextIO) -> None:
         self._stderr = stderr
         self.execution_id: str | None = None
+        self.result_written = False
 
     def run_started(self, execution_id: str) -> None:
         self.execution_id = execution_id
@@ -220,17 +224,23 @@ _EXIT_CODES = {
 }
 
 
-def _report(outcome: IngestOutcome, stdout: TextIO, stderr: TextIO) -> int:
+def _report(
+    outcome: IngestOutcome, reporter: _StderrReporter, stdout: TextIO, stderr: TextIO
+) -> int:
     """Write the final message and the result line; return the exit code."""
     print(outcome.message, file=stderr)
     if outcome.execution_id is not None and outcome.run_status is not None:
         print(f"{outcome.execution_id} {outcome.run_status.value}", file=stdout)
+    reporter.result_written = True
     return _EXIT_CODES[outcome.end]
 
 
 def _print_running(reporter: _StderrReporter, stdout: TextIO) -> None:
-    """An exception escaped after the run was announced: closing is unconfirmed."""
-    if reporter.execution_id is not None:
+    """An exception escaped after the run was announced: closing is unconfirmed.
+
+    Nothing is printed when the result line was already written.
+    """
+    if reporter.execution_id is not None and not reporter.result_written:
         print(f"{reporter.execution_id} running", file=stdout)
 
 
@@ -289,7 +299,7 @@ def _invoke(
             execution_ids=wiring.execution_ids,
             reporter=reporter,
         )
-        return _report(outcome, stdout, stderr)
+        return _report(outcome, reporter, stdout, stderr)
     finally:
         # Closing must not change how the run ended.
         with suppress(Exception):

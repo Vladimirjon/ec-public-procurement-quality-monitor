@@ -7,8 +7,8 @@ only through ports.
 """
 
 import enum
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TypeGuard, TypeVar
@@ -104,7 +104,70 @@ class _ConnectionUnconfirmed(Exception):
 
 
 class _ReconciliationRefused(Exception):
-    """The database refused a read or a write of the reconciliation."""
+    """The database refused or lost a read or a write of the reconciliation."""
+
+
+class _Unreadable(Exception):
+    """A database read failed before the run exists; its line was already written."""
+
+
+class _IdUnchecked(Exception):
+    """The drawn execution id could not be checked; it names the id."""
+
+    def __init__(self, execution_id: str) -> None:
+        super().__init__(execution_id)
+        self.execution_id = execution_id
+
+
+class _CleanupStopped(Exception):
+    """A database operation of the interruption cleanup failed; it was reported."""
+
+
+def _report_failure(
+    reporter: IngestReporter,
+    operation: str,
+    execution_id: str | None,
+    error: Exception,
+    *,
+    detail: str | None = None,
+    sequence: int | None = None,
+) -> None:
+    """Name the failed database operation and its identity; of the error, its class.
+
+    A lost connection is worded as a loss and adds no class name.
+    """
+    text = operation if detail is None else f"{operation} {detail}"
+    if isinstance(error, PersistenceConnectionError):
+        line = f"connection lost during {text}"
+        tail = ""
+    else:
+        verb = "refused" if isinstance(error, PersistenceError) else "failed"
+        line = f"{text} {verb}"
+        tail = f" ({type(error).__name__})"
+    if execution_id is not None:
+        line += f": run {execution_id}"
+    if sequence is not None:
+        line += f" sequence {sequence}"
+    reporter.progress(line + tail)
+
+
+@contextmanager
+def _reporting_failure(
+    reporter: IngestReporter,
+    operation: str,
+    execution_id: str | None,
+    *,
+    detail: str | None = None,
+    sequence: int | None = None,
+) -> Iterator[None]:
+    """Write the one line of a database operation that raises, then let it pass."""
+    try:
+        yield
+    except PersistenceError as error:
+        _report_failure(
+            reporter, operation, execution_id, error, detail=detail, sequence=sequence
+        )
+        raise
 
 
 class _PersistenceSession:
@@ -135,12 +198,16 @@ class _PersistenceSession:
             raise _ConnectionUnconfirmed
         self._reconnected = True
         try:
-            repository = self._open_repository()
+            with _reporting_failure(self._reporter, "open_repository", None):
+                repository = self._open_repository()
         except PersistenceError as error:
             raise _ConnectionUnconfirmed from error
         self.repository = repository
         try:
-            acquired = repository.try_acquire_ingest_exclusion()
+            with _reporting_failure(
+                self._reporter, "try_acquire_ingest_exclusion", None
+            ):
+                acquired = repository.try_acquire_ingest_exclusion()
         except PersistenceError as error:
             repository.close()
             raise _ConnectionUnconfirmed from error
@@ -174,33 +241,48 @@ class _PersistenceSession:
         occurred_at: datetime,
         event_type: AuditEventType,
         detail: dict[str, JsonValue],
+        sequence: int | None = None,
     ) -> bool:
-        def append(repository: ClosableIngestionRepository) -> None:
-            repository.append_audit_event(
-                execution_id=execution_id,
-                occurred_at=occurred_at,
-                event_type=event_type.value,
-                detail=detail,
-            )
+        """Append once, re-checking after a lost connection.
 
-        name = f"append_audit_event {event_type.value}"
+        Every `PersistenceError` that leaves this method was already reported,
+        under the name of the operation that failed.
+        """
+
+        def append(repository: ClosableIngestionRepository) -> None:
+            with _reporting_failure(
+                self._reporter,
+                "append_audit_event",
+                execution_id,
+                detail=event_type.value,
+                sequence=sequence,
+            ):
+                repository.append_audit_event(
+                    execution_id=execution_id,
+                    occurred_at=occurred_at,
+                    event_type=event_type.value,
+                    detail=detail,
+                )
+
         try:
             append(self.repository)
             return False
         except PersistenceConnectionError:
-            self._report_loss(name, execution_id)
             repository = self._reconnect()
             try:
+                with _reporting_failure(
+                    self._reporter, "list_audit_events", execution_id
+                ):
+                    events = repository.list_audit_events(execution_id)
                 already_stored = any(
                     event.event_type == event_type.value
                     and event.occurred_at == occurred_at
                     and same_json(dict(event.detail), detail)
-                    for event in repository.list_audit_events(execution_id)
+                    for event in events
                 )
                 if not already_stored:
                     append(repository)
             except PersistenceConnectionError as error:
-                self._report_loss(name, execution_id)
                 raise _ConnectionUnconfirmed from error
             return True
 
@@ -245,25 +327,6 @@ def _report_page(reporter: IngestReporter, page: int, observation: Observation) 
     )
 
 
-def _report_refusal(
-    reporter: IngestReporter,
-    operation: str,
-    execution_id: str | None,
-    error: PersistenceError,
-    *,
-    detail: str | None = None,
-    sequence: int | None = None,
-) -> None:
-    """Name the refused operation and its identity; of the error, only its class."""
-    text = operation if detail is None else f"{operation} {detail}"
-    text += " refused"
-    if execution_id is not None:
-        text += f": run {execution_id}"
-    if sequence is not None:
-        text += f" sequence {sequence}"
-    reporter.progress(f"{text} ({type(error).__name__})")
-
-
 def _sequence_of(detail: dict[str, JsonValue]) -> int | None:
     sequence = detail.get("sequence")
     return sequence if isinstance(sequence, int) else None
@@ -275,12 +338,15 @@ def _append_session_event(
     execution_id: str,
     event_type: AuditEventType,
     detail: dict[str, JsonValue],
+    *,
+    sequence: int | None,
 ) -> bool:
     return session.append_event(
         execution_id=execution_id,
         occurred_at=clock.now(),
         event_type=event_type,
         detail=detail,
+        sequence=sequence,
     )
 
 
@@ -335,22 +401,21 @@ def _close_failed(
     the run `running` for the next ingest to close.
     """
     try:
-        try:
-            _append_session_event(session, clock, execution_id, event_type, detail)
-        except PersistenceError as error:
-            _report_refusal(
-                reporter,
-                "append_audit_event",
+        # A refused append was reported by `append_event`; no further event follows.
+        with suppress(PersistenceError):
+            _append_session_event(
+                session,
+                clock,
                 execution_id,
-                error,
-                detail=event_type.value,
+                event_type,
+                detail,
                 sequence=_sequence_of(detail),
             )
         outcome, _ = _finish_session(session, clock, execution_id, RunStatus.FAILED)
     except _ConnectionUnconfirmed:
         return _unconfirmed(execution_id)
     except PersistenceError as error:
-        _report_refusal(
+        _report_failure(
             reporter,
             "finish_run",
             execution_id,
@@ -404,19 +469,12 @@ def _append_on_normal_path(
     """Append a normal-path event; return the outcome if the run ended instead."""
     try:
         recovered = _append_session_event(
-            session, clock, execution_id, event_type, detail
+            session, clock, execution_id, event_type, detail, sequence=sequence
         )
     except _ConnectionUnconfirmed:
         return _unconfirmed(execution_id)
-    except PersistenceError as error:
-        _report_refusal(
-            reporter,
-            "append_audit_event",
-            execution_id,
-            error,
-            detail=event_type.value,
-            sequence=sequence,
-        )
+    except PersistenceError:
+        # Reported by `append_event`; the refusal is answered like a recovery.
         recovered = True
     if recovered:
         return _fail_postgresql(
@@ -438,7 +496,7 @@ def _finish_succeeded(
     except _ConnectionUnconfirmed:
         return _unconfirmed(execution_id)
     except PersistenceError as error:
-        _report_refusal(
+        _report_failure(
             reporter,
             "finish_run",
             execution_id,
@@ -451,7 +509,8 @@ def _finish_succeeded(
             )
         # State machine C, P-2: the stored run decides what the refused repeat means.
         try:
-            stored = session.repository.read_run(execution_id)
+            with _reporting_failure(reporter, "read_run", execution_id):
+                stored = session.repository.read_run(execution_id)
         except PersistenceError:
             return _unconfirmed(execution_id)
         return _outcome(
@@ -504,7 +563,9 @@ def _draw_execution_id(
     store: RawEvidenceStore,
     execution_ids: ExecutionIdSource,
     started_at: datetime,
+    reporter: IngestReporter,
 ) -> str | None:
+    """Draw a free id; raise `_IdUnchecked` when a check cannot be made."""
     for _ in range(3):
         execution_id = execution_ids.new_execution_id(started_at)
         try:
@@ -515,11 +576,37 @@ def _draw_execution_id(
             repository.read_run(execution_id)
         except PersistenceNotFoundError:
             pass
+        except PersistenceError as error:
+            _report_failure(reporter, "read_run", execution_id, error)
+            raise _IdUnchecked(execution_id) from error
         else:
             continue
-        if not store.list_observation_sequences(execution_id):
+        try:
+            taken = store.list_observation_sequences(execution_id)
+        except (OSError, EvidenceIntegrityError) as error:
+            raise _IdUnchecked(execution_id) from error
+        if not taken:
             return execution_id
     return None
+
+
+def _cleanup_step[T](
+    reporter: IngestReporter,
+    execution_id: str,
+    operation: str,
+    call: Callable[[], T],
+    *,
+    detail: str | None = None,
+    sequence: int | None = None,
+) -> T:
+    """One database operation of State machine K: if it raises, say so and stop."""
+    try:
+        return call()
+    except Exception as error:  # Any failure stops State machine K.
+        _report_failure(
+            reporter, operation, execution_id, error, detail=detail, sequence=sequence
+        )
+        raise _CleanupStopped from error
 
 
 def _cleanup_after_exception(
@@ -527,6 +614,7 @@ def _cleanup_after_exception(
     repository: ClosableIngestionRepository,
     clock: Clock,
     store: RawEvidenceStore,
+    reporter: IngestReporter,
     execution_id: str,
     pending_sequence: int | None,
     event_type: AuditEventType,
@@ -537,10 +625,16 @@ def _cleanup_after_exception(
     """State machine K: best effort, on the current connection, no new one.
 
     Only a second `KeyboardInterrupt` and `SystemExit` leave it; any other
-    exception stops it where it is and leaves the run `running`.
+    exception stops it where it is and leaves the run `running`. A database
+    operation that raises writes one progress line before it stops.
     """
     try:
-        run = repository.read_run(execution_id)
+        run = _cleanup_step(
+            reporter,
+            execution_id,
+            "read_run",
+            lambda: repository.read_run(execution_id),
+        )
         if run.status is not RunStatus.RUNNING:
             return _outcome(
                 end, message, execution_id=execution_id, run_status=run.status
@@ -551,12 +645,38 @@ def _cleanup_after_exception(
             except (EvidenceNotFoundError, EvidenceIntegrityError, OSError):
                 pending = None
             if pending is not None:
-                repository.record_observation(pending)
-        _append_event(repository, clock, execution_id, event_type, event_detail)
-        run = repository.finish_run(
-            execution_id=execution_id,
-            status=RunStatus.FAILED,
-            finished_at=clock.now(),
+                recorded = pending
+                _cleanup_step(
+                    reporter,
+                    execution_id,
+                    "record_observation",
+                    lambda: repository.record_observation(recorded),
+                    sequence=pending_sequence,
+                )
+        occurred_at = clock.now()
+        _cleanup_step(
+            reporter,
+            execution_id,
+            "append_audit_event",
+            lambda: repository.append_audit_event(
+                execution_id=execution_id,
+                occurred_at=occurred_at,
+                event_type=event_type.value,
+                detail=event_detail,
+            ),
+            detail=event_type.value,
+        )
+        finished_at = clock.now()
+        run = _cleanup_step(
+            reporter,
+            execution_id,
+            "finish_run",
+            lambda: repository.finish_run(
+                execution_id=execution_id,
+                status=RunStatus.FAILED,
+                finished_at=finished_at,
+            ),
+            detail=RunStatus.FAILED.value,
         )
     except Exception:  # noqa: BLE001 -- State machine K stops at any other failure.
         return _outcome(
@@ -568,6 +688,26 @@ def _cleanup_after_exception(
     return _outcome(end, message, execution_id=execution_id, run_status=run.status)
 
 
+def _reconciliation_stopped(
+    reporter: IngestReporter,
+    operation: str,
+    execution_id: str | None,
+    error: PersistenceError,
+    *,
+    detail: str | None = None,
+    sequence: int | None = None,
+) -> _ReconciliationRefused:
+    """Write the line of a refused or lost operation; return what ends the step."""
+    _report_failure(
+        reporter, operation, execution_id, error, detail=detail, sequence=sequence
+    )
+    if execution_id is None:
+        return _ReconciliationRefused("the running runs could not be listed")
+    return _ReconciliationRefused(
+        f"the reconciliation of run {execution_id} could not be completed"
+    )
+
+
 def _guarded[T](
     reporter: IngestReporter,
     operation: str,
@@ -576,23 +716,39 @@ def _guarded[T](
     *,
     detail: str | None = None,
 ) -> T:
-    """Run a read or write of the reconciliation; a refusal ends the reconciliation.
+    """Run a read or write of the reconciliation; a failure ends the reconciliation.
 
-    A lost connection passes through: the reconciliation opens no new one.
+    A refusal and a lost connection both stop it, with one line and a message that
+    names the run; the reconciliation opens no new connection.
     """
     try:
         return call()
-    except PersistenceConnectionError:
+    except PersistenceError as error:
+        raise _reconciliation_stopped(
+            reporter, operation, execution_id, error, detail=detail
+        ) from error
+
+
+def _read_database[T](
+    reporter: IngestReporter,
+    operation: str,
+    execution_id: str,
+    call: Callable[[str], T],
+    *,
+    sequence: int | None = None,
+) -> T:
+    """Read run `execution_id` before the run of this call exists.
+
+    A failed read is reported and raises `_Unreadable`. `PersistenceNotFoundError`
+    is an answer the caller reads, so it passes through.
+    """
+    try:
+        return call(execution_id)
+    except PersistenceNotFoundError:
         raise
     except PersistenceError as error:
-        _report_refusal(reporter, operation, execution_id, error, detail=detail)
-        if execution_id is None:
-            raise _ReconciliationRefused(
-                "the running runs could not be listed"
-            ) from error
-        raise _ReconciliationRefused(
-            f"the reconciliation of run {execution_id} could not be completed"
-        ) from error
+        _report_failure(reporter, operation, execution_id, error, sequence=sequence)
+        raise _Unreadable from error
 
 
 def _reconciliation_event(
@@ -707,10 +863,16 @@ def _reconcile_run(
     for sequence in local_only:
         try:
             repository.record_observation(local[sequence])
-        except PersistenceConnectionError:
-            raise
+        except PersistenceConnectionError as error:
+            raise _reconciliation_stopped(
+                reporter,
+                "record_observation",
+                run.execution_id,
+                error,
+                sequence=sequence,
+            ) from error
         except PersistenceError as error:
-            _report_refusal(
+            _report_failure(
                 reporter,
                 "record_observation",
                 run.execution_id,
@@ -802,6 +964,7 @@ def _run_started_values(events: tuple[AuditEvent, ...]) -> tuple[str | None, int
 def _validated_completed_page(
     repository: ClosableIngestionRepository,
     store: RawEvidenceStore,
+    reporter: IngestReporter,
     scope: IngestScope,
     run_id: str,
     event: AuditEvent,
@@ -821,7 +984,13 @@ def _validated_completed_page(
     ):
         raise ValueError("page-completed has invalid values")
     content_hash = ContentHash(content_hash_text)
-    postgres = repository.read_observation(run_id, sequence)
+    postgres = _read_database(
+        reporter,
+        "read_observation",
+        run_id,
+        lambda run: repository.read_observation(run, sequence),
+        sequence=sequence,
+    )
     local = store.read_observation(run_id, sequence)
     if (
         postgres != local
@@ -835,9 +1004,15 @@ def _validated_completed_page(
 def _resume_plan(
     repository: ClosableIngestionRepository,
     store: RawEvidenceStore,
+    reporter: IngestReporter,
     target_id: str,
 ) -> _ResumePlan:
-    target = repository.read_run(target_id)
+    """Check the chain of `target_id` (State machine H).
+
+    A verdict on the chain raises `ValueError` (or the not-found errors that
+    count as one); a database read that fails raises `_Unreadable`.
+    """
+    target = _read_database(reporter, "read_run", target_id, repository.read_run)
     scope = IngestScope.from_json(target.scope)
     chain_from_target: list[_ChainEntry] = []
     visited: set[str] = set()
@@ -846,8 +1021,10 @@ def _resume_plan(
         if current_id in visited:
             raise ValueError("the resumption chain is cyclic")
         visited.add(current_id)
-        run = repository.read_run(current_id)
-        events = repository.list_audit_events(current_id)
+        run = _read_database(reporter, "read_run", current_id, repository.read_run)
+        events = _read_database(
+            reporter, "list_audit_events", current_id, repository.list_audit_events
+        )
         resumes, first_page = _run_started_values(events)
         if not same_json(dict(run.scope), dict(target.scope)):
             raise ValueError("the resumption chain has another scope")
@@ -891,7 +1068,7 @@ def _resume_plan(
         for event_index, event in enumerate(entry.events):
             if event.event_type == AuditEventType.PAGE_COMPLETED.value:
                 completed_page = _validated_completed_page(
-                    repository, store, scope, entry.run.execution_id, event
+                    repository, store, reporter, scope, entry.run.execution_id, event
                 )
                 valid_completed_in_run.add(completed_page)
                 completed.add(completed_page)
@@ -940,8 +1117,16 @@ def run_ingest(
     """Run one ingest, or resume one, and return how it ended."""
     try:
         repository = open_repository()
-    except PersistenceError:
+    except PersistenceError as error:
+        _report_failure(reporter, "open_repository", None, error)
         return _outcome(IngestEnd.NOT_STARTED, "the repository is unavailable")
+    except KeyboardInterrupt:
+        return _outcome(IngestEnd.INTERRUPTED, "the ingest was interrupted")
+    except Exception as error:  # noqa: BLE001 -- only the class name is reported.
+        return _outcome(
+            IngestEnd.NOT_STARTED,
+            f"the repository could not be opened: {type(error).__name__}",
+        )
     session = _PersistenceSession(repository, open_repository, reporter)
 
     execution_id: str | None = None
@@ -953,20 +1138,30 @@ def run_ingest(
 
     try:
         try:
-            if not session.repository.try_acquire_ingest_exclusion():
-                return _outcome(IngestEnd.NOT_STARTED, "another ingest is running")
+            with _reporting_failure(reporter, "try_acquire_ingest_exclusion", None):
+                acquired = session.repository.try_acquire_ingest_exclusion()
         except PersistenceError:
             return _outcome(IngestEnd.NOT_STARTED, "the ingest exclusion failed")
+        if not acquired:
+            return _outcome(IngestEnd.NOT_STARTED, "another ingest is running")
 
         target_id: str | None = None
         if isinstance(request, ResumeRequest):
             target_id = request.execution_id
             try:
-                target = session.repository.read_run(target_id)
+                target = _read_database(
+                    reporter, "read_run", target_id, session.repository.read_run
+                )
             except PersistenceNotFoundError:
                 return _outcome(
                     IngestEnd.INVALID_TARGET,
                     f"invalid resumption target {target_id}",
+                )
+            except _Unreadable:
+                # Its existence is unknown: not an invalid target.
+                return _outcome(
+                    IngestEnd.NOT_STARTED,
+                    f"the resumption target {target_id} could not be read",
                 )
             if target.status is RunStatus.SUCCEEDED:
                 return _outcome(
@@ -990,7 +1185,14 @@ def run_ingest(
             first_page = scope.first_page
         else:
             try:
-                resume_plan = _resume_plan(session.repository, store, target_id)
+                resume_plan = _resume_plan(
+                    session.repository, store, reporter, target_id
+                )
+            except _Unreadable:
+                return _outcome(
+                    IngestEnd.NOT_STARTED,
+                    f"the resumption chain of {target_id} could not be read",
+                )
             except (
                 ValueError,
                 PersistenceNotFoundError,
@@ -1010,11 +1212,12 @@ def run_ingest(
         started_at = clock.now()
         try:
             execution_id = _draw_execution_id(
-                session.repository, store, execution_ids, started_at
+                session.repository, store, execution_ids, started_at, reporter
             )
-        except (PersistenceError, OSError, EvidenceIntegrityError):
+        except _IdUnchecked as unchecked:
             return _outcome(
-                IngestEnd.NOT_STARTED, "an execution id could not be checked"
+                IngestEnd.NOT_STARTED,
+                f"the execution id {unchecked.execution_id} could not be checked",
             )
         if execution_id is None:
             return _outcome(IngestEnd.NOT_STARTED, "no execution id is available")
@@ -1035,7 +1238,7 @@ def run_ingest(
         except _ConnectionUnconfirmed:
             return _unconfirmed(execution_id)
         except PersistenceError as error:
-            _report_refusal(reporter, "start_run", execution_id, error)
+            _report_failure(reporter, "start_run", execution_id, error)
             return _outcome(IngestEnd.NOT_STARTED, "the database refused the run")
         run_created = True
         reporter.run_started(execution_id)
@@ -1122,7 +1325,7 @@ def run_ingest(
                     except _ConnectionUnconfirmed:
                         return _unconfirmed(execution_id)
                     except PersistenceError as error:
-                        _report_refusal(
+                        _report_failure(
                             reporter,
                             "record_observation",
                             execution_id,
@@ -1168,7 +1371,7 @@ def run_ingest(
             except _ConnectionUnconfirmed:
                 return _unconfirmed(execution_id)
             except PersistenceError as error:
-                _report_refusal(
+                _report_failure(
                     reporter,
                     "record_observation",
                     execution_id,
@@ -1252,6 +1455,7 @@ def run_ingest(
             repository=session.repository,
             clock=clock,
             store=store,
+            reporter=reporter,
             execution_id=execution_id,
             pending_sequence=pending_sequence,
             event_type=AuditEventType.RUN_INTERRUPTED,
@@ -1266,6 +1470,7 @@ def run_ingest(
             repository=session.repository,
             clock=clock,
             store=store,
+            reporter=reporter,
             execution_id=execution_id,
             pending_sequence=pending_sequence,
             event_type=AuditEventType.UNEXPECTED_ERROR,

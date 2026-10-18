@@ -247,17 +247,35 @@ Output and exit codes:
 
 - stdout holds a single result line, `<execution_id> <status>`, when the command
   created a run. The status is `succeeded` or `failed`, or `running` when the
-  command could not confirm that it closed the run (after Ctrl+C, or after a
-  lost database connection it could not recover). When no run was created,
+  command could not confirm that it closed the run. When no run was created,
   stdout is empty.
+- `running` does not claim that PostgreSQL still holds the run as `running`; it
+  means that closing the run was not confirmed. It is printed in these cases:
+  - Ctrl+C or an unexpected error such as `MemoryError`, when the cleanup that
+    closes the run could not finish: a second Ctrl+C, the cleanup could not read
+    the run, or one of its database operations was refused or lost;
+  - a lost database connection that could not be recovered: the second
+    connection could not be opened, the ingest exclusion was held elsewhere or
+    could not be taken again, or the connection was lost a second time,
+    including a lost `start_run` whose outcome is unknown;
+  - a refused `finish_run` that closes a failed run;
+  - a refused repeat of the final `finish_run` (`succeeded`) after a lost
+    connection, when the stored status could not then be read;
+  - any other exception that escaped after the run was announced.
+
+  The next `ingest` closes such a run: it reconciles the run and finishes it as
+  `failed`.
 - stderr carries the progress and the errors, each as a fixed message that never
-  includes a URL, a header, a body or a setting.
+  includes a URL, a header, a body or a setting. It names each database
+  operation that was refused or lost, with the run concerned (and the sequence
+  or the event type when one applies); of the error it shows at most the class
+  name.
 
 | Code | Meaning |
 |---|---|
 | 0 | The run succeeded. |
-| 1 | The run failed, or it did not start (another ingest is running, the database or the migration lock is unavailable, reconciliation failed), or the chain of a resumption is broken. |
-| 2 | Usage error: an invalid or missing option, a missing or invalid environment variable, a migration error other than a busy lock, or an invalid resumption target (a malformed id, an id that names no run, or a run that already `succeeded`). |
+| 1 | The run failed, or it did not start (another ingest is running, the database or the migration lock is unavailable, reconciliation failed), or the chain of a resumption is broken. A resumption target that the database could not read (refused, or the connection lost) is exit 1, not 2. |
+| 2 | Usage error: an invalid or missing option, a missing or invalid environment variable, a proxy or certificate setting of the environment that the source cannot be built from (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), a migration error other than a busy lock, or an invalid resumption target (a malformed id, an id that names no run, or a run that already `succeeded`). |
 | 130 | Interrupted with Ctrl+C. |
 
 If `ingest` refuses to start with `another ingest is running` although none is,
