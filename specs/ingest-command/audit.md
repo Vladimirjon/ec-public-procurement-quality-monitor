@@ -1,293 +1,387 @@
 # Audit: Ingest command (F4)
 
-Auditor: `sdd-auditor` (outcome O10), round 1, 2026-10-18.
-Reviewed: branch `feat/ingest-command` at `7603379` (clean working tree), PR #25
-against `main`. The base is `main` at `6b34374`. Specs: `intent.md` Revision 7,
-`execution-plan.md` Revision 5 and `tasks.md` Revision 2, all approved by the
-human on 2026-10-17. Every changed file under `src/` and `tests/`, plus the four
-documentation files, was read against the state machines P, C, K, T, R, H and I.
-`application/ingest_use_case.py` (written by hand by the human, O5) was audited
-like any other code.
+Auditor: `sdd-auditor` (outcome O10), round 2, 2026-10-18.
+Reviewed: branch `feat/ingest-command` at `91bd69d` (clean working tree), PR #25
+against `main` (base `6b34374`). Specs: `intent.md` Revision 8, `execution-plan.md`
+Revision 6 and `tasks.md` Revision 3, all approved by the human on 2026-10-18.
 
-Evidence labels: `rerun` means the auditor ran it in this round. `reused` means a
-recorded result that is still current (the CI run of PR #25 at `7603379`).
-`experiment` means a throwaway auditor test in the session scratchpad (not in the
-repository), run against the repository's own doubles from
-`tests/unit/ingest/conftest.py`. `unavailable` means it could not be checked.
+The whole feature was audited again, not only the fixes. Every changed line of
+`application/ingest_use_case.py` (rewritten in the rework: 776 lines changed
+since round 1), `interfaces/ingest_command.py` and `interfaces/cli.py` was read
+against the state machines P, C, K, T, R, H and I, the "Refused writes" table and
+the required progress lines. The test changes since round 1
+(`git diff 7603379 -- tests`) were read for weakened assertions, and so were the
+four documentation files.
+
+Evidence labels:
+
+- `rerun`: the auditor ran it in this round.
+- `reused`: a recorded result that is still current (the CI runs of PR #25 at
+  `91bd69d`).
+- `experiment`: a throwaway auditor test or mutant in the session scratchpad
+  (never in the repository), run against a scratch copy of `src/` and `tests/`
+  with the repository's own doubles from `tests/unit/ingest/conftest.py`.
+- `unavailable`: it could not be checked.
 
 ## Final verdict
 
 REJECTED
 
-**Summary**: The feature is broad and mostly correct: 2006 tests pass, CI is
-green, and the write order, idempotency, reconciliation, chain validation, P-2,
-the exit-code table and the AC20 compatibility checks hold. But two reachable
-interruption paths break AC7 and AC15, the guarantees of State machine K:
+**Summary**: The rework closes the three blocking findings of round 1 and every
+other round-1 finding except the stale `tasks.md` lines. The fixes are real:
+each one is pinned by tests that fail on the round-1 code (161 of the 738 unit
+ingest tests fail there) and by an auditor mutant that the suite kills (12 of
+12). 2165 tests pass locally and in CI, and every focused row of § Validation
+passes.
 
-- a Ctrl+C while `record_observation` runs closes the run `failed` with the
-  observation only in the local store (F-01);
-- a Ctrl+C or `MemoryError` raised inside `store` before publication lets
-  `EvidenceNotFoundError` escape `run_ingest`. The run stays `running` with no
-  audit event, the exit code is 1 instead of 130, and stdout is empty although a
-  run was created (F-02).
-
-A malformed proxy or certificate setting in the environment is also reported as
-an unexpected error with exit 1, after the migrations ran. This breaks the
-binding constraint "report as configuration" and AC14 (F-03). As `tasks.md`
-§ Gates says, this goes back to the architect: F-03 also needs a decision on
-the plan's invocation order.
+One clause of an acceptance criterion is still unmet. AC15 requires "one line
+for each database write refused or lost, naming the operation and the
+identity". The plan's required progress lists State machine K among the paths
+that must report it. The interruption cleanup (`_cleanup_after_exception`)
+swallows a refused or lost `record_observation`, `append_audit_event` or
+`finish_run` without any progress line (F-13). The fix is small, but an unmet
+AC blocks approval at any severity. A second gap comes from the specs: AC15 and
+the plan's required progress 3 disagree on a write lost during reconciliation.
+The architect must decide that one (F-14).
 
 **Critical Issues** (must fix before merge):
-- F-01 (CRITICAL, AC7, State machine K): `store_was_called` is cleared before `record_observation` returns, so the cleanup skips recording an observation that only the local store holds.
-- F-02 (CRITICAL, AC7, AC15, State machine K, plan § `run_ingest`): the cleanup's read-back catches only `PersistenceError`, so a missing or unreadable observation makes an exception escape `run_ingest`.
-- F-03 (HIGH, binding constraint intent § Constraints "ADR 0006 and source-access", AC14): a malformed `HTTPS_PROXY` or `SSL_CERT_FILE` gives exit 1, `unexpected error: <class>`, after `apply_migrations`.
+- F-13 (MEDIUM, blocking: an AC15 clause and plan § Public names "Required progress" 2 and 3): the K cleanup writes no progress line when one of its writes is refused or lost. The run is left `running` and stderr says only `the ingest was interrupted` or `unexpected error: <class>`.
+- F-14 (MEDIUM, blocking until the architect decides; spec conflict): AC15 asks for a line for every lost write, but the plan's required progress 3 asks only "from `start_run` on". A write lost during reconciliation prints only `PersistenceConnectionError`, with no operation and no run.
 
 **Warnings** (should fix, not blocking alone):
-- F-04 (MEDIUM, AC15): an exception that escapes `run_ingest` after a run was created prints no `<id> <status>` line.
-- F-05 (MEDIUM, AC11): a Ctrl+C that lands after `finish_run` committed makes the cleanup append `run-interrupted` to a finished run.
-- F-06 (MEDIUM, AC24, State machine H step 2): an unreadable local record, or an `OSError` during the chain check, refuses the resumption with the class name, not a fixed message that names the execution id.
-- F-07 (MEDIUM, AC6 (c), AC15, Q9): no progress line is ever written, stderr never names the refused operation, and two tests are vacuous.
+- F-12 (LOW, carried from round 1, partially resolved): `tasks.md` § Status and § Checkpoint still say the specs are "pending the human's approval". O8 is still `[ ]`. O10 rework step 3 says the human corrects `run_ingest`, while § Working state says the executor did it. No red evidence is recorded for the round-2 tests.
+- F-15 (LOW, spec gap): a refused or lost read during the target check, the chain check, the reconciliation or the id draw ends `NOT_STARTED`, and its stderr message is only an exception's class name.
 
 **Recommendations** (nice to have):
-- F-08 to F-12 (LOW): dead helper `_finish`; a stale "33 characters" docstring; spec gaps in reconciliation and the non-connection repository errors; untested branches; stale `tasks.md` state lines.
+- F-16 (LOW): edge cases of the "returns an outcome" and "exactly one stdout line" contracts. A `KeyboardInterrupt` or another non-persistence exception from `open_repository()` escapes `run_ingest`. A `KeyboardInterrupt` during `source.close()` adds a second stdout line.
+- F-17 (LOW): README § Ingesting gives an incomplete list of the cases that print `running`, and its exit-2 row does not name the proxy and certificate settings.
+- Untested branches, listed under § Test coverage. Auditor experiments show that they behave as the plan says.
 
-Next role: the architect, who decides whether any spec change is needed (F-03
-order of invocation; F-05 and F-10 spec gaps). Then the test-writer writes red
-tests for F-01 to F-07, the human corrects `run_ingest` (O5 module), and the
-executor corrects `ingest_command.py`. Then a new audit round.
+Next role: the architect, to decide F-14 (align AC15 with the plan's required
+progress 3, or the reverse) and F-15 (the message of a refused read in T, H, R
+and I). F-13 needs no spec change. Then the test-writer writes red tests for
+F-13 (and F-14 or F-15 if the architect changes them), the use case is
+corrected, and `tasks.md` is brought up to date (F-12). Then audit round 3.
+
+## Round 1 summary (2026-10-18, `7603379`, REJECTED)
+
+Round 1 found 12 findings. Three of them blocked approval:
+
+- F-01 and F-02 (CRITICAL, AC7 and AC15, State machine K): a Ctrl+C during
+  `record_observation` lost the observation, and a Ctrl+C or `MemoryError`
+  inside `store` let `EvidenceNotFoundError` escape.
+- F-03 (HIGH, binding constraint and AC14): a malformed proxy or certificate
+  setting gave exit 1 after the migrations.
+
+The others were F-04 to F-07 (MEDIUM) and F-08 to F-12 (LOW). The human
+accepted the rejection. The architect wrote intent Revision 8, plan Revision 6
+and tasks Revision 3, and the human approved them on 2026-10-18. The
+test-writer added red tests (`5610e02`). The use case was then fixed
+(`eb3a317`), and the CLI composition and a docstring were fixed (`91bd69d`).
+The full round-1 report is in git history (`7069f4c`).
+
+## Resolution of the round-1 findings
+
+Each closure condition was checked against the code and against at least one
+test that fails without the fix. For each finding, a mutant reverts the fix in
+a scratch copy and the focused tests must fail.
+
+| Id | Round-1 severity | Status | Evidence (code; tests; mutant) |
+|---|---|---|---|
+| F-01 | CRITICAL | Resolved | `ingest_use_case.py:1099` marks the sequence pending before `store`. It is cleared only once `record_observation` returns (1187) or the path has concluded (1132, 1145, 1178). The K cleanup reads the observation back and records it (548-554). `interrupt_during_record`: 4 passed. They cover before and after delegating and the repeat under C; the journal shows `record_observation:2` before `finish_run:failed`. Mutant M1 (clear pending after `store`) -> 3 failed (experiment) |
+| F-02 | CRITICAL | Resolved | `_cleanup_after_exception` (525-568) absorbs `EvidenceNotFoundError`, `EvidenceIntegrityError` and `OSError` from its read-back (551-552) and still appends and closes. Any other exception stops the cleanup with `running` (561-567), and nothing escapes. `cleanup_read_back`: 10 passed (`KeyboardInterrupt` and `MemoryError`; nothing published, or published but unreadable). `exit_code_cleanup_read_back`: 4 passed (exit 130 with `<A> failed`; exit 1 with `<A> failed` and `MemoryError` only). Mutant M2 (do not absorb) -> 10 failed. Mutant M10 (no cleanup for a non-interrupt) -> 5 failed (experiment) |
+| F-03 | HIGH | Resolved | `ingest_command.py:271-277` builds the source at invocation step 2, inside the `httpcore` guard, before `_migrate` (279). Any `Exception` except `MemoryError` gives exit 2, with the fixed message naming the six variables plus the class name (208-212, 276). The source is closed in a `finally` (293-296). `source_configuration or order_of_invocation`: 30 passed. They use the real `default_wiring().make_source` with `HTTPS_PROXY=http://[zz]:1`, an `ftp://` proxy, a `socks5://` `ALL_PROXY` and a missing `SSL_CERT_FILE`: exit 2, `rig.calls == ["make_source"]`, nothing written, and no value or path in stderr. The ten order tests were migrated to `["make_source", "migrate"]` with the source closed once, and no assertion was weakened (`git diff 7603379 -- tests` read). Mutant M8 (source after migrations) -> 28 failed. Mutant M12 (message without the variable names) -> 16 failed (experiment) |
+| F-04 | MEDIUM | Resolved | `ingest_command.py:338-345`: `_print_running` runs on both escaping branches, so stdout is `<id> running` once `run_started` was called. `output_escaping_exception`: 12 passed (a synthetic defect, a project error and `KeyboardInterrupt`, after and before the announcement). Mutant M9 -> 4 failed (experiment) |
+| F-05 | MEDIUM | Resolved | `ingest_use_case.py:543-547`: the cleanup calls `read_run` first. A finished run gets nothing more and keeps its status. A failing `read_run` writes nothing and gives `running` (561-567). `interrupt_after_finish`: 11 passed. `exit_code_interrupt_after_finish`: 6 passed (exit 130 with `<A> succeeded`; 130 with `<A> failed`; 1 with `<A> succeeded` for `MemoryError`). Mutant M3 (no guard) -> 9 failed (experiment) |
+| F-06 | MEDIUM | Resolved | `ingest_use_case.py:992-1004`: the chain check catches `EvidenceIntegrityError` and `OSError` as well, and the message is `invalid resumption chain <target>`. `chain_unreadable_record`: 12 passed (corrupt, missing and `OSError`; the message names `<A>` and is not a class name; stderr names `<A>`). Mutant M4 -> 6 failed, all on the two errors it removes (experiment). See F-15 for refusals that are not `PersistenceNotFoundError` |
+| F-07 | MEDIUM | Resolved for P, C and R; K still silent (F-13) | Page lines `_report_page` (241-245, called at 1115 and 1160). `page N no response` (1084). `page N sequence S not stored` (1142-1144). Refusals `_report_refusal` (248-264) in P, the "Refused writes" table and R. Losses `_report_loss` (126-129). The two once-vacuous tests now assert non-empty messages first (`test_ingest_use_case.py:1006-1012`, `1165`). `progress_line or output_progress or progress_text or text_never_reaches_the_reporter`: 24 passed. Mutant M5 (no page line) -> 6 failed (experiment). The K cleanup writes none of the required lines: F-13 |
+| F-08 | LOW | Resolved | `_finish` removed. Coverage shows no uncalled helper in the module |
+| F-09 | LOW | Resolved | `ingestion_catalogue.py:155` says "The id is 32 characters" |
+| F-10 | LOW | Resolved | `ingest_use_case.py:666-697`: the listing `OSError` -> `local-listing-failed`. `read_observation` raising `EvidenceNotFoundError` or `OSError` -> `local-observation-unreadable`. `read_content` raising `OSError` -> `object-integrity`. `reconcile_os_error`: 4 passed. Mutant M6 -> 1 failed (experiment) |
+| F-11 | LOW | Resolved | Start refused -> `NOT_STARTED` without `run_started` (1037-1039). A normal-path append refused -> one `storage-failed` (`postgresql`) (`_append_on_normal_path` 393-425). A final finish refused -> `storage-failed`, then `finish_run(FAILED)` with a new reading (448-451). A failure-path append refused -> no further event (`_close_failed` 337-349). `finish_run(FAILED)` refused -> `running` (352-365). In R: refusal -> `NOT_STARTED` naming `X` (`_guarded` 583-595), and a refused record -> `postgresql-observation-conflict` (712-722). `database_refusal`: 57 passed, never `unexpected-error`, at most one `storage-failed` (`postgresql`). Mutant M7 -> 9 failed (experiment) |
+| F-12 | LOW | Open (partially resolved) | § Working state was updated, but other lines are stale; see F-12 under § Findings |
+
+Red evidence for the rework tests: `tasks.md` records none (F-12). The auditor
+ran it retroactively. The current tests, run against the round-1 versions of
+`ingest_use_case.py` and `ingest_command.py` (`git show 7603379:...` in a
+scratch copy), give `161 failed, 577 passed` for `tests/unit/ingest`. The
+round-2 tokens alone give `141 failed, 23 passed`. Every failure is an
+assertion on behavior: no import, collection, database or socket error
+(experiment).
 
 ## AC results
 
 | AC | Status | Evidence |
 |---|---|---|
-| AC1 | PASS | `-k success` 9 passed; `-k e2e_success` 2 passed; journal order store, record, event, finish asserted (`test_ingest_use_case.py:357`) (rerun) |
-| AC2 | PASS | `-k repeat` 4 passed; `-k e2e_repeat` 2 passed (rerun) |
-| AC3 | PASS | `-k last_page` 41, `-k last_page_p3` 6, `-k e2e_last_page` 2 passed; `ingest_use_case.py:1034` appends the event when `p >= pages` with no scope condition (P-3) (rerun) |
-| AC4 | PASS | `-k failure_with_response` 16, `-k e2e_failure` 5 passed (rerun) |
+| AC1 | PASS | `-k success` 9; `-k e2e_success` 2 passed (rerun) |
+| AC2 | PASS | `-k repeat` 5; `-k e2e_repeat` 2 passed (rerun) |
+| AC3 | PASS | `-k last_page` 41, `-k last_page_p3` 6, `-k e2e_last_page` 2 passed. `ingest_use_case.py:1230` appends the event when `p >= pages`, with no scope condition (rerun) |
+| AC4 | PASS | `-k failure_with_response` 16; `-k e2e_failure` 5 passed (rerun) |
 | AC5 | PASS | `-k failure_without_response` 6 passed (rerun) |
-| AC6 | PARTIAL | (a), (b) and (d) pass: `-k storage` 10 passed (rerun); (a) on Linux passed in CI (reused, run 39098935636). (c) records `storage-failed` (`postgresql`), but stderr never names the operation (F-07) |
-| AC7 | FAIL | The listed seams pass (`-k "interrupt or exit_code"` 84 passed, rerun). Experiments E1/E3b: Ctrl+C inside `record_observation(2)` -> run `failed`, PostgreSQL sequences `(1,)`, local `(1, 2)` (F-01). E2/E3: Ctrl+C inside `store(2)` before publication -> `EvidenceNotFoundError` escapes, run `running`, no `run-interrupted`, exit 1, stdout empty (F-02) (experiment) |
-| AC8 | PASS | `-k connection_loss` 38, `-k connection_loss_final_finish` 12 (unit); `test_ingest_connection_loss.py` 7, `-k final_finish` 4 (integration) passed (rerun) |
-| AC9 | PASS | `-k resume` 24, `-k e2e_resume` 5 passed (rerun) |
-| AC10 | PASS | `-k reconcile` 21, `-k e2e_reconcile` 6 passed. Spec gap noted in F-10 (rerun; experiment E7) |
-| AC11 | PARTIAL | `-k closed_run` 3 passed (rerun). Experiment E5: `KeyboardInterrupt` after `finish_run(succeeded)` committed -> `run-interrupted` appended to the `succeeded` run (F-05) |
-| AC12 | PASS | `-k "execution_id or identity"` 58 passed (rerun) |
-| AC13 | PASS | `-k "scope or catalogue"` 111 passed; `assert_follows_catalogue` checks every detail (rerun) |
-| AC14 | PARTIAL | `-k "usage or environment"` 66 passed (rerun). Experiment E10: `HTTPS_PROXY=http://[zz]:1`, an `ftp://` proxy, or a missing `SSL_CERT_FILE` -> exit 1, `unexpected error: InvalidURL` / `ValueError` / `FileNotFoundError`, after `migrate` was called (F-03) |
-| AC15 | PARTIAL | `-k "output or logger"` 43 passed (rerun). A created run with an escaping exception prints no stdout line (E3, F-02, F-04); no progress lines (F-07) |
-| AC16 | PASS | `-k migrations` 10 (integration CLI), `test_persistence_error_hierarchy.py` 3, lock and runner tests 23 passed; the PS-4 edit is additions only (`3 0`) (rerun) |
-| AC17 | PASS | `-k no_retry` 6 passed; one request per page in the loop at `ingest_use_case.py:853-863` (rerun) |
-| AC18 | PASS | `-k layer` 16 passed; grep of `application/` for SQL keywords, `advisory`, `pg_`, `objects/`, `observations/`, `.json` -> no match; `uv.lock` no diff; `pyproject.toml` only the two F-1 keys and comment; `mypy` 52 files clean (rerun) |
-| AC19 | PASS | `uv run --env-file .env pytest tests/unit/ingest tests/integration/ingest -q` 663 passed; real `data/raw/` has 0 files before and after; 0 `ecpq_test_` databases left (rerun) |
-| AC20 | PASS | 2006 passed (1307 baseline + 699); the AC20 `git diff main --stat` list is empty; `git ls-files .env` empty; `git diff main --check` clean; ruff, format, mypy, doctor `31 ok, 0 warned, 0 failed`; `--version` -> `ec-procurement-quality 0.1.0` (rerun) |
-| AC21 | PASS | README `## Ingesting`, AGENTS.md § Current commands, architecture § Open questions and § Infrastructure boundary, CHANGELOG Added, Changed and Known limitations; no document claims a live run. The "stderr carries the progress" wording is folded into F-07 (rerun, inspection) |
+| AC6 | PASS | `-k storage` 16 passed: (a) to (d). (a) and (d) on Linux in CI (reused, run 39147642720). (c): stderr names `record_observation`, the run and the sequence, with at most the class name (`output_progress` and `progress_line` refusal tests). (e): `-k database_refusal` 57 passed (rerun) |
+| AC7 | PASS | `-k "interrupt or exit_code"` 116; `-k "interrupt_during_record or cleanup_read_back"` 14; `-k interrupt_after_finish` 11; `-k exit_code_cleanup_read_back` 4; `-k exit_code_interrupt_after_finish` 6 passed (rerun). Mutants M1, M2, M3 and M10 killed (experiment) |
+| AC8 | PASS | `-k connection_loss` 39 (unit); `test_ingest_connection_loss.py` 7 (integration). `-k connection_loss_final_finish` 12 (unit); `-k final_finish` 4 (integration) passed (rerun) |
+| AC9 | PASS | `-k resume` 24; `-k e2e_resume` 5 passed (rerun) |
+| AC10 | PASS | `-k reconcile` 31; `-k e2e_reconcile` 6; `-k reconcile_os_error` 4 passed (rerun) |
+| AC11 | PASS | `-k closed_run` 3 and `-k interrupt_after_finish` 11 passed (rerun) |
+| AC12 | PASS | `-k "execution_id or identity"` 67 passed (rerun) |
+| AC13 | PASS | `-k "scope or catalogue"` 111 passed. `assert_follows_catalogue` also runs in the `database_refusal` and `reconcile_os_error` tests (rerun) |
+| AC14 | PASS | `-k "usage or environment"` 66; `-k "source_configuration or order_of_invocation"` 30 passed (rerun). Mutants M8 and M12 killed (experiment) |
+| AC15 | PARTIAL | `-k "output or logger"` 67; `-k output_escaping_exception` 12; the progress group 24 passed (rerun). Unmet: no line for a write refused or lost in the K cleanup (F-13, experiments E1 to E4b), and none for a write lost during reconciliation (F-14, experiment E8) |
+| AC16 | PASS | `-k migrations` 11 (integration CLI, `["make_source", "migrate"]`); `test_persistence_error_hierarchy.py` 3; lock and runner 23 passed. `git diff main --numstat -- tests/integration/test_postgres_migrations.py` -> `3 0` (rerun) |
+| AC17 | PASS | `-k no_retry` 6 passed. One `search_page` per loop iteration (`ingest_use_case.py:1065-1075`) (rerun) |
+| AC18 | PASS | `-k layer` 16 passed. The AC18 grep of `application/` finds nothing. `uv.lock`: no diff. `pyproject.toml`: only the two F-1 keys and their comment. `mypy`: 52 files clean (rerun) |
+| AC19 | PASS | `uv run --env-file .env pytest tests/unit/ingest tests/integration/ingest -q` -> 822 passed. The real `data/` holds 0 files before and after. 0 `ecpq_test_` databases (rerun) |
+| AC20 | PASS | 2165 passed (1307 baseline + 858 F4). The AC20 `git diff main --stat` list is empty. `git ls-files .env` is empty. `git diff main --check` and `git diff --check` are clean. ruff, format, mypy and doctor (`31 ok, 0 warned, 0 failed`) pass. `--version` -> `ec-procurement-quality 0.1.0` (rerun) |
+| AC21 | PASS | Inspection: README § Ingesting, AGENTS.md § Current commands, architecture § Infrastructure boundary and § Open questions, and CHANGELOG Added, Changed and Known limitations. No document claims that a live run happened. Nicety F-17 (rerun, inspection) |
 | AC22 | PASS | `test_local_disk_raw_evidence_store_listing.py` 25 passed (rerun) |
 | AC23 | PASS | `test_postgres_runs_and_exclusion.py` 24 passed (rerun) |
-| AC24 | PARTIAL | `-k chain` 117, `-k chain_last_page` 33, `-k e2e_chain_last_page` 3 passed (rerun). Experiment E6: corrupt local record of a `page-completed` -> `NOT_STARTED` with message `EvidenceIntegrityError`, not naming the execution id (F-06) |
-| AC25 | PASS | `-k root` 2 (integration), `-k "paths or environment"` 34 (unit) passed (rerun) |
+| AC24 | PASS | `-k chain` 129, `-k chain_last_page` 33, `-k e2e_chain_last_page` 3 and `-k chain_unreadable_record` 12 passed (rerun). Spec gap F-15 for refused reads |
+| AC25 | PASS | `-k "paths or environment"` 34 (unit); `-k root` 2 (integration) passed (rerun) |
 
 Plan decisions and implementation findings:
 
 | Item | Status | Evidence |
 |---|---|---|
-| P-1 | PASS | `postgres_migrations.py:310` raises `MigrationLockError` at the busy-lock branch only; `ingest_command.py:231-236` maps it to 1, any other `MigrationError` to 2 (rerun tests) |
-| P-2 | PASS | `ingest_use_case.py:253-276` repeats `finish_run(SUCCEEDED)` with the same `finished_at` and appends no `storage-failed`; unit and integration `final_finish` rows pass |
-| P-3 | PASS | `ingest_use_case.py:1034-1067` |
-| P-4 | PASS | `ingest_use_case.py:673-689, 726-728`; `pages_left_to_request` in `ingestion_catalogue.py:172-185` |
-| P-5 | PASS | `ingest_command.py:316-320` prints `<id> running` for an escaping `KeyboardInterrupt` |
-| F-1 | PASS | `git diff main -- pyproject.toml`: only `explicit_package_bases = true`, `mypy_path = "src"` and three comment lines; no dependency line; `uv.lock` unchanged |
-| F-2 | PARTIAL | Specs corrected; the code docstring at `ingestion_catalogue.py:155` still says "33 characters" (F-09) |
-| F-3 | PASS | `ingest_use_case.py:901-907` catches `EvidenceNotFoundError`, `EvidenceIntegrityError` and `OSError` from the read-back; AC6 (d) tests pass for both errors; `KeyboardInterrupt` keeps K (`test_ingest_use_case.py:924`) |
+| P-1 | PASS | `ingest_command.py:246-251`: `MigrationLockError` -> 1, any other `MigrationError` -> 2. `postgres_migrations.py` unchanged since round 1 (rerun tests) |
+| P-2 | PASS | `ingest_use_case.py:287-312, 428-463`: the exact repeat of `finish_run(SUCCEEDED)` with the same `finished_at`, and no `storage-failed`. A refused repeat gives `RUN_FAILED` with the stored status. Unit 12 and integration 4 passed. Mutant M11 killed (experiment) |
+| P-3 | PASS | `ingest_use_case.py:1230-1245` |
+| P-4 | PASS | `ingest_use_case.py:872-927` with `pages_left_to_request` |
+| P-5 | PASS | `_unconfirmed` (315-321), K's `running` (561-567), `_print_running` (`ingest_command.py:231-234`) |
+| F-1 | PASS | `git diff main -- pyproject.toml`: `explicit_package_bases = true`, `mypy_path = "src"` and three comment lines, additions only |
+| F-2 | PASS | Docstring corrected (F-09) |
+| F-3 | PASS | `ingest_use_case.py:1107-1113` catches the three read-back errors. AC6 (d) tests pass |
 
 ## Binding-constraint compliance
 
 | Constraint | Status | Evidence |
 |---|---|---|
-| Layer placement (plan § Layer placement, ADR 0001, AC18) | PASS | `application` modules import only the standard library, `domain` and `application`; `interfaces` imports no `httpx` or `psycopg` (layer tests 16 passed); no new file directly under `src/ec_procurement_quality/` |
-| Public names and signatures | PASS | Every pinned name exists with the pinned signature (`ingestion_catalogue.py`, `ingest_ports.py`, `ingest_use_case.py:62-98, 731-740`, `ingest_command.py:77-106, 278-285`, the two port extensions, `INGEST_EXCLUSION_KEY`, `SystemClock`, `RandomExecutionIdSource`). Extra public helper `request_from_arguments` (recorded by O6c, compliant) |
-| CLI arguments and configuration | PASS with F-03 | `cli.py:23-60`, `ingest_command.py:109-170`; the subparser is not required (CLI-2 kept) |
-| Order of an invocation | PARTIAL | Steps 1 to 7 hold. A source construction failure (environment configuration) happens at step 4, after migrations, and is not reported as configuration (F-03) |
-| Exit codes | PARTIAL | Table holds for every outcome. An escaping read-back error after Ctrl+C gives 1, not 130 (F-02) |
-| Output (AC15) | PARTIAL | F-04 (no line for a created run when an exception escapes), F-07 (no progress) |
-| Audit details (closed catalogue) | PASS | `assert_follows_catalogue` in every main path; experiment E8 shows `unexpected-error` with a project error's class name for a refused append (spec silent, F-11) |
-| State machine P | PASS | Write order, no-response path, read-back rule (F-3), decide step, P-3 |
-| State machine C | PASS | `_PersistenceSession` (`ingest_use_case.py:107-185`): one new connection, the exclusion taken again, safe repeats only, the append re-checked with `list_audit_events` (type, `same_json` detail, instant), no third connection; no reconnect before `start_run` |
-| State machine K | FAIL | F-01, F-02; F-05 is a race K does not address |
-| State machine T | PASS | `ingest_use_case.py:762-775`, before reconciliation, writes nothing |
-| State machine R | PASS with F-10 | `ingest_use_case.py:433-559`: the problem order, the gap checked after verification, local-only records, stop at the first problem |
-| State machine H | PARTIAL | Steps 1 to 5 are implemented, including the coverage and sentinel rules (`ingest_use_case.py:636-728`). Refusals from `EvidenceIntegrityError` or `OSError` lose the fixed message (F-06) |
-| State machine I | PASS | `ingest_use_case.py:350-370`: three draws, both ports checked, under the exclusion |
-| F1 port extension | PASS | `local_disk_raw_evidence_store.py:156-184` is read-only, validates the id first, raises `EvidenceIntegrityError` for a bad entry, returns `()` when the directory is absent |
-| F3 port extension | PASS | `postgres_ingestion_repository.py:353-393`: try-only session lock, the flag stops a stacked acquisition, cleared on loss; no key or SQL in messages |
-| No schema change | PASS | `migrations/` holds `0001_initial_schema.sql` only, no diff |
-| No dependency (AGENTS.md, PT-11) | PASS | `uv.lock` no diff; `pyproject.toml` F-1 keys only |
-| Intent § Constraints, ADR 0006 and source-access: "report a malformed proxy or certificate setting in the environment as configuration" | FAIL | F-03 |
-| Intent § Constraints, R-6 and N3: no chain or `__context__` printed | PASS | Only `str()` of project errors and class names are printed (`ingest_command.py:232-239, 316-323`) |
-| Intent § Constraints, R-7: `httpcore` above `DEBUG` | PASS | `ingest_command.py:173-187`; `-k logger` passed |
-| Intent § Constraints, SA-13 and PS-13: one source, at most two repositories, all closed | PASS | `ingest_command.py:259-275` closes the source in a `finally`; `ingest_use_case.py:1114-1115` closes the current repository; `_reconnect` closes the lost one |
-| Tests: guards, no real `data/raw/`, throwaway databases | PASS | Guard proof tests pass; `data/raw/` stays empty; 0 leftover databases |
-| `.env` never read by code or committed | PASS | `git ls-files .env` empty; no `.env` read under `src/` (`_settings_from` reads the mapping only) |
+| Layer placement (ADR 0001, AC18) | PASS | Layer tests 16 passed. `application` imports only the standard library, `domain` and `application`. `interfaces` imports no `httpx` or `psycopg` |
+| Public names and signatures | PASS | The pinned names and signatures are unchanged since round 1. `run_ingest` keeps the pinned keyword signature |
+| CLI arguments and configuration | PASS | `cli.py:25-60`, `ingest_command.py:109-170`. The subparser is not required (CLI-2 kept, `test_cli.py` 2 passed) |
+| Order of an invocation (Revision 6) | PASS | Arguments and environment (316-321), absolute paths (324-326), `httpcore` guard (327, step 2.1), `make_source` (272, step 2.2), migrations (279), store and `run_ingest` (282-291), source closed in a `finally` (293-296). `order_of_invocation` tests pass |
+| Exit codes | PASS | `_EXIT_CODES` (214-220) and the step 2 and step 3 mappings. Every row has a test |
+| Output (AC15) | PARTIAL | stdout rule including F-04: PASS. Required progress 1: PASS. Required progress 2 and 3: PASS in P, C and R, FAIL in K (F-13); reconciliation losses: F-14 |
+| Audit details (closed catalogue) | PASS | `assert_follows_catalogue` in the main, refusal and reconciliation paths |
+| State machine P and "Refused writes" | PASS | Write order, pending observation, read-back rule, decide step, P-3, and every row of the table (F-11 above) |
+| State machine C | PASS | `_PersistenceSession` (110-208): one new connection, the exclusion taken again, safe repeats only, the append re-checked with `list_audit_events` (same type, `same_json` detail and instant), no third connection (134-135), and no reconnect before `start_run` |
+| State machine K | PASS for behavior; FAIL for its progress lines (F-13) | `read_run` guard, pending read-back, the three absorbed errors, stop with `running` on any other exception, no new connection, a second `KeyboardInterrupt` propagates |
+| State machine T | PASS | `ingest_use_case.py:961-975`, before reconciliation, writes nothing |
+| State machine R | PASS | `ingest_use_case.py:654-758`: problem order, gap after verification, local-only records, stop at the first problem, F-10 mapping, F-11 refusals |
+| State machine H | PASS | `_resume_plan` (835-927): link, cycle, `run-started` shape, scope, middle-run status, step 2 reads including F-06, `last-page-reached` validity and coverage, P-4 sentinel. Message gap F-15 (spec gap, not a breach of the listed failures) |
+| State machine I | PASS | `_draw_execution_id` (502-522): three draws, both ports checked, under the exclusion |
+| F1 and F3 port extensions | PASS | Unchanged since round 1; listing 25 and runs and exclusion 24 passed |
+| No schema change | PASS | `migrations/` holds `0001_initial_schema.sql` only, with no diff |
+| No dependency (AGENTS.md, PT-11) | PASS | `uv.lock`: no diff. `pyproject.toml`: F-1 keys only |
+| ADR 0006: "report a malformed proxy or certificate setting in the environment as configuration (exit 2, before the migrations)" | PASS | F-03 resolved |
+| R-6 and N3: no exception chain or `__context__` printed | PASS | Only fixed texts, `str()` of migration errors and class names are printed |
+| R-7: `httpcore` above `DEBUG` | PASS | Guarded before the source is built (`order_of_invocation` httpcore test) |
+| SA-13 and PS-13: one source, at most two repositories, all closed | PASS | Source closed once in a `finally`. `run_ingest` closes the current repository in its `finally` (1276-1277), and `_reconnect` closes the lost one. `PostgresIngestionRepository.close` is idempotent (`postgres_ingestion_repository.py:657-661`) |
+| Tests: guards, no real `data/raw/`, throwaway databases | PASS | Guard proof tests pass. The real `data/` is empty. 0 leftover databases |
+| `.env` never read by code or committed | PASS | `git ls-files .env` is empty. No code reads `.env` |
 
 ## Test coverage
 
 | AC | Tests (file) | Status |
 |---|---|---|
-| AC1 | `success` in `tests/unit/ingest/test_ingest_use_case.py`; `e2e_success` in `tests/integration/ingest/test_ingest_end_to_end.py`; `exit_code_0` in `tests/unit/ingest/test_ingest_command.py` | PASS |
+| AC1 | `success` in `tests/unit/ingest/test_ingest_use_case.py`; `e2e_success` in `tests/integration/ingest/test_ingest_end_to_end.py` | PASS |
 | AC2 | `repeat` (unit); `e2e_repeat` (integration) | PASS |
 | AC3 | `last_page`, `last_page_p3` (unit); `e2e_last_page` (integration) | PASS |
 | AC4 | `failure_with_response` (unit); `e2e_failure` (integration) | PASS |
-| AC5 | `failure_without_response` (unit); `e2e_failure_without_a_response...` (integration) | PASS |
-| AC6 | `storage` (unit, 10 cases) | PASS for (a), (b), (d); the (c) stderr part has only a vacuous test (F-07) |
-| AC7 | `interrupt` (unit), `exit_code_130` (unit command) | PASS as written; MISSING: a `KeyboardInterrupt` inside `record_observation`, and one inside `store` before publication (F-01, F-02) |
-| AC8 | `connection_loss`, `connection_loss_final_finish` (unit); `test_ingest_connection_loss.py` (integration) | PASS |
+| AC5 | `failure_without_response` (unit) | PASS |
+| AC6 | `storage` (unit, 16); `database_refusal` (unit, 57) for (e); `output_progress` refusal (unit command) for the (c) stderr | PASS |
+| AC7 | `interrupt`, `interrupt_during_record`, `cleanup_read_back`, `interrupt_after_finish` (unit); `exit_code_130`, `exit_code_cleanup_read_back`, `exit_code_interrupt_after_finish` in `tests/unit/ingest/test_ingest_command.py` | PASS |
+| AC8 | `connection_loss`, `connection_loss_final_finish` (unit); `tests/integration/ingest/test_ingest_connection_loss.py` | PASS |
 | AC9 | `resume` (unit); `e2e_resume` (integration) | PASS |
-| AC10 | `reconcile` (unit); `e2e_reconcile` (integration) | PASS |
-| AC11 | `closed_run` (unit) | PASS as written; MISSING: the finished-before-interrupt race (F-05) |
-| AC12 | `execution_id` (`test_ingestion_catalogue.py`), `identity` (unit) | PASS |
-| AC13 | `scope`, `catalogue`, plus `assert_follows_catalogue` in the use-case tests | PASS |
-| AC14 | `usage`, `environment` (unit command); `cli_invalid_*` (integration) | PASS as written; MISSING: a malformed proxy or certificate setting (F-03) |
-| AC15 | `output`, `logger` (unit command) | PASS as written; MISSING: a created run plus an escaping exception (F-04) |
-| AC16 | `migrations` (`test_ingest_cli.py`); `test_persistence_error_hierarchy.py`; `test_postgres_migration_lock_error.py`; edited PS-4 test | PASS |
+| AC10 | `reconcile`, `reconcile_os_error` (unit); `e2e_reconcile` (integration) | PASS |
+| AC11 | `closed_run`, `interrupt_after_finish` (unit) | PASS |
+| AC12 | `execution_id` (`tests/unit/ingest/test_ingestion_catalogue.py`), `identity` (unit) | PASS |
+| AC13 | `scope`, `catalogue`, and `assert_follows_catalogue` across the use-case tests | PASS |
+| AC14 | `usage`, `environment`, `source_configuration`, `order_of_invocation` (unit command); `cli_invalid_*` (integration) | PASS |
+| AC15 | `output`, `logger`, `output_escaping_exception`, `output_progress` (unit command); `progress_line` (unit) | PARTIAL: MISSING a test for the K cleanup's refused or lost writes (F-13). `test_unexpected_cleanup_that_meets_a_database_error_leaves_the_run_running` (`test_ingest_use_case.py:1169`) drives that path but checks no progress line |
+| AC16 | `migrations` (`tests/integration/ingest/test_ingest_cli.py`); `tests/unit/test_persistence_error_hierarchy.py`; `tests/integration/test_postgres_migration_lock_error.py`; the edited PS-4 test | PASS |
 | AC17 | `no_retry` (unit) | PASS |
-| AC18 | `tests/unit/ingest/test_ingest_layers.py` (`layer`); `mypy`; source closed once (`test_exit_code_one_source_is_built_and_closed_once...`) | PASS |
+| AC18 | `tests/unit/ingest/test_ingest_layers.py` (`layer`); `mypy`; the source built and closed once (command tests) | PASS |
 | AC19 | guards and proof tests in both `conftest.py` files; the session check of `data/raw/` | PASS |
-| AC20 | the existing 1307 tests, unedited except the PS-4 assertion | PASS |
+| AC20 | the 1307 existing tests, unedited except the PS-4 assertion | PASS |
 | AC21 | none (inspection) | PASS (inspection) |
 | AC22 | `tests/unit/test_local_disk_raw_evidence_store_listing.py` | PASS |
 | AC23 | `tests/integration/ingest/test_postgres_runs_and_exclusion.py` | PASS |
-| AC24 | `chain`, `chain_last_page` (unit); `e2e_chain_last_page` (integration) | PASS as written; MISSING: a refusal from an unreadable local record, with its message (F-06) |
+| AC24 | `chain`, `chain_last_page`, `chain_unreadable_record` (unit); `chain_unreadable_record_message` (unit command); `e2e_chain_last_page` (integration) | PASS |
 | AC25 | `root` (integration CLI); `paths`, `environment` (unit command) | PASS |
 
-Coverage from the broader command: total 95 % locally and 96 % in CI.
-`ingest_use_case.py` is at 91 %, with these lines missed: 130-132, 180-181,
-224-230 (dead `_finish`), 821-822, 841-842, 888-889, 913-933 (a published
-read-back that PostgreSQL then refuses), 949-950, 978-979, 1007-1008,
-1024-1025, 1043-1046, 1057-1061 and 1086. `ingest_command.py` is at 99 %; line
-202, `progress`, is never called (F-07).
+Coverage from the broader command: TOTAL 97 % locally and in CI.
+`ingest_use_case.py` is at 96 %, and `ingest_command.py` and `cli.py` are at 100 %.
+These lines of `ingest_use_case.py` are missed:
 
-Red evidence (reused from `tasks.md`): O1, O2, O4 and O6b each record red for a
-functional reason, and the human accepted gate 2 and the stop M5-red. The O4
-and O6b soundness notes (reference implementations and mutants) are the
-test-writer's, not re-run here.
+- 144-146: the exclusion check raising on the new connection;
+- 202-204: a second loss during the append re-check;
+- 410: an unconfirmed normal-path append;
+- 455-456: `read_run` failing after a refused P-2 repeat;
+- 711: a connection loss on a reconciliation record;
+- 1036: an unconfirmed `start_run`;
+- 1122-1133: the read-back observation of P step 3 whose `record_observation` is unconfirmed or refused;
+- 1250: a `KeyboardInterrupt` before the run exists, in the outer handler.
+
+They are not counted as findings. Experiments E9, E11 and E12 drove 1122-1133
+and 410-style paths: they behave as the plan says (`storage-failed`
+(`postgresql`, 2, 2) for a refusal; `running` with no third connection for a
+double loss).
 
 ### Tier Results
 
 | Tier | Tests found | ACs verified | Setup matches § Validation | Ran | Status | Finding |
 |---|---|---|---|---|---|---|
-| unit | `tests/unit/ingest/` (580 tests), `test_local_disk_raw_evidence_store_listing.py` (25), `test_persistence_error_hierarchy.py` (3) | AC1 to AC18, AC22, AC24, AC25 | yes: doubles, `tmp_path`, autouse guard; no setup beyond plan | rerun: every focused `-k` row, all passed | PASS | Coverage gaps F-01, F-02, F-03, F-04, F-05, F-06, F-07 (MISSING cases above) |
-| integration | `tests/integration/ingest/` (83 tests), `test_postgres_migration_lock_error.py`, the PS-4 edit | AC1 to AC4, AC8 to AC10, AC16, AC19, AC23 to AC25 | yes: PT-13 throwaway databases, admin connection, guard that allows the configured host only, `data/raw/` session check | rerun with `--env-file .env`, all passed; CI reused | PASS | none |
+| unit | `tests/unit/ingest/` (738 tests), `test_local_disk_raw_evidence_store_listing.py` (25), `test_persistence_error_hierarchy.py` (3) | AC1 to AC18, AC22, AC24, AC25, including the Revision 6 rows | yes: doubles, `tmp_path`, autouse socket guard; the conftest additions are fault seams named in the plan's seams table | rerun: every focused `-k` row and the required Revision 6 tokens, all passed | PARTIAL | F-13 (AC15: no test or behavior for the K cleanup's progress lines) |
+| integration | `tests/integration/ingest/` (84 tests), `test_postgres_migration_lock_error.py`, the PS-4 edit | AC1 to AC4, AC8 to AC10, AC16, AC19, AC23 to AC25 | yes: PT-13 throwaway databases, admin connection, guard allowing the configured host only, `data/raw/` session check | rerun with `--env-file .env`, all passed; CI reused | PASS | none |
 | static | `uv run mypy .` | AC18 | yes: the F-1 keys are the only config change | rerun: success on 52 files | PASS | none |
 | command | ruff, format, mypy, doctor, `--version`, git diff checks | AC20 | yes | rerun: all clean | PASS | none |
-| manual | documentation inspection | AC21 | n/a | rerun (inspection) | PASS | F-07 wording |
+| manual | documentation inspection | AC21 | n/a | rerun (inspection) | PASS | F-17 (nicety) |
 
-No test exists at a tier that § Validation does not name. No unnamed setup was
-added: the only configuration change is the two `[tool.mypy]` keys approved by
-F-1.
+No test exists at a tier that § Validation does not name. No setup was added
+that the plan does not name: since round 1, no configuration, manifest or
+lockfile changed.
 
 ## Findings
 
+Round-2 findings (new) and the open round-1 finding. The resolved round-1
+findings are in § Resolution of the round-1 findings.
+
 | Id | Severity | AC / constraint | Finding and evidence | Failure scenario | Closure condition | Status |
 |---|---|---|---|---|---|---|
-| F-01 | CRITICAL | AC7 (second example), State machine K bullet 1 | `ingest_use_case.py:952-954` sets `store_was_called = False` right after `store` returns, before `record_observation` is called at 956-959. The cleanup at 386-389 records the local observation only when `locally_stored` is true | Ctrl+C arrives while the `record_observation` round trip for page 2 is in flight (the most likely moment, because it waits on the database). The cleanup appends `run-interrupted`, closes the run `failed`, and never records observation 2. Experiment E1/E3b: exit 130, stdout `<id> failed`, PostgreSQL sequences `(1,)`, local `(1, 2)`. The run is finished, so reconciliation (only `running` runs) never repairs it: the stores disagree for good | The observation is read back and recorded whenever the interrupt comes after `store` was called and before `record_observation` returned; a red-first unit test with `faults.interrupts("record_observation", detail="2")` shows PostgreSQL holding sequence 2 before `finish_run(FAILED)` | Open |
-| F-02 | CRITICAL | AC7 (exit 130, `run-interrupted`), AC15 (stdout line), plan § `run_ingest` ("returns an outcome for every ending except ..."), K ("record a found observation") | `_cleanup_after_exception` (`ingest_use_case.py:386-402`) catches only `PersistenceError`. Its `store.read_observation` raises `EvidenceNotFoundError` (or `EvidenceIntegrityError`, `OSError`) when nothing was published. `store_was_called` is already true (893) when `store` is interrupted | Ctrl+C or `MemoryError` inside `store` for page 2, before the file is published. `EvidenceNotFoundError` escapes `run_ingest`; the run stays `running` with no `run-interrupted` or `unexpected-error`; `ingest_command.py:321-323` prints `unexpected error: EvidenceNotFoundError` and returns 1 (not 130), and stdout is empty although a run was created (experiments E2, E3, E4) | A read-back that finds nothing, or cannot read, is treated as "not found" in the cleanup, which then appends its event and closes the run; tests for `KeyboardInterrupt` and `MemoryError` from a store that has not published show `INTERRUPTED` (exit 130, `<id> failed`) and `RUN_FAILED` (exit 1, `<id> failed`) | Open |
-| F-03 | HIGH (blocking: unmet binding constraint) | Intent § Constraints "ADR 0006 and source-access" (report a malformed proxy or certificate setting as configuration), AC14 | `ingest_command.py:256-259` runs `_migrate` and only then `wiring.make_source`. A construction error from the environment (`httpx.InvalidURL`, `ValueError`, `FileNotFoundError`, as recorded by the F2 plan) falls into `except Exception` at 321-323 | `HTTPS_PROXY=http://[zz]:1` (or an `ftp://` proxy, or a missing `SSL_CERT_FILE`) in the operator's environment: migrations are applied to the real database, then exit 1 with `unexpected error: InvalidURL`, which does not say it is configuration (experiment E10). AC14 expects exit 2 before anything else happens | The architect decides where the check goes, because plan § Order of an invocation builds the source at step 4, after migrations. Closed when such a setting gives exit 2 with a configuration message that names the variable and never its value, before any connection, and a test pins it | Open |
-| F-04 | MEDIUM | AC15 ("one line whenever this invocation created a run, whatever the exit code") | `ingest_command.py:316-323` prints `<id> running` only for `KeyboardInterrupt`; any other exception that escapes `run_ingest` after `run_started` prints nothing on stdout (recorded as a deliberate reading in O6c) | With F-02, a created run ends with empty stdout and exit 1, so the operator never sees the id needed for `--resume` | After `run_started`, an escaping exception prints `<id> running` (closing not confirmed, P-5), or the plan states the exception explicitly; a test pins it | Open |
-| F-05 | MEDIUM | AC11, State machine K (spec gap) | K appends `run-interrupted` and calls `finish_run(FAILED)` without knowing whether the interrupted `finish_run` had already committed (`ingest_use_case.py:386-395`, 1084-1098). The schema allows appends to finished runs (`migrations/0001_initial_schema.sql`: no append guard), so only the use case enforces AC11 | Ctrl+C lands just after `finish_run(succeeded)` committed and before it returned. Experiment E5: `run-interrupted` appended to the `succeeded` run, `finish_run(FAILED)` refused, outcome `INTERRUPTED` with `running`, exit 130, stdout `<id> running` | The architect decides how K behaves when the run may already be finished (for example a `read_run` before the cleanup writes), and a test pins it | Open |
-| F-06 | MEDIUM | AC24 ("stderr a fixed message naming the execution id"), State machine H step 2 ("otherwise -> contradictory") | `ingest_use_case.py:786-792` catches only `ValueError`, `PersistenceNotFoundError` and `EvidenceNotFoundError`; an `EvidenceIntegrityError` or `OSError` from `store.read_observation` in `_validated_completed_page` (626) reaches 1099-1101 | A resumption whose chain holds a `page-completed` with a corrupt local record ends `NOT_STARTED`, exit 1, nothing written (correct), but stderr says only `EvidenceIntegrityError` with no execution id (experiment E6) | Every H refusal ends with the fixed message that names the target; a test with an unreadable local record pins it | Open |
-| F-07 | MEDIUM | AC6 (c) ("stderr names the operation and the identity"), AC15 / Q9 (progress lines), harny-audit "no dead test seam" | `IngestReporter.progress` is never called by `run_ingest` (no call in `ingest_use_case.py`; `ingest_command.py:202` uncovered). On a refused `record_observation` stderr holds `run <id> started` and `failed` only. `test_storage_progress_text_holds_no_url_body_or_header_value` (`test_ingest_use_case.py:978`) and `test_unexpected_exception_text_never_reaches_the_reporter` (1136) iterate over an always-empty `reporter.messages`, so they are vacuous. README § Ingesting and the CHANGELOG say stderr carries the progress | An operator watching a long run sees no page, sequence, status or hash progress; a PostgreSQL refusal is not named on stderr | The use case reports progress (page, sequence, status, hash) and project-error text through `progress`, the AC6 (c) stderr names the operation and identity, and the two tests assert on non-empty messages; or the architect states that progress is optional and the docs are aligned | Open |
-| F-08 | LOW | harny-standards (no dead code) | `_finish` at `ingest_use_case.py:218-235` is never called (lines 224-230 uncovered) | None at run time | Removed or used | Open |
-| F-09 | LOW | F-2 (Q7, 32 characters) | `ingestion_catalogue.py:155` docstring still says "The id is 33 characters" | Misleads a reader | Docstring says 32 | Open |
-| F-10 | LOW | AC10, State machine R step 3 (spec gap) | R maps only `EvidenceIntegrityError` from `read_observation`, and `EvidenceNotFoundError` or `EvidenceIntegrityError` from `read_content`. An `OSError` (for example `PermissionError`), or `EvidenceNotFoundError` from a listed record that vanished, escapes `_reconcile_run` (`ingest_use_case.py:465-501`) | Experiment E7: `NOT_STARTED`, exit 1, message `PermissionError`, the run stays `running` with no `reconciliation-failed`, and every later `ingest` stops at the same place until a human fixes the file | The architect assigns these errors a problem value (or confirms the current behavior), and a test pins it | Open |
-| F-11 | LOW | State machine P / K (spec gap) | A non-connection `PersistenceError` from `append_audit_event` or `finish_run` goes to the `except Exception` branch and is audited as `unexpected-error` with a project error's class name (experiment E8). K reserves `unexpected-error` for exceptions that are not project errors, and P specifies only `record_observation` | The audit trail calls a database refusal an unexpected defect | The architect specifies the reaction, and a test pins it | Open |
-| F-12 | LOW | harny-audit step 4 (outcome state) | `tasks.md` O8 is `[ ]` (explained: the journal is the human's) rather than `[x]` or `[!]`; § Working state line "Phase" still says "no pull request is open" while PR #25 is open | Stale state for the next role | O8 is checked or marked `[!]`, and the stale line is corrected | Open |
+| F-13 | MEDIUM (blocking: an unmet AC clause) | AC15 ("one line for each database write refused or lost, naming the operation and the identity"); plan § Public names "Required progress" 2 (which lists K) and 3 ("each `PersistenceConnectionError` from `start_run` on") | `_cleanup_after_exception` (`ingest_use_case.py:542-567`) catches every `Exception` from `read_run`, `record_observation`, the `run-interrupted` or `unexpected-error` append and `finish_run(FAILED)`, and returns with `running` without calling `reporter.progress`. In the same way, a lost `read_run` after a refused P-2 repeat (453-456) reports nothing | Ctrl+C at page 2, then PostgreSQL refuses the `run-interrupted` append (experiment E1): stderr holds only the page-1 line and `the ingest was interrupted`; stdout `<A> running`, exit 130. The same for a refused `finish_run(FAILED)` after a `MemoryError` (E2), a lost `finish_run(FAILED)` (E3), and a refused `record_observation` of the pending observation (E4b). The operator never learns which write failed or that the database refused it | Every refused or lost write (and every lost operation) in the K cleanup writes the required line naming the operation and the identity, with at most the class name, and a red-first unit test pins it (for example, by extending `test_unexpected_cleanup_that_meets_a_database_error_leaves_the_run_running` and adding a refused `run-interrupted` case). Or the architect changes AC15 and the plan to exempt the cleanup, and the human approves | Open |
+| F-14 | MEDIUM (blocking until the architect decides: spec conflict) | AC15 (same clause, unconditional) versus plan "Required progress" 3 ("from `start_run` on") and § State machine R ("A `PersistenceConnectionError` here -> `NOT_STARTED`, with no new connection") | `_guarded` (583-586) and the reconciliation's `record_observation` (708-711) let `PersistenceConnectionError` pass to the generic handler (1262-1264), whose message is `type(error).__name__` | `<A>` is `running` with a local-only observation 3, and the connection is lost while `record_observation(3)` runs (experiment E8): stderr says only `PersistenceConnectionError`, with no operation and no run named; exit 1; `<A>` stays `running`. The behavior follows the plan; the AC text asks for more | The architect aligns AC15 with the plan (narrowing the "lost" clause to `start_run` on), or the plan with AC15 (a line for a lost reconciliation write, naming the operation and `X`). Then the code and a test follow, and the human approves | Open |
+| F-12 | LOW (carried, partially resolved) | harny-audit step 4 (outcome state) and step 5 (recorded red evidence) | `tasks.md` § Status (line 8) still ends "pending the human's approval", and so does § Checkpoint ("pending the human's approval ... Next: after approval, the O10 rework"), though the `Approval` lines say approved. O8 is still `[ ]` rather than `[!]`. O10 rework step 3 says "The human corrects `run_ingest`", but § Working state says "use case fixed by the executor with the human's authorization", which contradicts plan § Rollout M4 ("The executor does not write this module's body") unless that authorization is recorded. No red evidence (command, counts, reasons) is recorded for the round-2 tests | The next role reads a stale state. The authorship deviation is not traceable to a recorded decision | § Status and § Checkpoint are corrected. O8 is checked or marked `[!]` with its reason. The human's authorization for the executor to edit `run_ingest` is recorded (or step 3 is corrected). The round-2 red evidence is recorded (the auditor's retroactive run: 161 failed against `7603379` code) | Open |
+| F-15 | LOW (spec gap) | Plan § State machine H message rule ("Any failure -> NOT_STARTED, with a fixed message naming the execution id ... never only an exception's class name"); § State machine C ("Before the new run exists ... NOT_STARTED, exit 1"); AC24 | Only `PersistenceNotFoundError` is a listed H read failure. A refused read (`PersistenceIntegrityError`, plain `PersistenceError`) or a lost connection in T (965), H (993) or I reaches the generic handler (1262-1264) with message `type(error).__name__`. This is the executor's choice noted in `tasks.md` § Working state | A refused `read_observation` during the chain check (E5) -> `NOT_STARTED`, exit 1, stderr `PersistenceIntegrityError`, without naming `<A>`. A lost `list_audit_events` (E6) or target `read_run` (E7) -> `PersistenceConnectionError`. The exit code and "nothing written" are right; only the message is bare. Reading H's "Any failure" broadly would make this a breach, but the plan lists the failures and C governs losses, so the auditor rates it a gap, not a violation | The architect states the message for a refused or lost read before the run exists (R already requires "a message naming X" for its refusals), and a test pins it, or the architect confirms the class-name message | Open |
+| F-16 | LOW | Plan § `run_ingest` ("returns an outcome for every ending except a `KeyboardInterrupt` raised during its own interruption cleanup and `SystemExit`"); AC15 ("exactly one line") | (a) `ingest_use_case.py:941-944` catches only `PersistenceError` around `open_repository()`, so a `KeyboardInterrupt` or `MemoryError` there escapes `run_ingest` (experiment E13). This was present in round 1 and missed then. (b) `ingest_command.py:293-296` suppresses only `Exception` around `source.close()`. A `KeyboardInterrupt` during it, after `_report` printed `<id> <status>`, reaches `_print_running` (338-340) and prints a second line `<id> running`, with exit 130 | (a) The CLI still gives 130 or 1 with empty stdout, so nothing visible changes. (b) Needs a Ctrl+C in the instant the HTTP client closes; stdout then holds two lines | (a) Caught inside `run_ingest` (`INTERRUPTED` or `NOT_STARTED`), or the plan's sentence amended. (b) The result line is printed once whatever happens in the `finally`. Tests pin both | Open |
+| F-17 | LOW | AC21 (docs say what exists; not a listed item) | README § Ingesting gives `running` only "(after Ctrl+C, or after a lost database connection it could not recover)". Since Revision 8 it also follows a refused `finish_run(FAILED)`, a cleanup that cannot read the run, and any exception that escapes after the run was announced. The exit-2 row does not name a malformed proxy or certificate setting (it says "a missing or invalid environment variable") | An operator who reads `running` after a database refusal finds no matching case in the README | README lists the cases or says "whenever closing was not confirmed", and the exit-2 row names the proxy and certificate settings | Open |
 
-Untested branches, not counted as separate findings: `ingest_use_case.py:913-933`
-(AC6 (b) when PostgreSQL then refuses or loses the observation that was read
-back), 130-132 and 180-181 (an error while taking the exclusion again, and a
-second loss during the append re-check).
-
-## Defect-hunting checklist (state machines read against the code)
+## Defect-hunting checklist (the rewritten module read against the state machines)
 
 | Area | Result |
 |---|---|
-| Order local store -> PostgreSQL -> events -> finish | Holds (`test_ingest_use_case.py:357`, AC4 order tests) |
-| Write-once evidence never overwritten | Holds: one `store` per (id, sequence); a resumption uses a new id; the F1 listing is read-only (AC22 bytes and mtimes test) |
-| No retries | Holds (`no_retry`; one `search_page` per loop iteration) |
-| Secrets, URLs and tracebacks never printed | Holds for every path seen; class names only for foreign exceptions |
-| Exit-code table | Holds except F-02 (1 instead of 130) and F-03 (1 instead of 2) |
-| Connection loss | Holds: one new connection, the exclusion taken again, safe repeats only, append re-checked, no third connection, P-2 |
-| Interruption cleanup | Fails: F-01, F-02; race F-05 |
-| Reconciliation problems list | Holds for the listed cases; gap F-10 |
-| Chain validation, `last-page-reached` validity and coverage | Holds (117 + 33 unit, 3 integration); message gap F-06 |
-| Execution-id checks | Holds |
-| `KeyboardInterrupt`, `SystemExit`, `MemoryError` propagation | `SystemExit` never caught (test); a second `KeyboardInterrupt` propagates (test); `MemoryError` is audited as `unexpected-error` (test). F-02 when either arrives inside `store` |
-| Leaked repositories or sources | None found: `finally` closes the current repository, `_reconnect` closes the lost one, the source is closed in `_invoke`'s `finally` |
-| Unconfirmed `start_run` | Outcome names the id with `running` although the run may not exist (experiment E9); this is what plan § State machine C prescribes (note, no finding) |
+| Order: local store -> PostgreSQL -> events -> finish | Holds (journal-order tests; `interrupt_during_record` journal) |
+| Write-once evidence never overwritten | Holds: one `store` per (id, sequence); `next_sequence` grows only after `store` returns; a resumption uses a new id; the F1 listing is read-only |
+| No retries | Holds (`no_retry`; one request per loop iteration; no page requested after an ending) |
+| Pending local observation (F-01, F-02) | Holds: pending from before `store` until `record_observation` returns, including the C repeat and the P step 3 read-back path; cleared only on the concluded paths |
+| Secrets, URLs and tracebacks never printed | Holds: progress uses fixed words, numbers, hashes, ids and class names; the CLI prints `str()` only of migration errors (fixed texts) and the outcome message (fixed texts and ids) |
+| Exit codes | Holds for every row, including step 2 (F-03) and K step 1 (F-05) |
+| Connection loss (C) | Holds: one new connection, exclusion again, safe repeats, append re-check, no third connection, P-2. Losses are reported (`_report_loss`) except in K (F-13) |
+| Refused writes | Holds for every table row; at most one `storage-failed` (`postgresql`) per run; never `unexpected-error` (57 tests) |
+| Interruption cleanup (K) | Holds for behavior (`read_run` guard, read-back, stop with `running`, second `KeyboardInterrupt` propagates). Silent on refusals and losses (F-13) |
+| Reconciliation (R) | Holds, including F-10 and F-11. A loss is reported by class name only (F-14) |
+| Chain validation (H), `last-page-reached` validity, coverage, P-4 | Holds (129 + 33 + 12 unit, 3 integration). Bare message for refused or lost reads (F-15) |
+| Execution-id checks (I) | Holds |
+| `KeyboardInterrupt`, `SystemExit`, `MemoryError` propagation | `SystemExit` is never caught (tests). A second `KeyboardInterrupt` propagates. `MemoryError` gets `unexpected-error` inside the run and exit 1 while the source is built. Edge F-16 (a) at `open_repository()` |
+| Leaked repositories or sources | None: `run_ingest`'s `finally` closes the current repository; `_reconnect` closes the lost one and a failed second one; double closes are safe (idempotent `close`); the source is closed in `_invoke`'s `finally` |
+| Unconfirmed `start_run` | The outcome names the id with `running` (line 1036); this is what plan § State machine C prescribes (note) |
 
-## Commands run (2026-10-18, repository root, `7603379`)
+## Executor choices where the plan was silent
+
+| Choice | Assessment |
+|---|---|
+| Cleanup message texts: `the ingest was interrupted`, `unexpected error: <ClassName>` (`ingest_use_case.py:1250-1275`), CLI `interrupted` (`ingest_command.py:340`) | Compliant: fixed words, plus a class name for non-project errors, as § Output allows. The K progress gap is F-13 |
+| Any non-connection `PersistenceError` on the repeat of the final `finish_run(SUCCEEDED)` handled like the P-2 `PersistenceIntegrityError` case: `RUN_FAILED` with the stored status read by `read_run`, no `storage-failed`, `running` if that read fails (`ingest_use_case.py:448-462`) | Compliant and conservative: C step 5 says no `storage-failed` or `finish_run(FAILED)` after the P-2 repeat, and "Refused writes" says C's rules come first. Pinned by one `connection_loss_final_finish` case (mutant M11 killed). Lines 455-456 are untested. A lost `read_run` there prints nothing (F-13) |
+| Refusals or losses during the target, chain or id reads, other than `PersistenceNotFoundError`, reach the generic `NOT_STARTED` handler with a class-name message (`ingest_use_case.py:1262-1264`) | Exit code and "nothing written" are correct. Whether it breaks the plan's "never only a class name" depends on whether H's "Any failure" covers an operational read failure. The plan lists the H failures and C governs losses, so the auditor rates it a spec gap, LOW (F-15). AC15 covers writes only, so AC15 is not broken by it. AC24's message rule covers the cyclic, malformed or contradictory verdicts, and those all name the id |
+
+## Commands run (2026-10-18, repository root, `91bd69d`)
 
 | Command | Result | Label |
 |---|---|---|
 | `uv sync --locked` | ok, 25 packages | rerun |
-| `uv run pytest -q` (no `--env-file`) | 1741 passed, 265 skipped | rerun |
-| `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing -q` | 2006 passed, 0 skipped, TOTAL 95 % | rerun |
+| `uv run pytest -q` (no `--env-file`) | 1899 passed, 266 skipped | rerun |
+| `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing -q` | 2165 passed, 0 skipped, TOTAL 97 % | rerun |
 | `uv run ruff check .` | All checks passed | rerun |
-| `uv run ruff format --check .` | 118 files already formatted (before this file was added) | rerun |
+| `uv run ruff format --check .` | 119 files already formatted (before this report was written) | rerun |
 | `uv run mypy .` | Success, 52 source files | rerun |
 | `uv run node .sdd/doctor/run-doctor.mjs` | 31 ok, 0 skipped, 0 warned, 0 failed | rerun |
 | `uv run ec-procurement-quality --version` | `ec-procurement-quality 0.1.0` | rerun |
-| Every focused unit `-k` row of § Validation and the O5 groups | all passed (counts in § AC results) | rerun |
-| Every focused integration row of § Validation | all passed (counts in § AC results) | rerun |
-| `uv run --env-file .env pytest tests/unit/ingest tests/integration/ingest -q` | 663 passed | rerun |
+| Every focused unit `-k` row of § Validation, including the required Revision 6 tokens (`interrupt_during_record`, `cleanup_read_back`, `interrupt_after_finish`, `chain_unreadable_record`, `progress_line`, `reconcile_os_error`, `database_refusal`, `source_configuration`, `order_of_invocation`, `exit_code_cleanup_read_back`, `exit_code_interrupt_after_finish`, `output_escaping_exception`, `output_progress`, `chain_unreadable_record_message`) | all passed (counts in § AC results and § Resolution) | rerun |
+| Every focused integration row of § Validation (`e2e_*`, `migrations`, `root`, `test_ingest_connection_loss.py`, `-k final_finish`, `test_postgres_runs_and_exclusion.py`, the lock-error and runner row) | all passed | rerun |
+| `uv run pytest tests/unit/test_local_disk_raw_evidence_store_listing.py -q`; `uv run pytest tests/unit/test_persistence_error_hierarchy.py -q`; `uv run pytest tests/unit/test_cli.py -q` | 25, 3, 2 passed | rerun |
+| `uv run --env-file .env pytest tests/unit/ingest tests/integration/ingest -q` | 822 passed | rerun |
 | `uv run pytest tests/unit -q -k layer` | 16 passed | rerun |
 | AC18 grep of `src/ec_procurement_quality/application/` for `SELECT `, `INSERT `, `UPDATE `, `DELETE `, `objects/`, `observations/`, `.json`, `advisory`, `pg_` | no match | rerun |
 | AC20 `git diff main --stat -- migrations tests/unit/test_cli.py ... uv.lock` (the full list of the row) | empty | rerun |
 | `git diff main --stat -- uv.lock` | empty | rerun |
-| `git diff main -- pyproject.toml` | only the two F-1 keys and three comment lines, additions only | rerun |
+| `git diff main -- pyproject.toml` | only `explicit_package_bases = true`, `mypy_path = "src"` and three comment lines, additions only | rerun |
 | `git diff main --numstat -- tests/integration/test_postgres_migrations.py` | `3 0` | rerun |
 | `git diff main --stat -- compose.yaml .env.example docs/glossary.md docs/adr specs/current` | empty | rerun |
 | `git ls-files .env` | empty | rerun |
 | `git diff main --check`, `git diff --check` | clean | rerun |
-| Leftover `ecpq_test_` databases (count only, through `uv run --env-file .env`) | 0 | rerun |
-| Files under the real `data/` | 0 before and after | rerun |
-| `gh pr checks 25` | `feedback` pass, `tests` pass; head `7603379` | rerun |
-| CI `tests` log (run 39098935636) | 2006 passed, TOTAL 96 % (Linux; includes AC6 (a) and (d)) | reused |
-| CI `feedback` log (run 39098935620) | `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` | reused |
-| Auditor experiments E1 to E10 (scratchpad, the repository's unit doubles; nothing written to the repository) | results quoted in § Findings | experiment |
+| `git diff 7603379 -U0 -- tests` (removed lines) | only the migrated order assertions (`["migrate"]` -> `["make_source", "migrate"]`, with the source closed once added), doubles refactoring and imports; no weakened assertion | rerun |
+| Leftover `ecpq_test_` databases (count only, scratch script through `uv run --env-file .env`) | 0 | rerun |
+| Files under the real `data/` | 0 before and after the suites | rerun |
+| `gh pr checks 25`; `gh run list --branch feat/ingest-command` | `feedback` pass, `tests` pass, head `91bd69d` | rerun |
+| CI `tests` log (run 39147642720, merge of `91bd69d` into `6b34374`) | 2165 passed, TOTAL 97 % (Linux) | reused |
+| CI `feedback` log (run 39147642707) | `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` | reused |
+| Mutants M1 to M12 (scratch copy, focused tokens) | 12 of 12 killed | experiment |
+| Current unit tests against the round-1 use case and command (`git show 7603379:...`) | 161 failed, 577 passed (round-2 tokens: 141 failed, 23 passed) | experiment |
+| Experiments E1 to E13 (scratch test file over the repository's doubles) | results quoted in § Findings and § Test coverage | experiment |
 
 ## Conventions and feedback
 
-- harny-standards, checked against `AGENTS.md` (the project's conventions document):
+- harny-standards, checked against `AGENTS.md` (the project's conventions
+  document):
   - layer boundaries hold;
   - raw responses are never overwritten;
-  - no invented SERCOP contract: synthetic `.invalid` data only;
-  - no dependency, infrastructure or service added (the F-1 config change was approved);
-  - no secrets in source, tests or docs (gitleaks and the CI secret scan pass in doctor);
-  - verification was run and reported.
+  - no SERCOP contract is invented: synthetic `.invalid` data only;
+  - no dependency, infrastructure or service was added (the F-1 config change
+    was approved);
+  - no secrets are in source, tests or docs (gitleaks and the CI secret scan
+    pass in the doctor);
+  - verification was run and reported (`tasks.md` § Working state, last
+    command).
 
-  Violations: dead code F-08, a stale docstring F-09.
-- harny-feedback: the CI workflow `.github/workflows/harny-feedback.yml` exists and its latest run is green with 2 of 2 commands run. The per-turn PostToolUse and Stop hooks are configured in `.claude/settings.json`. That they fired and were heeded during implementation is `unavailable`: no persisted hook log exists, and `AGENTS.md` notes the hooks run only when `.venv` is on `PATH`.
+  No violation was found. The round-1 dead code (F-08) and stale docstring
+  (F-09) are gone.
+- harny-feedback: the workflow `.github/workflows/harny-feedback.yml` exists, and
+  its latest run, at `91bd69d`, is green with 2 of 2 commands run. The per-turn
+  PostToolUse and Stop hooks are configured in `.claude/settings.json`. Whether
+  they fired and were heeded during the rework is `unavailable`: no hook log is
+  kept, and `AGENTS.md` notes that the hooks run only when `.venv` is on `PATH`.
 
 ## Reservations carried forward
 
-- Persistence U1: the real commit-in-flight case is still untested against PostgreSQL. The unit `FlakyRepository` and the integration `Kill*Repository` seams cover the deterministic cases (recorded in CHANGELOG Known limitations).
-- Persistence N5: the reconciliation reads run in separate snapshots; this is safe under the ingest exclusion (checked: R runs only after the exclusion is held).
-- Raw-evidence N2: handled for `store` (AC6 b, F-3), not for the interruption cleanup (F-02).
-- Source-access R-6 and raw-evidence N3: hold; only class names or fixed project texts are printed.
-- Source-access R-7: holds (`-k logger`).
-- Source-access R-11: holds; one source per invocation, closed once.
-- Source-access U1: open until the human's Day 20 live run. No document claims that a live run happened: README, CHANGELOG, AGENTS.md and the journal all say none was made.
+- Persistence U1: the real commit-in-flight case is still untested against
+  PostgreSQL. The unit `FlakyRepository` and the integration `Kill*Repository`
+  seams cover the deterministic cases. This is recorded in CHANGELOG Known
+  limitations.
+- Persistence N5: the reconciliation reads run in separate snapshots. This is
+  safe under the ingest exclusion: R runs only after the exclusion is held.
+- Raw-evidence N2: now handled both for `store` (AC6 b, F-3) and for the
+  interruption cleanup (F-02 resolved).
+- Source-access R-6 and raw-evidence N3: hold. Only class names or fixed project
+  texts are printed, and the F-03 message carries the class name only.
+- Source-access R-7: holds. The guard now covers the construction of the source
+  too.
+- Source-access R-11: holds. One source per invocation, built once and closed
+  once, on every path including a refused migration.
+- Source-access U1: open until the human's Day 20 live run. No document claims
+  that a live run happened: README, CHANGELOG, AGENTS.md and the journal all say
+  none was made.
 
 ## What could not be verified
 
-- Behavior against the real SERCOP source and the real `data/raw/` (out of scope; must not be run).
-- A real Ctrl+C delivered to a live `psycopg` or disk operation. F-01 and F-02 were shown with the repository's doubles, which interrupt at the same call boundaries; the real `LocalDiskRawEvidenceStore.read_observation` also raises `EvidenceNotFoundError` for a missing file.
-- `pg_terminate_backend` of a real stale session that holds the exclusion (the README procedure was not exercised).
-- That the per-turn feedback hook fired during implementation (see § Conventions and feedback).
-- The test-writer's mutation and reference-implementation soundness claims for O4 and O6b (scratchpad artifacts, not re-run).
+- Behavior against the real SERCOP source and the real `data/raw/`: out of scope,
+  and it must not be run.
+- A real Ctrl+C delivered to a live `psycopg` or disk operation. F-01, F-02,
+  F-05 and F-13 were checked with the repository's doubles, which interrupt at
+  the same call boundaries.
+- A real malformed proxy against a live network. The unit tests build the real
+  `SercopSource` from the environment; construction opens no socket, and the
+  guard stays silent.
+- `pg_terminate_backend` of a real stale session that holds the exclusion (the
+  README procedure was not exercised).
+- That the per-turn feedback hook fired during the rework (see § Conventions
+  and feedback).
+- The human's authorization for the executor to edit the body of `run_ingest`
+  during the rework: `tasks.md` § Working state states it, and no other record
+  was found (F-12).
 
 ## Audit log
 
 | Round | Date | Verdict | Notes |
 |---|---|---|---|
-| 1 | 2026-10-18 | REJECTED | F-01 and F-02 (CRITICAL, AC7, AC15, State machine K) and F-03 (HIGH, binding constraint and AC14) block. F-04 to F-07 MEDIUM, F-08 to F-12 LOW. Sent back to the architect |
+| 1 | 2026-10-18 | REJECTED | At `7603379`. F-01 and F-02 (CRITICAL, AC7, AC15, State machine K) and F-03 (HIGH, binding constraint and AC14) block. F-04 to F-07 MEDIUM, F-08 to F-12 LOW. Sent back to the architect |
+| 2 | 2026-10-18 | REJECTED | At `91bd69d`. F-01 to F-11 resolved, each with tests that fail on the round-1 code and a killed mutant; F-12 partially resolved. New: F-13 (MEDIUM, blocking: the K cleanup prints no line for a refused or lost write, AC15) and F-14 (MEDIUM, blocking until the architect decides: AC15 versus plan required progress 3 for reconciliation losses); F-15 to F-17 LOW. 2165 tests pass locally and in CI. Next: the architect (F-14, F-15), then red tests and the fix of the cleanup |
