@@ -35,6 +35,16 @@ Six older tests (`migrations` error, real runner, interrupt in the migrations, t
 migration failures, and the two `order_of_invocation` ones) were migrated to the
 new order: `make_source` once before `migrate`, the source closed once.
 
+The audit round 2 of 2026-10-18 added, at the end of the file (plan Revision 7):
+
+- `output_database_error` (AC7, AC15, F-13): the lines of the K cleanup reach stderr;
+- `pre_run_database_error_exit_code` (AC9, AC10, AC15, AC24, F-14, F-15): a database
+  operation refused or lost before the run exists is exit 1 (never 2), with a line
+  and a final message that name the identity;
+- `exit_code_repository_open_error` (AC15, F-16 a): guards, they pass at `91bd69d`;
+- `single_result_line` (AC15, F-16 b): a Ctrl+C while the source closes adds no
+  second result line.
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and the markers `synthetic-password-marker`,
 `synthetic-body-marker` and `synthetic-header-marker`.
@@ -1058,7 +1068,11 @@ def test_exit_code_130_an_interrupt_while_the_source_is_built(rig: Rig) -> None:
 
 
 def test_exit_code_130_an_interrupt_while_the_repository_opens(rig: Rig) -> None:
-    """Exit table: a `KeyboardInterrupt` that escapes `run_ingest` -> 130."""
+    """Exit table: Ctrl+C while the repository opens -> 130, stdout empty.
+
+    After F-16 (a), `run_ingest` handles it itself (INTERRUPTED, no run), so nothing
+    escapes it; the exit code and the empty stdout are the same either way.
+    """
     rig.repository_error = KeyboardInterrupt()
 
     result = rig.invoke(SCOPE_ARGS)
@@ -1163,7 +1177,13 @@ def test_exit_code_order_of_invocation_a_refused_migration_builds_no_repository(
 def test_exit_code_1_an_exception_that_escapes_the_use_case_names_its_class_only(
     rig: Rig,
 ) -> None:
-    """Exit table: any exception escaping `run_ingest` -> 1, the class name alone."""
+    """Exit table: an exception while the repository opens -> 1, the class name alone.
+
+    After F-16 (a), `run_ingest` handles it itself (NOT_STARTED, a fixed message
+    with at most the class name), so it no longer escapes; the exit code and the
+    class-name-only stderr are the same either way. The escaping path stays pinned
+    by the `output_escaping_exception` tests, which replace `run_ingest`.
+    """
     error = SyntheticDefect(f"{BODY_MARKER} {PASSWORD_MARKER}")
     error.__cause__ = ValueError(HEADER_MARKER)
     rig.repository_error = error
@@ -2195,3 +2215,305 @@ def test_chain_unreadable_record_message_names_the_target_on_stderr(
     assert "Traceback" not in result.err
     assert lab.snapshot() == before
     assert lab.source.calls == []
+
+
+# === Audit round 2 (2026-10-18), findings F-13 to F-16 =========================
+#
+# Written against the Revision 7 specs. Tokens: `output_database_error` (F-13),
+# `pre_run_database_error_exit_code` (F-14, F-15), `exit_code_repository_open_error`
+# and `single_result_line` (F-16). The CLI-tier halves of F-16 (a) already hold at
+# `91bd69d` (the command's own handlers give the same exit code and stdout): they
+# are guards, and their red evidence is at the use-case tier. The tests that are red
+# here are the lines of the K cleanup and of `open_repository`, and F-16 (b).
+
+DB_ERRORS = [PersistenceIntegrityError, PersistenceError, PersistenceConnectionError]
+# The id `ScriptedExecutionIds` draws first when a test scripts none.
+FIRST_DRAWN_ID = "ingest-20261017t150000z-00000001"
+INVALID_WORDS = ("invalid", "malformed", "cyclic", "contradictory")
+
+
+def failing(
+    lab: Lab,
+    operation: str,
+    error: Callable[[str], BaseException],
+    *,
+    detail: str | None = None,
+    nth: int = 1,
+    execution_id: str | None = None,
+) -> None:
+    """The first repository raises `error` on a call; the error text holds a marker."""
+    lab.opener.faults.setdefault(1, []).append(
+        lab.faults.raises(
+            operation,
+            lambda: error(f"database text {BODY_MARKER} {HEADER_MARKER}"),
+            detail=detail,
+            nth=nth,
+            execution_id=execution_id,
+        )
+    )
+
+
+def assert_safe_stderr(result: Result) -> None:
+    for text in (BODY_MARKER, HEADER_MARKER, PASSWORD_MARKER, "Traceback", "://"):
+        assert text not in result.err, text
+
+
+def final_line(result: Result) -> str:
+    return result.err.splitlines()[-1]
+
+
+# === output_database_error (AC7, AC15, F-13) ===================================
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_output_database_error_a_refused_interrupt_append_is_named_on_stderr(
+    rig: Rig, error: Callable[[str], BaseException]
+) -> None:
+    """AC15, K: Ctrl+C, then the `run-interrupted` append fails -> 130, `<A> running`.
+
+    Exactly one stderr line names the operation, the event type and the run.
+    """
+    lab = rig.lab
+    lab.source.script(2, KeyboardInterrupt())
+    failing(lab, "append_audit_event", error, detail="run-interrupted")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} running\n"
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert (
+        len(stderr_lines(result, "append_audit_event", "run-interrupted", run_id)) == 1
+    )
+    assert_safe_stderr(result)
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_output_database_error_a_failed_closing_after_a_defect_is_named_on_stderr(
+    rig: Rig, error: Callable[[str], BaseException]
+) -> None:
+    """AC15, K: a `MemoryError`, then `finish_run(FAILED)` fails -> 1, `<A> running`."""
+    lab = rig.lab
+    lab.source.script(2, MemoryError())
+    failing(lab, "finish_run", error, detail="failed")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 1
+    assert result.out == f"{run_id} running\n"
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert len(stderr_lines(result, "finish_run", "failed", run_id)) == 1
+    assert_safe_stderr(result)
+
+
+def test_output_database_error_a_cleanup_that_cannot_read_the_run_is_named_on_stderr(
+    rig: Rig,
+) -> None:
+    """AC11, AC15, K step 1: the cleanup's `read_run` fails -> nothing is written."""
+    lab = rig.lab
+    lab.source.script(2, KeyboardInterrupt())
+    # The first `read_run` of the new run is the identity check; the second is the
+    # cleanup's.
+    failing(lab, "read_run", PersistenceError, nth=2, execution_id=FIRST_DRAWN_ID)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} running\n"
+    assert lab.event_types(run_id) == ["run-started", "page-completed"]
+    assert len(stderr_lines(result, "read_run", run_id)) == 1
+    assert_safe_stderr(result)
+
+
+# === pre_run_database_error_exit_code (AC9, AC10, AC15, AC24; F-14, F-15) ======
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_pre_run_database_error_exit_code_an_unreadable_target_exits_1_not_2(
+    rig: Rig, error: Callable[[str], BaseException]
+) -> None:
+    """State machine T: the target's `read_run` fails -> exit 1, never exit 2.
+
+    stdout stays empty, a stderr line names `read_run` and the target, and the final
+    line names the target without calling it invalid.
+    """
+    lab = rig.lab
+    lab.seed.run(lab.A, scope=lab.scope(1, 4))
+    lab.seed.started(lab.A)
+    lab.seed.completed(lab.A, 1, 2)
+    before = lab.snapshot()
+    failing(lab, "read_run", error, execution_id=lab.A)
+
+    result = rig.invoke(["--resume", lab.A])
+
+    assert result.code == 1
+    assert result.out == ""
+    assert stderr_lines(result, "read_run", lab.A), result.err
+    assert lab.A in final_line(result)
+    assert not any(word in final_line(result).lower() for word in INVALID_WORDS)
+    assert_safe_stderr(result)
+    assert lab.snapshot() == before
+    assert lab.source.calls == []
+
+
+def test_pre_run_database_error_exit_code_a_lost_reconciliation_write_names_the_run(
+    rig: Rig,
+) -> None:
+    """State machine R: `X` holds a local-only observation 3; recording it is lost.
+
+    exit 1, stdout empty, a line names `record_observation`, `X` and sequence 3, and
+    the final line names `X`.
+    """
+    lab = rig.lab
+    lab.seed.run(lab.A, scope=lab.scope(1, 4), status=RunStatus.RUNNING)
+    lab.seed.page(lab.A, 1, 1, event=False)
+    lab.seed.page(lab.A, 2, 2, event=False)
+    lab.seed.page(lab.A, 3, 3, postgres=False, event=False)
+    failing(lab, "record_observation", PersistenceConnectionError, detail="3")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 1
+    assert result.out == ""
+    assert stderr_lines(result, "record_observation", lab.A, numbers=(3,)), result.err
+    assert lab.A in final_line(result)
+    assert final_line(result) != "PersistenceConnectionError"
+    assert_safe_stderr(result)
+    assert list(lab.database.runs) == [lab.A]
+    assert lab.database.runs[lab.A].status is RunStatus.RUNNING
+    assert lab.source.calls == []
+
+
+@pytest.mark.parametrize("error", [PersistenceConnectionError, PersistenceError])
+def test_pre_run_database_error_exit_code_a_repository_that_cannot_be_opened_is_named(
+    rig: Rig, error: Callable[[str], BaseException]
+) -> None:
+    """Required progress 2 and 3: `open_repository` fails -> exit 1 and a named line."""
+    lab = rig.lab
+    rig.repository_error = error(f"database text {BODY_MARKER}")
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 1
+    assert result.out == ""
+    assert stderr_lines(result, "open_repository"), result.err
+    assert_safe_stderr(result)
+    assert lab.database.runs == {}
+    assert lab.source.calls == []
+
+
+# === exit_code_repository_open_error (AC15, F-16 a) ============================
+#
+# Guards: they hold at `91bd69d` and after the fix, through different code.
+
+
+def test_exit_code_repository_open_error_a_memory_error_exits_1_naming_the_class(
+    rig: Rig,
+) -> None:
+    """F-16 (a): `MemoryError` while the repository opens -> 1, stdout empty."""
+    rig.repository_error = MemoryError(BODY_MARKER)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 1
+    assert result.out == ""
+    assert "MemoryError" in result.err
+    assert_safe_stderr(result)
+    assert rig.lab.database.runs == {}
+    assert rig.lab.source.calls == []
+    assert [source.closes for source in rig.sources] == [1]
+
+
+def test_exit_code_repository_open_error_a_keyboard_interrupt_exits_130_silently(
+    rig: Rig,
+) -> None:
+    """F-16 (a): Ctrl+C while the repository opens -> 130, stdout empty."""
+    rig.repository_error = KeyboardInterrupt()
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 130
+    assert result.out == ""
+    assert_safe_stderr(result)
+    assert rig.lab.database.runs == {}
+    assert rig.lab.source.calls == []
+    assert [source.closes for source in rig.sources] == [1]
+
+
+# === single_result_line (AC15, F-16 b) =========================================
+
+
+def interrupt_when_the_source_closes(rig: Rig) -> None:
+    """The source is the lab's, and closing it raises `KeyboardInterrupt`."""
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    rig.source_builder = lambda now: (rig.lab.source, interrupted)
+
+
+def test_single_result_line_a_succeeded_run_prints_its_line_once(rig: Rig) -> None:
+    """Step 7: Ctrl+C while the source closes -> 130, stdout exactly `<A> succeeded`."""
+    interrupt_when_the_source_closes(rig)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(rig.lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} succeeded\n"
+    assert "interrupted" in result.err
+    assert [source.closes for source in rig.sources] == [1]
+
+
+def test_single_result_line_a_failed_run_prints_its_line_once(rig: Rig) -> None:
+    """Step 7: the same after a failed run -> stdout exactly `<A> failed`."""
+    rig.lab.source.script(2, rig.lab.status_failure(2, 500))
+    interrupt_when_the_source_closes(rig)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(rig.lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} failed\n"
+    assert "interrupted" in result.err
+
+
+def test_single_result_line_an_escaped_exception_prints_running_once(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 7: nothing was printed by step 6 -> the one line is `<A> running`."""
+    monkeypatch.setattr(
+        ingest_command,
+        "run_ingest",
+        escaping(rig.lab.A, lambda: SyntheticDefect(BODY_MARKER)),
+    )
+    interrupt_when_the_source_closes(rig)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 130
+    assert result.out == f"{rig.lab.A} running\n"
+    assert BODY_MARKER not in result.err
+    assert "Traceback" not in result.err
+
+
+def test_single_result_line_a_command_that_announced_no_run_prints_nothing(
+    rig: Rig,
+) -> None:
+    """Step 7: no run was announced (a refused migration) -> stdout stays empty."""
+
+    def refused(settings: PostgresSettings, directory: Path) -> tuple[str, ...]:
+        raise MigrationLockError("another migration run holds the lock")
+
+    rig.migrate_impl = refused
+    interrupt_when_the_source_closes(rig)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 130
+    assert result.out == ""
+    assert "interrupted" in result.err
+    assert rig.calls == ["make_source", "migrate"]

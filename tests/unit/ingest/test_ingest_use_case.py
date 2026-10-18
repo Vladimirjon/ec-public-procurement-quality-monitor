@@ -28,6 +28,21 @@ The two tests that were vacuous (`progress_text` in `storage`, and
 `text_never_reaches_the_reporter` in `unexpected`) now assert first that the
 reporter received messages.
 
+The audit round 2 of 2026-10-18 added, at the end of the file (plan Revision 7):
+
+- `cleanup_database_error` (AC7, AC15, F-13: the K cleanup writes one line when one
+  of its own database operations fails) and `final_finish_read_run` (AC8, AC15,
+  F-13: the `read_run` after a refused P-2 repeat);
+- `pre_run_database_error` (AC9, AC10, AC12, AC15, AC24, F-14, F-15: a database
+  operation refused or lost before the run exists gives one line and a message that
+  names the identity, never INVALID_TARGET);
+- `repository_open_error` (AC15, F-16 a: the first `open_repository()`);
+- two `connection_loss` tests for the lines of the second opening and the second
+  exclusion of State machine C (required progress 2 and 3).
+
+`test_unexpected_cleanup_that_meets_a_database_error_leaves_the_run_running` was
+extended with the progress-line check (additions only).
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and page bodies report `pages` 9 unless a
 test says another value. Runs `A`, `B`, `C` and `D` are the seeded runs of `Lab`.
@@ -73,6 +88,7 @@ from ec_procurement_quality.domain.ingestion_catalogue import (
     ReconciliationProblem,
 )
 from ec_procurement_quality.domain.persistence_errors import (
+    PersistenceConnectionError,
     PersistenceError,
     PersistenceIntegrityError,
     PersistenceNotFoundError,
@@ -88,6 +104,7 @@ from ec_procurement_quality.infrastructure.local_disk_raw_evidence_store import 
 if TYPE_CHECKING:
     from tests.unit.ingest.conftest import (
         Lab,
+        LabState,
         ReadFaultStore,
         TransportScript,
         WireFailure,
@@ -1169,7 +1186,11 @@ def test_unexpected_exception_text_never_reaches_the_reporter(lab: Lab) -> None:
 def test_unexpected_cleanup_that_meets_a_database_error_leaves_the_run_running(
     lab: Lab,
 ) -> None:
-    """Q11: best effort -> RUN_FAILED with the run still `running`, no new connection."""
+    """Q11: best effort -> RUN_FAILED with the run still `running`, no new connection.
+
+    AC15, K (audit round 2, F-13): the lost append gets exactly one progress line,
+    naming the operation, the event type and the run, with at most the class name.
+    """
     lab.source.script(2, MemoryError())
     lab.opener.faults[1] = [
         lab.faults.lost_before_commit("append_audit_event", detail="unexpected-error")
@@ -1182,6 +1203,12 @@ def test_unexpected_cleanup_that_meets_a_database_error_leaves_the_run_running(
     assert lab.database.runs[created(outcome)].status is RunStatus.RUNNING
     assert lab.opener.opens == 1
     assert lab.opener.all_closed
+    lines = progress_lines(
+        lab, "append_audit_event", "unexpected-error", created(outcome)
+    )
+    assert len(lines) == 1, lab.reporter.messages
+    assert_names_at_most(lines[0], PersistenceConnectionError)
+    assert_clean_messages(lab)
 
 
 def test_unexpected_system_exit_is_never_caught(lab: Lab) -> None:
@@ -3588,3 +3615,611 @@ def test_progress_line_a_lost_connection_names_the_operation_and_the_run(
 
     assert progress_lines(lab, operation, FREE_ID), lab.reporter.messages
     assert_clean_messages(lab)
+
+
+# === Audit round 2 (2026-10-18), findings F-13 to F-16 =======================
+#
+# Written red against the Revision 7 specs. Tokens: `cleanup_database_error` and
+# `final_finish_read_run` (F-13), `pre_run_database_error` (F-14, F-15) and
+# `repository_open_error` (F-16 a). The extended test of F-13 is
+# `test_unexpected_cleanup_that_meets_a_database_error_leaves_the_run_running`.
+# The `connection_loss` tests of the second opening and the second exclusion follow
+# plan § Public names (required progress 2 and 3) and § State machine C steps 2, 3.
+
+DB_ERRORS = [PersistenceIntegrityError, PersistenceError, PersistenceConnectionError]
+INVALID_WORDS = ("invalid", "malformed", "cyclic", "contradictory")
+CAMEL_CASE = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+\b")
+EXECUTION_ID = re.compile(r"ingest-[0-9]{8}t[0-9]{6}z-[0-9a-f]{8}")
+
+
+def fail(
+    lab: Lab,
+    operation: str,
+    error: Callable[[str], BaseException],
+    *,
+    detail: str | None = None,
+    nth: int = 1,
+    execution_id: str | None = None,
+    open_index: int = 1,
+) -> None:
+    """Repository number `open_index` raises `error` on a call, delegating nothing.
+
+    The error carries `REFUSAL_TEXT`, so a progress line or an outcome message that
+    repeats the text of the error is caught. A `PersistenceConnectionError` also ends
+    that repository's connection, as in the real adapter.
+    """
+    lab.opener.faults.setdefault(open_index, []).append(
+        lab.faults.raises(
+            operation,
+            lambda: error(REFUSAL_TEXT),
+            detail=detail,
+            nth=nth,
+            execution_id=execution_id,
+        )
+    )
+
+
+def assert_names_at_most(message: str, error: type[BaseException]) -> None:
+    """Of the error, the line holds at most its class name (and none of its text)."""
+    assert REFUSAL_TEXT not in message, message
+    assert set(CAMEL_CASE.findall(message)) <= {error.__name__}, message
+
+
+def assert_one_progress_line(
+    lab: Lab,
+    operation: str,
+    error: type[BaseException],
+    *words: str,
+    numbers: tuple[int, ...] = (),
+) -> str:
+    """Exactly one line names `operation`, with `words` and `numbers`, and is safe."""
+    lines = [message for message in lab.reporter.messages if operation in message]
+    assert len(lines) == 1, (operation, lab.reporter.messages)
+    for word in words:
+        assert word in lines[0], (word, lines[0])
+    for number in numbers:
+        assert number_in(lines[0], number), (number, lines[0])
+    assert_names_at_most(lines[0], error)
+    assert_clean_messages(lab)
+    return lines[0]
+
+
+def assert_names_no_run(line: str) -> None:
+    """An operation that concerns no run is named alone: no execution id."""
+    assert EXECUTION_ID.search(line) is None, line
+
+
+def assert_identity_message(
+    outcome: IngestOutcome, identity: str, error: type[BaseException]
+) -> None:
+    """A fixed message that names the identity and gives no verdict on it."""
+    assert identity in outcome.message, outcome.message
+    assert outcome.message != error.__name__
+    assert REFUSAL_TEXT not in outcome.message
+    assert not any(word in outcome.message.lower() for word in INVALID_WORDS), (
+        outcome.message
+    )
+
+
+def assert_stopped_before_the_run(lab: Lab, before: LabState) -> None:
+    """Nothing was written, no run was announced, and no new connection was made."""
+    assert lab.snapshot() == before
+    assert written(lab, "start_run") == []
+    assert lab.reporter.started == []
+    assert lab.source.requests == []
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+# === cleanup_database_error (AC7, AC15, F-13) ================================
+
+CLEANUP_TRIGGERS = [
+    pytest.param(
+        IngestEnd.INTERRUPTED,
+        "run-interrupted",
+        lambda: KeyboardInterrupt(),
+        id="ctrl-c",
+    ),
+    pytest.param(
+        IngestEnd.RUN_FAILED, "unexpected-error", lambda: MemoryError(), id="memory"
+    ),
+]
+# The four database operations of State machine K, in order. Once one fails, the
+# writes of the later ones (and its own) must not reach the journal.
+CLEANUP_OPERATIONS = [
+    "read_run",
+    "record_observation",
+    "append_audit_event",
+    "finish_run",
+]
+FIRST_WRITE_LOST = {
+    "read_run": 0,
+    "record_observation": 0,
+    "append_audit_event": 1,
+    "finish_run": 2,
+}
+CLEANUP_ERRORS = [*DB_ERRORS, SyntheticDefect]
+
+
+@pytest.mark.parametrize("error", CLEANUP_ERRORS)
+@pytest.mark.parametrize("operation", CLEANUP_OPERATIONS)
+@pytest.mark.parametrize(("end", "event_type", "make_trigger"), CLEANUP_TRIGGERS)
+def test_cleanup_database_error_writes_one_line_and_stops_with_the_run_running(
+    lab: Lab,
+    end: IngestEnd,
+    event_type: str,
+    make_trigger: Callable[[], BaseException],
+    operation: str,
+    error: type[Exception],
+) -> None:
+    """AC15, K: one of the cleanup's own database operations raises.
+
+    Exactly one progress line names the operation (with the event type for the
+    append, sequence 2 for the record, `failed` for `finish_run`) and the run, with
+    at most the error's class name. The cleanup stops there: nothing is written
+    after it, no new connection is opened, and the run is left `running`.
+    """
+    lab.script_ids(FREE_ID)
+    store: RawEvidenceStore | None = None
+    words: tuple[str, ...] = (FREE_ID,)
+    numbers: tuple[int, ...] = ()
+    if operation == "record_observation":
+        # The interrupt lands after sequence 2 was published: the cleanup records it.
+        store = lab.publishes_then_fails(on_call=2, error=make_trigger)
+        fail(lab, operation, error, detail="2")
+        numbers = (2,)
+    else:
+        lab.source.script(2, make_trigger())
+        if operation == "read_run":
+            # The first `read_run` of the run is the identity check.
+            fail(lab, operation, error, nth=2, execution_id=FREE_ID)
+        elif operation == "append_audit_event":
+            fail(lab, operation, error, detail=event_type)
+            words = (event_type, FREE_ID)
+        else:
+            fail(lab, operation, error, detail="failed")
+            words = ("failed", FREE_ID)
+
+    outcome = call(lab, fresh(lab, 1, 3), store=store)
+
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert_one_progress_line(lab, operation, error, *words, numbers=numbers)
+    steps = ["record_observation:2", f"append:{event_type}", "finish_run:failed"]
+    written_labels = set(lab.journal.labels(FREE_ID))
+    assert not set(steps[FIRST_WRITE_LOST[operation] :]) & written_labels
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+# === final_finish_read_run (AC8, AC15, F-13) =================================
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_final_finish_read_run_that_cannot_read_the_stored_run_is_named(
+    lab: Lab, error: type[PersistenceError]
+) -> None:
+    """C step 5, P-2: the repeat is refused and then the `read_run` fails.
+
+    The `read_run` gets its own line (the operation and the run); nothing more is
+    written, no third connection is opened, and the run is left `running`.
+    """
+    lose_the_final_finish(lab, "before")
+    fail(
+        lab,
+        "finish_run",
+        PersistenceIntegrityError,
+        detail="succeeded",
+        open_index=2,
+    )
+    fail(lab, "read_run", error, open_index=2)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.RUNNING
+    assert outcome.execution_id == FREE_ID
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert_one_progress_line(lab, "read_run", error, FREE_ID)
+    assert "storage-failed" not in lab.event_types(FREE_ID)
+    assert lab.opener.attempts_of("finish_run", "failed") == []
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === pre_run_database_error (AC9, AC10, AC12, AC15, AC24; F-14, F-15) ========
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_pre_run_database_error_the_exclusion_that_cannot_be_taken_is_named(
+    lab: Lab, error: type[PersistenceError]
+) -> None:
+    """Invocation step 5.2: the exclusion is refused or lost -> NOT_STARTED."""
+    before = lab.snapshot()
+    fail(lab, "try_acquire_ingest_exclusion", error)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    line = assert_one_progress_line(lab, "try_acquire_ingest_exclusion", error)
+    assert_names_no_run(line)
+    assert outcome.message != error.__name__
+    assert REFUSAL_TEXT not in outcome.message
+    assert_stopped_before_the_run(lab, before)
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_pre_run_database_error_list_runs_that_fails_is_named(
+    lab: Lab, error: type[PersistenceError]
+) -> None:
+    """State machine R: `list_runs` is refused or lost -> NOT_STARTED."""
+    before = lab.snapshot()
+    fail(lab, "list_runs", error)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    line = assert_one_progress_line(lab, "list_runs", error)
+    assert_names_no_run(line)
+    assert outcome.message != error.__name__
+    assert REFUSAL_TEXT not in outcome.message
+    assert_stopped_before_the_run(lab, before)
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_pre_run_database_error_the_target_read_is_not_started_and_never_invalid(
+    lab: Lab, error: type[PersistenceError]
+) -> None:
+    """State machine T: an unreadable target is NOT_STARTED, not INVALID_TARGET.
+
+    Its existence is unknown, so it is not an input error (exit 1, not 2).
+    """
+    seed_run(lab, lab.A, pages=(1, 2))
+    before = lab.snapshot()
+    fail(lab, "read_run", error, execution_id=lab.A)
+
+    outcome = call(lab, resume(lab.A))
+
+    assert_not_started(outcome)
+    assert_one_progress_line(lab, "read_run", error, lab.A)
+    assert_identity_message(outcome, lab.A, error)
+    assert_stopped_before_the_run(lab, before)
+
+
+@pytest.mark.parametrize(("setup", "operation", "detail", "events"), RECONCILE_REFUSALS)
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_pre_run_database_error_reconciliation_names_the_run(
+    lab: Lab,
+    error: type[PersistenceError],
+    setup: Callable[[Lab], None],
+    operation: str,
+    detail: str | None,
+    events: list[str],
+) -> None:
+    """State machine R: a refused or lost read or write names the operation and `X`.
+
+    Nothing more is written to `X`, which stays `running`; no new connection.
+    """
+    setup(lab)
+    fail(lab, operation, error, detail=detail)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    words = [detail, lab.A] if operation == "append_audit_event" and detail else [lab.A]
+    assert_one_progress_line(lab, operation, error, *words)
+    assert_identity_message(outcome, lab.A, error)
+    assert lab.event_types(lab.A) == events
+    assert lab.database.runs[lab.A].status is RunStatus.RUNNING
+    assert list(lab.database.runs) == [lab.A]
+    assert written(lab, "start_run") == []
+    assert lab.source.requests == []
+    assert lab.reporter.started == []
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+def test_pre_run_database_error_reconciliation_record_that_is_lost_names_the_run(
+    lab: Lab,
+) -> None:
+    """State machine R step 5: a lost `record_observation` of `X` sequence 3.
+
+    A refusal is the `postgresql-observation-conflict` problem; a loss is not a
+    verdict, so `X` is left as it was.
+    """
+    reconcile_with_a_local_only_observation(lab)
+    fail(lab, "record_observation", PersistenceConnectionError, detail="3")
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    assert_one_progress_line(
+        lab, "record_observation", PersistenceConnectionError, lab.A, numbers=(3,)
+    )
+    assert_identity_message(outcome, lab.A, PersistenceConnectionError)
+    assert lab.event_types(lab.A) == []
+    assert lab.sequences(lab.A) == (1, 2)
+    assert lab.database.runs[lab.A].status is RunStatus.RUNNING
+    assert written(lab, "start_run") == []
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+def a_two_run_chain(lab: Lab) -> None:
+    """B completed pages 1 and 2; A resumes B, completed page 3 and failed."""
+    seed_run(lab, lab.B, pages=(1, 2))
+    seed_run(lab, lab.A, resumes=lab.B, first_page=3, pages=(3,))
+
+
+# (operation, the run it reads, the sequence for `read_observation`)
+CHAIN_READS = [
+    pytest.param("read_run", "B", None, id="earlier-run"),
+    pytest.param("list_audit_events", "A", None, id="events-of-the-target"),
+    pytest.param("read_observation", "B", "2", id="postgresql-observation"),
+]
+
+
+@pytest.mark.parametrize(("operation", "whose", "sequence"), CHAIN_READS)
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_pre_run_database_error_chain_read_is_an_operational_failure_not_a_verdict(
+    lab: Lab,
+    error: type[PersistenceError],
+    operation: str,
+    whose: str,
+    sequence: str | None,
+) -> None:
+    """State machine H: the read fails; the chain is not called malformed.
+
+    The line names the run that was read; the message names the target.
+    """
+    a_two_run_chain(lab)
+    run_read = lab.A if whose == "A" else lab.B
+    before = lab.snapshot()
+    fail(lab, operation, error, detail=sequence, execution_id=run_read)
+
+    outcome = call(lab, resume(lab.A))
+
+    assert_not_started(outcome)
+    numbers = () if sequence is None else (int(sequence),)
+    assert_one_progress_line(lab, operation, error, run_read, numbers=numbers)
+    assert_identity_message(outcome, lab.A, error)
+    assert_stopped_before_the_run(lab, before)
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_pre_run_database_error_the_drawn_id_that_cannot_be_checked_is_named(
+    lab: Lab, error: type[PersistenceError]
+) -> None:
+    """State machine I: the `read_run` of the drawn id fails -> no `start_run`."""
+    lab.script_ids(FREE_ID)
+    before = lab.snapshot()
+    fail(lab, "read_run", error, execution_id=FREE_ID)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    assert_one_progress_line(lab, "read_run", error, FREE_ID)
+    assert_identity_message(outcome, FREE_ID, error)
+    assert_stopped_before_the_run(lab, before)
+
+
+@pytest.mark.parametrize("error", [OSError, EvidenceIntegrityError])
+def test_pre_run_database_error_the_store_listing_of_the_drawn_id_that_fails_is_named(
+    lab: Lab, error: Callable[[str], BaseException]
+) -> None:
+    """State machine I: `list_observation_sequences` of the drawn id raises."""
+    lab.script_ids(FREE_ID)
+    before = lab.snapshot()
+    store = lab.faulty_reads()
+    store.fail_listing(FREE_ID, lambda: error(REFUSAL_TEXT))
+
+    outcome = call(lab, fresh(lab, 1, 2), store=store)
+
+    assert_not_started(outcome)
+    assert_identity_message(outcome, FREE_ID, PersistenceError)
+    assert_stopped_before_the_run(lab, before)
+
+
+# What a state machine reads as an answer is not a refusal: it gets no line.
+
+
+def test_pre_run_database_error_an_unknown_target_is_an_answer_and_gets_no_line(
+    lab: Lab,
+) -> None:
+    """State machine T: `PersistenceNotFoundError` -> INVALID_TARGET, no line."""
+    outcome = call(lab, resume(lab.ABSENT))
+
+    assert outcome.end is IngestEnd.INVALID_TARGET
+    assert not any(
+        "read_run" in message or "PersistenceNotFoundError" in message
+        for message in lab.reporter.messages
+    ), lab.reporter.messages
+
+
+def test_pre_run_database_error_a_held_exclusion_is_an_answer_and_gets_no_line(
+    lab: Lab,
+) -> None:
+    """Invocation step 5.2: a `False` from the exclusion is not a refusal."""
+    lab.database.hold_exclusion_elsewhere()
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    assert not any(
+        "try_acquire_ingest_exclusion" in message for message in lab.reporter.messages
+    ), lab.reporter.messages
+
+
+@pytest.mark.parametrize(
+    "build",
+    [chain_link_to_no_run, chain_page_completed_without_a_postgresql_observation],
+)
+def test_pre_run_database_error_a_missing_chain_row_is_an_answer_and_gets_no_line(
+    lab: Lab, build: Callable[[Lab], str]
+) -> None:
+    """State machine H steps 1 and 2: `PersistenceNotFoundError` is a verdict."""
+    target = build(lab)
+
+    outcome = call(lab, resume(target))
+
+    assert_not_started(outcome)
+    assert not any(
+        "read_run" in message
+        or "read_observation" in message
+        or "PersistenceNotFoundError" in message
+        for message in lab.reporter.messages
+    ), lab.reporter.messages
+
+
+def test_pre_run_database_error_a_free_drawn_id_is_an_answer_and_gets_no_line(
+    lab: Lab,
+) -> None:
+    """State machine I: `read_run` of the drawn id raising `PersistenceNotFoundError`."""
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert outcome.end is IngestEnd.SUCCEEDED
+    assert not any(
+        "read_run" in message or "PersistenceNotFoundError" in message
+        for message in lab.reporter.messages
+    ), lab.reporter.messages
+
+
+# === connection_loss: the second opening and the second exclusion of C ========
+
+
+def lose_record_two(lab: Lab) -> None:
+    lab.script_ids(FREE_ID)
+    lost_at(lab, "record_observation", "2", "before")
+
+
+@pytest.mark.parametrize("error", [PersistenceConnectionError, PersistenceError])
+def test_connection_loss_the_second_opening_that_fails_is_named(
+    lab: Lab, error: type[PersistenceError]
+) -> None:
+    """C step 2: `open_repository()` fails -> a line naming it; the run is `running`."""
+    lose_record_two(lab)
+    lab.opener.open_errors[2] = lambda: error(REFUSAL_TEXT)
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.RUNNING
+    line = assert_one_progress_line(lab, "open_repository", error)
+    assert_names_no_run(line)
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("error", [PersistenceError, PersistenceConnectionError])
+def test_connection_loss_the_second_exclusion_that_fails_is_named(
+    lab: Lab, error: type[PersistenceError]
+) -> None:
+    """C step 3: the exclusion on the new connection fails -> a line naming it."""
+    lose_record_two(lab)
+    fail(lab, "try_acquire_ingest_exclusion", error, open_index=2)
+
+    outcome = call(lab, fresh(lab, 1, 3))
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.run_status is RunStatus.RUNNING
+    line = assert_one_progress_line(lab, "try_acquire_ingest_exclusion", error)
+    assert_names_no_run(line)
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed"]
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === repository_open_error (AC15, F-16 a) ====================================
+
+
+def nothing_was_written(lab: Lab) -> bool:
+    return (
+        lab.journal.entries == []
+        and lab.database.runs == {}
+        and lab.source.requests == []
+        and lab.reporter.started == []
+        and lab.store.observations == {}
+    )
+
+
+def test_repository_open_error_a_keyboard_interrupt_ends_interrupted_with_no_run(
+    lab: Lab,
+) -> None:
+    """Public names, `run_ingest`: Ctrl+C in the first `open_repository()`.
+
+    The call returns INTERRUPTED with no run; the exception does not escape.
+    """
+    lab.opener.open_errors[1] = lambda: KeyboardInterrupt()
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.execution_id is None
+    assert outcome.run_status is None
+    assert nothing_was_written(lab)
+    assert lab.opener.opens == 1
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(lambda: MemoryError(), id="memory-error"),
+        pytest.param(lambda: SyntheticDefect(BODY_MARKER), id="synthetic-defect"),
+    ],
+)
+def test_repository_open_error_any_other_exception_ends_not_started(
+    lab: Lab, make_error: Callable[[], Exception]
+) -> None:
+    """The opening fails with a defect: NOT_STARTED, a fixed message, nothing written.
+
+    The message names the opening of the repository and at most the class name.
+    """
+    error = make_error()
+    lab.opener.open_errors[1] = lambda: error
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    message = outcome.message.lower()
+    assert "repository" in message or "open" in message, outcome.message
+    assert outcome.message != type(error).__name__
+    assert BODY_MARKER not in outcome.message
+    assert set(CAMEL_CASE.findall(outcome.message)) <= {type(error).__name__}
+    assert nothing_was_written(lab)
+    assert lab.opener.opens == 1
+
+
+@pytest.mark.parametrize("error", DB_ERRORS)
+def test_repository_open_error_a_database_error_is_named_on_stderr(
+    lab: Lab, error: type[PersistenceError]
+) -> None:
+    """Required progress 2 and 3: `open_repository` refused or lost gets its line."""
+    lab.opener.open_errors[1] = lambda: error(REFUSAL_TEXT)
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert_not_started(outcome)
+    line = assert_one_progress_line(lab, "open_repository", error)
+    assert_names_no_run(line)
+    assert REFUSAL_TEXT not in outcome.message
+    assert nothing_was_written(lab)
+    assert lab.opener.opens == 1
+
+
+def test_repository_open_error_a_keyboard_interrupt_before_the_exclusion_is_closed(
+    lab: Lab,
+) -> None:
+    """Ctrl+C once a repository was obtained: INTERRUPTED, and it is closed."""
+    lab.opener.faults[1] = [lab.faults.interrupts("try_acquire_ingest_exclusion")]
+
+    outcome = call(lab, fresh(lab, 1, 2))
+
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.execution_id is None
+    assert outcome.run_status is None
+    assert nothing_was_written(lab)
+    assert lab.opener.opens == 1
+    assert len(lab.opener.repositories) == 1
+    assert lab.opener.all_closed

@@ -951,6 +951,21 @@ class Fault:
     hook: Callable[[], None] | None = None
     matched: int = 0
     fired: bool = False
+    # Audit round 2: when set, only a call about this run (its first argument, or
+    # the run of the observation) matches, so a test can aim at one run's read.
+    execution_id: str | None = None
+
+
+def _identity_of(args: tuple[object, ...]) -> str | None:
+    """The execution id a repository call is about, if it names one."""
+    if not args:
+        return None
+    first = args[0]
+    if isinstance(first, str):
+        return first
+    if isinstance(first, Observation):
+        return first.execution_id
+    return None
 
 
 @dataclass(frozen=True)
@@ -983,8 +998,11 @@ class FaultKit:
         detail: str | None = None,
         nth: int = 1,
         hook: Callable[[], None] | None = None,
+        execution_id: str | None = None,
     ) -> Fault:
-        return Fault(operation, "before", nth, detail, hook=hook)
+        return Fault(
+            operation, "before", nth, detail, hook=hook, execution_id=execution_id
+        )
 
     @staticmethod
     def refuses(
@@ -993,8 +1011,11 @@ class FaultKit:
         *,
         detail: str | None = None,
         nth: int = 1,
+        execution_id: str | None = None,
     ) -> Fault:
-        return Fault(operation, "before", nth, detail, error=error)
+        return Fault(
+            operation, "before", nth, detail, error=error, execution_id=execution_id
+        )
 
     @staticmethod
     def interrupts(
@@ -1014,9 +1035,12 @@ class FaultKit:
         detail: str | None = None,
         nth: int = 1,
         when: Literal["before", "after"] = "before",
+        execution_id: str | None = None,
     ) -> Fault:
         """Any exception (a `MemoryError`, for one) on the n-th matching call."""
-        return Fault(operation, when, nth, detail, error=error)
+        return Fault(
+            operation, when, nth, detail, error=error, execution_id=execution_id
+        )
 
 
 class FlakyRepository:
@@ -1051,6 +1075,10 @@ class FlakyRepository:
             if fault.fired or fault.operation != operation:
                 continue
             if fault.detail is not None and fault.detail != detail:
+                continue
+            if fault.execution_id is not None and fault.execution_id != _identity_of(
+                args
+            ):
                 continue
             fault.matched += 1
             if fault.matched != fault.nth:
@@ -1183,12 +1211,17 @@ class RepositoryOpenerDouble:
         self._journal = journal
         self.opens = 0
         self.fail_opens: set[int] = set()
+        # Audit round 2 (F-16): the n-th open raises any exception, a
+        # `KeyboardInterrupt` or a `MemoryError` included.
+        self.open_errors: dict[int, Callable[[], BaseException]] = {}
         self.faults: dict[int, list[Fault]] = {}
         self.attempts: list[Attempt] = []
         self.repositories: list[FlakyRepository] = []
 
     def __call__(self) -> ClosableIngestionRepository:
         self.opens += 1
+        if self.opens in self.open_errors:
+            raise self.open_errors[self.opens]()
         if self.opens in self.fail_opens:
             raise PersistenceConnectionError(
                 "synthetic: the database cannot be reached"
