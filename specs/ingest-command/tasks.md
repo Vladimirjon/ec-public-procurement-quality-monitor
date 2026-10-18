@@ -38,6 +38,14 @@ Gate 1 approved on 2026-10-15. No outcome of F4 has been started.
   - `uv run mypy .` -> success on 34 source files;
   - `uv run node .sdd/doctor/run-doctor.mjs` -> `31 ok`, 0 warned, 0 failed.
 - **Pre-existing failures:** none.
+- **Re-recorded on Day 19, 2026-10-16, at `6b34374`** (`main` after the merge of PR #24; branch `feat/ingest-command`). The Docker Desktop daemon was stopped, so it was started and then `docker compose up -d --wait` brought the service to healthy.
+  - `uv sync --locked` -> ok;
+  - `uv run pytest -q` without a database -> `1132 passed`, `175 skipped` (same as Day 18);
+  - `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term` -> `1307 passed`, total coverage 96 % (same as Day 18);
+  - `uv run ruff check .` -> clean; `uv run ruff format --check .` -> `100 files already formatted` (97 before the specs, plus the Python fences of `intent.md`, `execution-plan.md` and the Day 18 files; the Day 18 note said 99);
+  - `uv run mypy .` -> success on 34 source files;
+  - `uv run node .sdd/doctor/run-doctor.mjs` -> `31 ok`, 0 warned, 0 failed;
+  - Python 3.13.9. Nothing differs from the Day 18 results except the base commit and the ruff file count.
 - **Re-record the baseline.** At the start of implementation the executor re-runs every command above on the commit it branches from and records the results here, because `main` may have moved since Day 18.
 
 ## Constraints (from `AGENTS.md`, intent § Constraints)
@@ -101,7 +109,7 @@ Order and ownership. This follows `execution-plan.md` Revision 4 § Rollout orde
 
 Where an AC has a use-case part and a CLI part, the use-case part is tested in O4 and made green in O5, and the CLI part (exit code, stdout, stderr, the integration end-to-end through `run_ingest_command`) is tested in O6b and made green in O6c.
 
-- [ ] **O1** (AC22; AC20 for F1) — M1, the F1 listing, with its tests.
+- [x] **O1** (AC22; AC20 for F1) — M1, the F1 listing, with its tests.
   - Tests, test-writer first: `tests/unit/test_local_disk_raw_evidence_store_listing.py`, the AC22 row of plan § Validation. Right red reason: `AttributeError` for `list_observation_sequences` on `LocalDiskRawEvidenceStore`.
   - Code, executor, without editing the tests: `src/ec_procurement_quality/application/raw_evidence_store.py` (`list_observation_sequences` in the port) and `src/ec_procurement_quality/infrastructure/local_disk_raw_evidence_store.py` (its implementation, read-only), exactly as plan § F1 port extension.
   - Shipped capability touched, `raw-evidence`: write-once publication, no deletions and integrity on read stay unchanged. These existing tests must keep passing unchanged:
@@ -110,10 +118,15 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
     - `tests/unit/test_content_hash.py`;
     - the store-shape test in `tests/unit/test_sercop_source.py`;
     - `tests/unit/test_layers.py`.
-  - Red: to record (test-writer). `uv run pytest tests/unit/test_local_disk_raw_evidence_store_listing.py -q`.
-  - Green: to record (executor). The same command; broader `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`; `uv run mypy .` for the typed assignment.
+  - Red: recorded on 2026-10-16 (test-writer, re-run by the conductor). `uv run pytest tests/unit/test_local_disk_raw_evidence_store_listing.py -q` -> `25 failed`, 0 passed, 0 errors; every failure is `AttributeError: 'LocalDiskRawEvidenceStore' object has no attribute 'list_observation_sequences'` (no collection, import, database or socket error). `tests/unit/test_local_disk_raw_evidence_store.py` -> 60 passed. `ruff check` and `ruff format --check` clean (101 files). `uv run mypy .` reports 21 `attr-defined` errors, all of that missing method in the new file and nothing else (expected in the red phase; no `type: ignore`).
+  - Green: recorded on 2026-10-16 (executor, re-run by the conductor), awaiting the human's review stop.
+    - `uv run pytest tests/unit/test_local_disk_raw_evidence_store_listing.py -q` -> `25 passed`;
+    - the F1 and layer tests (`test_local_disk_raw_evidence_store.py`, `test_raw_evidence.py`, `test_content_hash.py`, `test_sercop_source.py`, `test_layers.py`) -> `915 passed`, unedited;
+    - `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing -q` -> `1332 passed` (1307 + 25), total coverage 96 %;
+    - `uv run mypy .` -> success on 35 source files; `ruff check` clean; `ruff format --check` -> 101 files;
+    - `git diff --stat -- src tests`: only `application/raw_evidence_store.py` (+2) and `infrastructure/local_disk_raw_evidence_store.py` (+33); the test file is unchanged.
   - Done-check: the listing tests pass; the F1 tests above are unchanged and pass; the executor's `git diff --stat` touches only the two modules. Review stop.
-- [ ] **O2** (AC23; AC16 runner part and decision P-1; AC20 for F3) — M2, the F3 extension and `MigrationLockError`, with their tests.
+- [x] **O2** (AC23; AC16 runner part and decision P-1; AC20 for F3) — M2, the F3 extension and `MigrationLockError`, with their tests.
   - Tests, test-writer first:
     - `tests/integration/ingest/conftest.py`, the part that `test_postgres_runs_and_exclusion.py` needs: the guard that allows `getaddrinfo` only for `POSTGRES_HOST`, and the session check that the real `data/raw/` is unchanged. It is extended in O6b;
     - `tests/integration/ingest/test_postgres_runs_and_exclusion.py`, the AC23 row;
@@ -136,14 +149,21 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
     - `tests/integration/test_postgres_schema.py`;
     - `tests/integration/test_postgres_ingestion_repository.py`, including `satisfies_port`;
     - `tests/integration/test_postgres_isolation.py`.
-  - Red: to record (test-writer), with the commands below.
-  - Green: to record (executor):
-    - `uv run --env-file .env pytest tests/integration/ingest/test_postgres_runs_and_exclusion.py -q`;
-    - `uv run pytest tests/unit/test_persistence_error_hierarchy.py -q`;
-    - `uv run --env-file .env pytest tests/integration/test_postgres_migration_lock_error.py tests/integration/test_postgres_migrations.py -q -k "lock or runner"`;
-    - broader `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing`.
+  - Red: recorded on 2026-10-16 (test-writer, re-run by the conductor).
+    - `uv run --env-file .env pytest tests/integration/ingest/test_postgres_runs_and_exclusion.py -q` -> `22 failed`, 2 passed (the 2 are the guard proof tests, which need no new code). Reasons: `AttributeError` for `list_runs` (11), `AttributeError` for `try_acquire_ingest_exclusion` (6), `ImportError` of `INGEST_EXCLUSION_KEY` inside the test (5);
+    - `uv run pytest tests/unit/test_persistence_error_hierarchy.py -q` -> `3 failed`, all `ImportError` of `MigrationLockError` inside the test;
+    - `uv run --env-file .env pytest tests/integration/test_postgres_migration_lock_error.py tests/integration/test_postgres_migrations.py -q -k "lock or runner"` -> `9 failed`, 14 passed; all 9 are `ImportError` of `MigrationLockError` inside the test (3 busy-lock, 5 non-lock cases, the edited PS-4 test);
+    - `uv run --env-file .env pytest -q` -> `34 failed`, 1333 passed (1332 + the 2 guard proof tests); the 34 are exactly the tests above; no collection error, no missing database, no socket attempt, no touch of the real `data/raw/`; 0 `ecpq_test_` databases left; `git diff --numstat -- tests/integration/test_postgres_migrations.py` -> `3 0` (additions only); `ruff check` and `ruff format --check` clean (105 files);
+    - `uv run mypy .` now aborts with `Duplicate module named "conftest"`: see Working state, finding F-1.
+  - Green: recorded on 2026-10-17 (executor, full suite re-run by the conductor), awaiting the human's review stop:
+    - `uv run --env-file .env pytest tests/integration/ingest/test_postgres_runs_and_exclusion.py -q` -> `24 passed`;
+    - `uv run pytest tests/unit/test_persistence_error_hierarchy.py -q` -> `3 passed`;
+    - `uv run --env-file .env pytest tests/integration/test_postgres_migration_lock_error.py tests/integration/test_postgres_migrations.py -q -k "lock or runner"` -> `23 passed`;
+    - broader `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing` -> `1367 passed`, total coverage 96 %; without a database, `uv run pytest -q` -> `1161 passed`, `206 skipped`;
+    - `uv run mypy .` -> success on 39 source files (with the F-1 setting); `ruff check` clean; `ruff format --check` -> 105 files; 0 `ecpq_test_` databases left; `git diff --numstat -- tests` -> `3 0` (the one PS-4 edit, additions only);
+    - the line coverage reports as missed in `postgres_migrations.py` is the old `_raise_for(...)` of a lock that cannot be taken; the `raise MigrationLockError` line is covered.
   - Done-check: the tests pass, with no `ecpq_test_` database left; the hierarchy test pins the AC16 (P-1) points; every non-lock case is not a `MigrationLockError`. Review stop.
-- [ ] **O3** (AC12 id rule; AC13 catalogue and scope; AC18; decision P-4 helper) — executor, M3, the production contracts of `domain`, `application` and `infrastructure`.
+- [x] **O3** (AC12 id rule; AC13 catalogue and scope; AC18; decision P-4 helper) — executor, M3, the production contracts of `domain`, `application` and `infrastructure`.
   - Files:
     - `src/ec_procurement_quality/domain/ingestion_catalogue.py`: the enums, `IngestScope`, `WINDOWS_RESERVED_NAMES`, `validate_ingest_execution_id`, `pages_left_to_request`;
     - `src/ec_procurement_quality/application/ingest_ports.py`: `Clock`, `ExecutionIdSource`, `ClosableIngestionRepository`, `RepositoryOpener`, `IngestReporter`;
@@ -153,7 +173,8 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
   - No test files: these contracts are tested in O4.
   - Check: `uv run mypy .` (strict flags on the new `domain` module); `uv run ruff check .`; `uv run pytest -q` stays at the O2 count.
   - Done-check: every name of plan § Public names and signatures for these four modules exists with the pinned signature. The executor stops; the test-writer takes O4.
-- [ ] **O4** (use-case parts of AC1 to AC13, AC17 and AC24; AC18; the unit guard of AC19; the use-case parts of P-2, P-3, P-4 and P-5) — test-writer, after M3: the F4 red tests that M3 makes expressible, and the doubles; then gate 2.
+  - Evidence, recorded on 2026-10-17 (executor, re-run by the conductor): four new files only (`domain/ingestion_catalogue.py`, `application/ingest_ports.py`, `application/ingest_use_case.py`, `infrastructure/system_clock.py`); `run_ingest` only raises `NotImplementedError`; `interfaces` unchanged. `uv run mypy .` -> success on 43 source files; `ruff check` clean; `ruff format --check` -> 109 files; `uv run pytest -q` -> `1161 passed`, `206 skipped` (the O2 count); `uv run --env-file .env pytest -q` -> `1367 passed`; `uv run pytest tests/unit -q -k layer` -> `8 passed`; no SQL, `advisory`, `pg_`, `.json`, `objects/` or `observations/` string under `application/`. No test file was added.
+- [x] **O4** (use-case parts of AC1 to AC13, AC17 and AC24; AC18; the unit guard of AC19; the use-case parts of P-2, P-3, P-4 and P-5) — test-writer, after M3: the F4 red tests that M3 makes expressible, and the doubles; then gate 2.
   - **Why now:** the doubles are the test-writer's job, but they are written only once the production contracts they must implement exist (O1 to O3). That way the red phase shows the expected functional failures, not import or collection errors (decision of the human, 2026-10-15).
   - Files, all new:
     - `tests/unit/ingest/conftest.py`: the autouse socket guard, `InMemoryRawEvidenceStore`, `InMemoryIngestionRepository` (PS-7 to PS-9 rules, the exclusion as a shared flag), `FakeSource`, `FixedClock`, `ScriptedExecutionIds`, `RecordingReporter`, and the fault-injection wrappers of the plan's seams table (`PublishThenFailStore`, `FlakyRepository`, interrupt wrappers);
@@ -167,9 +188,16 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
     - every integration end-to-end row (`tests/integration/ingest/test_ingest_end_to_end.py`, `tests/integration/ingest/test_ingest_connection_loss.py`), because they go through `run_ingest_command` or assert exit codes and stdout;
     - every assertion on exit codes, stdout or stderr.
   - Right red reasons: `NotImplementedError` from the `run_ingest` stub; functional assertions that the stub cannot meet. The catalogue and layer tests already pass, because O3 delivered those contracts; record them as green.
-  - Red: to record (test-writer). `uv run pytest tests/unit/ingest -q` and the focused tokens of O5, with counts and reasons.
-  - Done-check: gate 2 passed, with the human's words recorded in § Working state.
-- [ ] **O5** 🧑 (AC1 to AC11, use-case parts; AC12 use of the id check; AC13 details; AC17; AC24; decisions P-2, P-3, P-4 and P-5, use-case parts) — the human writes `run_ingest` in `src/ec_procurement_quality/application/ingest_use_case.py` by hand. This is Day 19, "Implementa tú el caso de uso en application".
+  - Red: recorded on 2026-10-17 (test-writer, re-run by the conductor), awaiting gate 2.
+    - `uv run pytest tests/unit/ingest -q` -> `268 failed`, `119 passed`, 0 errors (387 tests). `test_ingestion_catalogue.py` -> 111 passed (green, as planned); `test_ingest_layers.py` -> 8 passed (green); `test_ingest_use_case.py` -> 268 failed.
+    - Reasons: all 268 failures are `NotImplementedError` from the `run_ingest` stub; no collection or import error, no missing database, no socket attempt, nothing under the real `data/raw/` (`data/raw` still empty), no `type: ignore`, no test reads `.env`.
+    - O5 focused groups (they overlap, because the plan's tokens do; their union is the 268): group 1 -> 88 failed; group 2 -> 213 failed; group 3 -> 51 failed.
+    - Tests per token: success 9, repeat 4, last_page 41, failure_with_response 16, failure_without_response 6, no_retry 6, storage 7, interrupt 5, unexpected 5, connection_loss 38, connection_loss_final_finish 12, resume 12, reconcile 21, closed_run 3, identity 13, chain 115, last_page_p3 6, chain_last_page 33, catalogue 111, scope 51, execution_id 45, layer 8.
+    - `uv run pytest -q` -> `268 failed`, `1280 passed`, `206 skipped` (1161 + the 119 green); `ruff check` clean; `ruff format --check` -> 113 files; `uv run mypy .` -> success on 47 source files.
+    - Soundness (scratchpad only, not in the repo): a throwaway reference `run_ingest` makes all 387 tests pass; 35 of 38 mutants are caught, the 3 survivors change no reachable behavior.
+    - Files: `tests/unit/ingest/conftest.py` (guard, `InMemoryRawEvidenceStore`, `InMemoryIngestionRepository` with a shared `InMemoryDatabase`, `FakeSource`, `FixedClock`, `ScriptedExecutionIds`, `RecordingReporter`, `RepositoryOpenerDouble`, `FlakyRepository`, `PublishThenFailStore`, `RefusingStore`, `Seeder`, `TransportScript`, `Journal`, one `lab` fixture), `test_ingestion_catalogue.py`, `test_ingest_use_case.py`, `test_ingest_layers.py`.
+  - Done-check: gate 2 passed on 2026-10-17, with the human's words recorded in § Working state: "rojo por el motivo correcto".
+- [x] **O5** 🧑 (AC1 to AC11, use-case parts; AC12 use of the id check; AC13 details; AC17; AC24; decisions P-2, P-3, P-4 and P-5, use-case parts) — the human writes `run_ingest` in `src/ec_procurement_quality/application/ingest_use_case.py` by hand. This is Day 19, "Implementa tú el caso de uso en application".
   - Contract: the state machines of the plan's § Binding constraints, which are P, C, K, T, R, H and I, and nothing beyond them. P-2 is in C, P-3 in P step 5, P-4 in H steps 4 and 5, and the `last-page-reached` validation and coverage in H step 3.
   - The executor does not write this module's body. It may run the tests and report failures.
   - Tests: `tests/unit/ingest/test_ingest_use_case.py`, from O4.
@@ -179,6 +207,8 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
     - `uv run pytest tests/unit/ingest -q -k "connection_loss_final_finish or last_page_p3 or chain_last_page"`;
     - broader `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`.
   - Done-check: every O4 test passes with the in-memory doubles; no test was edited to pass; `uv run ruff check .` and `uv run mypy .` are clean.
+  - Evidence, recorded on 2026-10-17 (the human wrote `run_ingest` by hand; the conductor only ran the commands): `uv run pytest tests/unit/ingest -q` -> `387 passed`; the three `-k` groups -> `88 passed`, `213 passed`, `51 passed`; `uv run pytest -q` without a database -> `1548 passed`, `206 skipped`; `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing -q` -> `1754 passed`, total coverage 95 % (`ingest_use_case.py` 91 %); `uv run mypy .` -> success on 47 source files; `ruff check` clean; `ruff format --check` -> 113 files; 0 `ecpq_test_` databases left; `git diff --stat -- tests` shows only the one PS-4 edit (+3 lines).
+  - F-3, the author's reading (pending the architect): an `OSError` from the read-back after a failed `store` is treated like `EvidenceNotFoundError` (`storage-failed`, `raw-evidence`, run `failed`), as the cross-platform expectation of the AC6 (a) test needs. The branch that handles `store.read_observation` catches `EvidenceNotFoundError` and `OSError` only; what happens when the read-back raises `EvidenceIntegrityError` is not specified by the plan and is not covered by a test. The human takes it to the architect.
 - [ ] **O6a** (M5 skeleton; no AC turns green yet) — executor: only the importable skeleton of the CLI composition.
   - Files:
     - `src/ec_procurement_quality/interfaces/ingest_command.py` with `ClosableSource`, `IngestWiring`, `default_wiring` and `run_ingest_command`, with the signatures the plan fixes, each raising `NotImplementedError` (no behavior);
@@ -273,18 +303,24 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
 - **Source-access U1:** the first live comparison happens at the Day 20 run.
 
 ## Working state
-- Updated: 2026-10-15
-- Outcome: none started
-- Phase: gate 1 closed on 2026-10-15 (`intent.md` Revision 6, `execution-plan.md` Revision 4 and this file Revision 1); PR #24 awaits the final review and the human's explicit merge OK
+- Updated: 2026-10-17
+- Outcome: O1 to O5 done; gate 2 passed on 2026-10-17 (the human's words: "rojo por el motivo correcto"); F-1 decided (option a, see § Finding responses)
+- Phase: branch `feat/ingest-command`; O5 done: the human wrote `run_ingest` by hand; the day 19 closing (journal, commit, push) is made; no pull request is open
 - In progress: nothing
-- Last command: `uv run ruff format --check .` -> clean, 100 files (2026-10-15)
-- Next step: after the merge of PR #24, create a new implementation branch from the updated `main` and start O1 (M1: the test-writer first, then the executor)
+- Last command: `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing -q` -> 1754 passed, 95 % (2026-10-17)
+- **Finding F-1 (decided by the human on 2026-10-16, option a; see § Finding responses; the specs are not changed):** `uv run mypy .` aborts with `Duplicate module named "conftest" (also at tests/integration/ingest/conftest.py)` and checks nothing. Cause: the plan requires `tests/integration/ingest/conftest.py` and `tests/unit/ingest/conftest.py` next to `tests/integration/conftest.py`, and no test directory has an `__init__.py`. This contradicts AC20 and the O3 check ("`uv run mypy .` clean") once the conftests exist. An `__init__.py` is no fix: two packages named `ingest` would break pytest's import. Candidate remedies, the human decides: (a) `explicit_package_bases = true` and `mypy_path = "src"` under `[tool.mypy]` in `pyproject.toml` (the test-writer checked it with `MYPYPATH=src uv run mypy --explicit-package-bases .`: 39 files checked, only the expected `attr-defined` red noise); (b) rename or relocate the conftests, which departs from plan § Tests. Either changes the spec set or `pyproject.toml`, so it goes through the architect and the human.
+- **Open findings for the human (the specs are not changed):**
+  - **F-2 (the human takes it to the architect):** plan § Public names and intent Q7 say the ingest execution id has 33 characters, but the pinned pattern `ingest-[0-9]{8}t[0-9]{6}z-[0-9a-f]{8}` gives 32. The code and the tests follow the pattern. The architect should fix the "33" (documentation only).
+  - **F-3 (the human takes it to the architect):** plan P step 3 does not say what the use case does when `store.read_observation` itself raises `OSError` after a failed `store`. On Windows, a regular file at `observations` makes the read-back raise `EvidenceNotFoundError`; on Linux (CI) it is expected to raise `NotADirectoryError`, an `OSError` (reasoned from the code, not run on Linux). The AC6 (a) test asserts `storage-failed` (page 2, sequence 2, `raw-evidence`) unconditionally, so on CI the use case would have to treat that `OSError` like "not found". The architect decides; the human writes O5 knowing it.
+  - **Assumptions of the test-writer where the plan is silent (check them at gate 2):** `outcome.message` contains the target id for `INVALID_TARGET` and for every chain refusal that ends `NOT_STARTED`; when `start_run` is lost and then repeated, the path continues with `storage-failed` (the scope's first page, sequence `None`) and no `run-started` is appended; a `KeyboardInterrupt` inside `start_run` gives `INTERRUPTED` with `execution_id` and `run_status` both `None`; a local-only observation 0 gives `sequence-gap` with sequence 0; the repositories are closed even when `KeyboardInterrupt` or `SystemExit` propagates; the write order has `reporter.run_started` between `start_run` and the `run-started` event, and the exclusion is the first write.
+- Next step: O6a, the executor writes only the importable skeleton of `interfaces/ingest_command.py` and the optional `ingest` subparser in `cli.py`; then O6b (test-writer, stop M5-red) and O6c. F-2 and F-3 wait for the architect; the human decides whether the pull request is opened before or after the CLI
 
 ## Finding responses
 | Finding | Response | Evidence |
 |---|---|---|
 | T-1 (architect, 2026-10-15): the plan's § Rollout says M1 and M2 land "with" their tests but not who writes them | Decided by the human on 2026-10-15: in O1 and O2 the test-writer writes the tests first, red, and the executor implements until green without modifying them | § Outcomes O1 and O2; § Constraints "The executor never edits tests" |
 | T-2 (architect, 2026-10-15): after M3 the CLI tests could fail only because `interfaces/ingest_command.py` did not exist | Decided by the human on 2026-10-15, option 3: the CLI tests are a second red phase inside M5. O6a is the executor's importable skeleton (no behavior) and the `ingest` subparser. O6b is the test-writer's CLI and end-to-end tests with functional red evidence, then the stop M5-red. O6c is the executor's green, without editing the tests. M3 gets no `ingest_command` stub | § Outcomes O3, O4, O6a, O6b and O6c; § Gates and review stops |
+| F-1 (test-writer, 2026-10-16): with `tests/integration/ingest/conftest.py` next to `tests/integration/conftest.py` and no `__init__.py` in the test folders, `uv run mypy .` aborts with `Duplicate module named "conftest"`; the same would happen with `tests/unit/ingest/conftest.py` | Decided by the human on 2026-10-16, option (a): `explicit_package_bases = true` and `mypy_path = "src"` under `[tool.mypy]` in `pyproject.toml`. The specs are not changed. Consequence to carry: the AC20 / O7 check that `pyproject.toml` shows no diff (`git diff main --stat -- ... pyproject.toml uv.lock`) now sees this one `[tool.mypy]` change (no dependency, `uv.lock` unchanged); the auditor and O7 must expect exactly these two keys, and only the mypy settings | `pyproject.toml` `[tool.mypy]`; `uv run mypy .` -> 58 `attr-defined` errors in 4 files over 39 checked files, all the expected red-phase noise (the missing `list_runs`, `try_acquire_ingest_exclusion`, `INGEST_EXCLUSION_KEY` and `MigrationLockError`), no other error |
 
 ## Checkpoint
 Gate 1 was approved on 2026-10-15 and the Day 18 journal is written. After the human's explicit merge OK of PR #24, resume at O1 (M1) on a new implementation branch cut from the updated `main`: the test-writer writes and records the listing tests red, then the executor makes them green.
