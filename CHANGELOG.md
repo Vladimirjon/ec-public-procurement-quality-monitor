@@ -16,7 +16,8 @@ The project has not been released yet, so every entry is under `Unreleased`.
   `infrastructure` and `interfaces` layer packages.
 - CLI `ec-procurement-quality`, standard library only. `--version` prints
   `ec-procurement-quality 0.1.0` and exits 0; an unknown option exits 2 with a
-  usage error on stderr. Any other behavior is not implemented yet.
+  usage error on stderr. Any other behavior is not implemented yet. (The
+  `ingest` command of F4, below, adds the first other command.)
 - Configuration for `ruff` (lint and format), `mypy` (strict in `domain` only)
   and `pytest`, all in `pyproject.toml`, and 7 unit tests under `tests/unit/`.
 - `Tests` GitHub Actions workflow (`.github/workflows/tests.yml`): runs the unit
@@ -30,7 +31,8 @@ The project has not been released yet, so every entry is under `Unreleased`.
   in `infrastructure`, which keeps response bytes once under their SHA-256 and
   one JSON observation per response obtained, publishes files write-once and
   atomically, never persists `Set-Cookie` headers, and verifies integrity on
-  read. No CLI command or use case calls it yet, and no dependency was added.
+  read. No CLI command or use case calls it yet (F4, below, now does), and no
+  dependency was added.
 - SERCOP source adapter (F2), following
   [ADR 0006](docs/adr/0006-http-client-for-source-access.md): `RawResponse` and
   the source errors (`SourceError`, `SourceTransportError`,
@@ -46,7 +48,7 @@ The project has not been released yet, so every entry is under `Unreleased`.
   header, sets explicit timeouts, and rejects a base URL with user
   information. Its tests use `httpx.MockTransport` and a network guard, and
   never reach the network. It is a library only: no CLI command or use case
-  calls it yet.
+  calls it yet (F4, below, now does).
 - `httpx` as the first runtime dependency (`httpx>=0.28.1` in
   `[project] dependencies`, resolved to 0.28.1 in `uv.lock`), imported only in
   `infrastructure`. The development dependencies do not change.
@@ -54,7 +56,8 @@ The project has not been released yet, so every entry is under `Unreleased`.
   [ADR 0007](docs/adr/0007-postgresql-persistence.md): `compose.yaml` with one
   service (`postgres:18`, port published on `127.0.0.1` only, named volume) and
   `.env.example` with fake values; `.env` is git-ignored. Nothing in the
-  application uses the database yet, and no dependency was added.
+  application uses the database yet (F4, below, now does), and no dependency
+  was added.
 - PostgreSQL persistence (F3), following
   [ADR 0007](docs/adr/0007-postgresql-persistence.md):
   - `migrations/0001_initial_schema.sql` with the tables `ingestion_run`,
@@ -82,11 +85,39 @@ The project has not been released yet, so every entry is under `Unreleased`.
   - a `postgres:18` service and its environment in the `tests` job of
     `.github/workflows/tests.yml`.
   It is a library only: no CLI command or use case calls the runner or the
-  adapter yet, and the response bytes stay in the local raw evidence store.
+  adapter yet (F4, below, now does), and the response bytes stay in the local
+  raw evidence store.
 - `psycopg[binary]` as the second runtime dependency (`psycopg[binary]>=3.3.6`
   in `[project] dependencies`, resolved to 3.3.6 with `psycopg-binary` 3.3.6 and
   `tzdata` 2026.5 in `uv.lock`), imported only in `infrastructure`. The
   development dependencies do not change.
+- `ingest` command (F4): `uv run --env-file .env ec-procurement-quality ingest`,
+  supported only when run from the repository root. A fresh run takes `--year`,
+  `--buyer` and `--last-page`, with an optional `--first-page` (1 by default) and
+  `--migrations-dir` (`migrations` by default). `--resume <execution id>` starts
+  a new run that continues the pages a failed or interrupted run did not
+  complete, and cannot be combined with the scope options. The command:
+  - reads `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` (required) and
+    `POSTGRES_HOST` and `POSTGRES_PORT` (optional, `127.0.0.1` and `5432`) from
+    the process environment only; no code reads `.env`;
+  - applies the pending migrations, takes the ingest exclusion (one ingest per
+    database) and closes any run left `running` by an earlier invocation, as
+    `failed`, after copying to PostgreSQL the observations that only the local
+    store holds;
+  - requests the search pages one by one without retrying, keeps every response
+    in the local raw evidence store (the fixed `data/raw/`, resolved once to an
+    absolute path) and in PostgreSQL, and records the run and its audit events
+    from a closed catalogue;
+  - writes the single result line `<execution id> <status>` to stdout and the
+    progress and errors to stderr, and ends with exit code 0 (succeeded), 1
+    (failed, not started or broken resumption chain), 2 (usage, environment,
+    migration error other than a busy lock, or invalid resumption target) or 130
+    (Ctrl+C).
+
+  The use case lives in `application` (`run_ingest` and its ports), the
+  catalogue and scope in `domain`, and the composition in `interfaces`. No
+  migration, dependency or `compose.yaml` change was needed. Its tests use
+  in-memory doubles and simulated transports and never reach the network.
 
 ### Changed
 
@@ -107,6 +138,23 @@ The project has not been released yet, so every entry is under `Unreleased`.
 - `README.md` and `docs/architecture.md` describe the raw evidence store and
   link ADR 0005; the raw-storage paths and metadata question is answered there
   for local storage, while compression and retention stay open.
+- The `RawEvidenceStore` port and `LocalDiskRawEvidenceStore` gain
+  `list_observation_sequences`, a read-only listing of the observations of one
+  execution; the `IngestionRepository` port and `PostgresIngestionRepository`
+  gain `list_runs` (runs by status) and `try_acquire_ingest_exclusion` (the
+  ingest exclusion, held for the rest of the connection and kept inside
+  `infrastructure`).
+- `apply_migrations` still raises a `MigrationError` for every failure. A busy
+  migration lock now raises `MigrationLockError`, a new subclass of
+  `MigrationError` with the same message, so the persistence errors are six.
+  Existing handlers of `MigrationError` keep working.
+- `[tool.mypy]` in `pyproject.toml` gains `explicit_package_bases = true` and
+  `mypy_path = "src"`, so that `uv run mypy .` accepts the several `conftest.py`
+  files of the test folders. No dependency was added and `uv.lock` is unchanged.
+- `README.md`, `AGENTS.md` and `docs/architecture.md` describe the `ingest`
+  command and replace the sentences that said nothing calls the adapters. The
+  minimum audit events and the run scope are answered for ingestion in
+  `docs/architecture.md`.
 
 ### Known limitations
 
@@ -147,4 +195,24 @@ The project has not been released yet, so every entry is under `Unreleased`.
     be edited the same way. No least-privilege database role exists yet.
   - Nothing calls the runner or the adapter, so no ingestion, reconnection,
     retry or pooling behavior exists; an adapter that lost its connection must be
-    closed and replaced.
+    closed and replaced. (Since F4 the `ingest` command calls them. It reconnects
+    once; see the F4 limitations below.)
+- `ingest` command (F4):
+  - The cleanup after Ctrl+C (or `MemoryError`) is best effort. When it does not
+    finish, the run stays `running` and the next `ingest` closes it.
+  - The ingest exclusion belongs to a database session. A session of a process
+    that died without PostgreSQL noticing (a host crash, a network partition)
+    can keep it, and every later `ingest` refuses to start until PostgreSQL
+    drops the session. The README shows how to find and end it by hand.
+  - When the `page-completed` event of a page is lost (a crash, or a commit
+    whose outcome is unknown), the page is requested again on resumption. The
+    repeat costs one request and, with identical bytes, no new object.
+  - The command is supported only when run from the repository root: `data/raw/`
+    and `migrations/` resolve against the current directory.
+  - A connection lost while a commit is in flight leaves the outcome unknown.
+    The use case reconnects once and repeats the operation, but the
+    commit-in-flight case itself is still not tested against PostgreSQL.
+  - No run against the real SERCOP source has been made yet, so the live
+    responses have not been compared with the earlier observations (source
+    access, first real ingestion). The command was tested only with simulated
+    sources.

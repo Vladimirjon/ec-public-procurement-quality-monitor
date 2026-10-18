@@ -46,6 +46,19 @@ skips them with a reason, and they fail when `CI` is `true`. Run them with:
 uv run --env-file .env pytest tests/integration
 ```
 
+The `ingest` command also needs the Compose PostgreSQL and `.env`. It is
+supported only when run from the repository root, with the variables loaded by
+`--env-file` (no code reads `.env`):
+
+```powershell
+uv run --env-file .env ec-procurement-quality ingest --year 2025 --buyer "SYNTHETIC BUYER S.A." --last-page 3
+uv run --env-file .env ec-procurement-quality ingest --resume <execution id>
+```
+
+It writes to the real `data/raw/` and to the database named by `POSTGRES_DB`
+and makes real requests, so do not run it as a check. See the README for the
+options and the exit codes.
+
 Other available checks:
 
 ```powershell
