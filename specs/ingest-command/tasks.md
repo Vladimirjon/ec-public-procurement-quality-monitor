@@ -1,17 +1,18 @@
 # Tasks: Ingest command (F4)
 
-Revision: 1
-Approval: Approved revision 1 by Vladimirjon on 2026-10-15 (gate 1: design, criteria and execution order; no claim that F4 is implemented or tested)
-Intent: [intent.md](intent.md) Revision 6 · Plan: [execution-plan.md](execution-plan.md) Revision 4
+Revision: 2
+Approval: Approved revision 2 by Vladimirjon on 2026-10-17 (the corrections F-1, F-2 and F-3 found during O1 to O5, including the F-3 read-back rule; no claim that F4 is implemented or tested). Revision 1 was approved by Vladimirjon on 2026-10-15 (gate 1: design, criteria and execution order)
+Intent: [intent.md](intent.md) Revision 7 · Plan: [execution-plan.md](execution-plan.md) Revision 5
 
 ## Status
-Gate 1 approved on 2026-10-15. No outcome of F4 has been started.
+Gate 1 approved on 2026-10-15. O1 to O5 are done (gate 2 passed on 2026-10-17); O6a is next. The spec revision for the implementation findings F-1 to F-3 was approved by the human on 2026-10-17.
 - **The spec set:**
-  - `intent.md` Revision 6 (AC1 to AC25; Q1 to Q15, findings 1 to 22 and P-1 to P-5 decided by the human on 2026-10-14 and 2026-10-15);
-  - `execution-plan.md` Revision 4;
-  - this file.
-- **Approval:** the human closed gate 1 on 2026-10-15 for `intent.md` Revision 6, `execution-plan.md` Revision 4 and this file Revision 1, and confirmed Q14 (reconciliation never restores `page-completed`). The `Approval` line of each file records it. The approval covers design, criteria and execution order; it does not claim that F4 is implemented or tested. The Day 18 journal entry and the Day 17 correction are written. PR #24 awaits only the final review and the human's explicit merge OK; after the merge, O1 starts on a new implementation branch cut from the updated `main`.
-- **Nothing implemented yet:** no code, test or configuration has changed. The work is split into outcomes O1 to O11, with O6 split into O6a, O6b and O6c (decision T-2 of the human, 2026-10-15).
+  - `intent.md` Revision 7 (AC1 to AC25; Q1 to Q15, findings 1 to 22 and P-1 to P-5 decided by the human on 2026-10-14 and 2026-10-15; F-1 decided on 2026-10-16; F-2 and F-3 resolved by the architect and approved by the human on 2026-10-17);
+  - `execution-plan.md` Revision 5;
+  - this file, Revision 2.
+- **Approval:** the human closed gate 1 on 2026-10-15 for `intent.md` Revision 6, `execution-plan.md` Revision 4 and this file Revision 1, and confirmed Q14 (reconciliation never restores `page-completed`). The approval covers design, criteria and execution order; it does not claim that F4 is implemented or tested. The Day 18 journal entry and the Day 17 correction are written. PR #24 was merged, and the implementation runs on `feat/ingest-command`. `intent.md` Revision 7, `execution-plan.md` Revision 5 and this file Revision 2 were approved by the human on 2026-10-17; each file's `Approval` line says so.
+- **Revision 2 (2026-10-17):** follows intent Revision 7 and plan Revision 5. F-2 and F-3 are recorded as architect proposals in § Finding responses; the § Constraints line on `pyproject.toml` and O7 now expect the two `[tool.mypy]` keys of decision F-1 and no `uv.lock` diff; § Status and § Working state are updated. No outcome box was checked or unchecked, and the recorded evidence is unchanged.
+- **Implementation:** the work is split into outcomes O1 to O11, with O6 split into O6a, O6b and O6c (decision T-2 of the human, 2026-10-15). O1 to O5 hold their recorded evidence in § Outcomes.
 
 ## Baseline
 - **Base commit:** `2e6edcd` (`main`, "Merge pull request #23 from Vladimirjon/feat/postgres-persistence"), verified on Day 18, 2026-10-14 and 2026-10-15.
@@ -49,7 +50,7 @@ Gate 1 approved on 2026-10-15. No outcome of F4 has been started.
 - **Re-record the baseline.** At the start of implementation the executor re-runs every command above on the commit it branches from and records the results here, because `main` may have moved since Day 18.
 
 ## Constraints (from `AGENTS.md`, intent § Constraints)
-- **No new dependency, infrastructure, framework or service** without the human's approval. None is expected: `argparse` is in the standard library, and `httpx` and `psycopg[binary]` are already approved. `pyproject.toml` and `uv.lock` stay unchanged (intent AC18).
+- **No new dependency, infrastructure, framework or service** without the human's approval. None is expected: `argparse` is in the standard library, and `httpx` and `psycopg[binary]` are already approved. `uv.lock` stays unchanged, and `pyproject.toml` changes only by `explicit_package_bases = true` and `mypy_path = "src"` under `[tool.mypy]`, with their comment (decision F-1 of the human, 2026-10-16; intent AC18).
 - **No secrets or real data:** no secrets, credentials, connection strings or real SERCOP data in code, tests, fixtures, logs or docs. Data is synthetic, URLs use `.invalid`, and passwords are markers such as `synthetic-password-marker`.
 - **No real network:** tests never reach the network (guards in `tests/unit/ingest/conftest.py` and `tests/integration/ingest/conftest.py`), never touch the real `data/raw/`, and never touch the database named by `POSTGRES_DB` (intent AC19).
 - **Integration tests need the Compose PostgreSQL** (`docker compose up -d --wait`) and run as `uv run --env-file .env pytest tests/integration`. Without it they skip locally and fail when `CI` is `true` (PT-13).
@@ -93,7 +94,7 @@ Gate 1 approved on 2026-10-15. No outcome of F4 has been started.
 - **Gate 3, the audit** (human, after O10). The human accepts or rejects the auditor's verdict in `specs/ingest-command/audit.md` (APPROVED, APPROVED WITH RESERVATIONS or REJECTED). A rejection sends the spec back to the architect, never to a weaker criterion.
 
 ## Outcomes
-Order and ownership. This follows `execution-plan.md` Revision 4 § Rollout order and the human's decisions T-1 and T-2 of 2026-10-15.
+Order and ownership. This follows `execution-plan.md` Revision 5 § Rollout order (unchanged since Revision 4) and the human's decisions T-1 and T-2 of 2026-10-15.
 
 1. **O1 (M1)** and **O2 (M2)** land *with* their tests. The test-writer writes them first and records them red; the executor goes to green without editing them; each outcome ends at a review stop.
 2. **O3 (M3)**, executor: the catalogue, the ports, the types, the `run_ingest` stub and `system_clock`. M3 has no `ingest_command` stub. Then the executor stops.
@@ -254,7 +255,8 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
 - [ ] **O7** Migration (AC20): existing consumers keep working.
   - The 1307 earlier tests pass.
   - The only edited pre-F4 test is the PS-4 assertion of O2, checked with `git diff main --numstat -- tests/integration/test_postgres_migrations.py`: additions only, 0 deletions.
-  - The other pre-F4 test files, `migrations`, F2 modules, `pyproject.toml` and `uv.lock` show no diff: the AC20 row's `git diff main --stat -- ...` command is empty.
+  - The other pre-F4 test files, `migrations`, F2 modules and `uv.lock` show no diff: the AC20 row's `git diff main --stat -- ...` command is empty.
+  - `git diff main -- pyproject.toml` shows only the two `[tool.mypy]` keys of decision F-1 (`explicit_package_bases = true`, `mypy_path = "src"`) and their comment, additions only, and no dependency line.
   - `git ls-files .env` prints nothing.
 - [ ] **O8** Docs (AC21) — executor, M6, plus 🧑 the journal.
   - Files and contents:
@@ -304,16 +306,17 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
 
 ## Working state
 - Updated: 2026-10-17
-- Outcome: O1 to O5 done; gate 2 passed on 2026-10-17 (the human's words: "rojo por el motivo correcto"); F-1 decided (option a, see § Finding responses)
+- Outcome: O1 to O5 done; gate 2 passed on 2026-10-17 (the human's words: "rojo por el motivo correcto"); F-1 decided (option a, see § Finding responses); F-2 and F-3 resolved by the architect in intent Revision 7, plan Revision 5 and this file Revision 2, approved by the human on 2026-10-17
 - Phase: branch `feat/ingest-command`; O5 done: the human wrote `run_ingest` by hand; the day 19 closing (journal, commit, push) is made; no pull request is open
-- In progress: nothing
+- In progress: the AC6 (d) tests of the F-3 rule (test-writer), then the human widens the read-back catch in `run_ingest`
 - Last command: `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing -q` -> 1754 passed, 95 % (2026-10-17)
 - **Finding F-1 (decided by the human on 2026-10-16, option a; see § Finding responses; the specs are not changed):** `uv run mypy .` aborts with `Duplicate module named "conftest" (also at tests/integration/ingest/conftest.py)` and checks nothing. Cause: the plan requires `tests/integration/ingest/conftest.py` and `tests/unit/ingest/conftest.py` next to `tests/integration/conftest.py`, and no test directory has an `__init__.py`. This contradicts AC20 and the O3 check ("`uv run mypy .` clean") once the conftests exist. An `__init__.py` is no fix: two packages named `ingest` would break pytest's import. Candidate remedies, the human decides: (a) `explicit_package_bases = true` and `mypy_path = "src"` under `[tool.mypy]` in `pyproject.toml` (the test-writer checked it with `MYPYPATH=src uv run mypy --explicit-package-bases .`: 39 files checked, only the expected `attr-defined` red noise); (b) rename or relocate the conftests, which departs from plan § Tests. Either changes the spec set or `pyproject.toml`, so it goes through the architect and the human.
-- **Open findings for the human (the specs are not changed):**
+- **F-1 in the specs (Revision 2):** the consequence of the decision is now written into intent AC18 and AC20, the plan (§ Ownership, § Other constraints, § Consumers, the AC18 and AC20 rows), § Constraints and O7 of this file: `uv.lock` unchanged, and `pyproject.toml` changed only by the two `[tool.mypy]` keys and their comment.
+- **Findings taken to the architect (original text kept; the responses are in § Finding responses, approved by the human on 2026-10-17):**
   - **F-2 (the human takes it to the architect):** plan § Public names and intent Q7 say the ingest execution id has 33 characters, but the pinned pattern `ingest-[0-9]{8}t[0-9]{6}z-[0-9a-f]{8}` gives 32. The code and the tests follow the pattern. The architect should fix the "33" (documentation only).
   - **F-3 (the human takes it to the architect):** plan P step 3 does not say what the use case does when `store.read_observation` itself raises `OSError` after a failed `store`. On Windows, a regular file at `observations` makes the read-back raise `EvidenceNotFoundError`; on Linux (CI) it is expected to raise `NotADirectoryError`, an `OSError` (reasoned from the code, not run on Linux). The AC6 (a) test asserts `storage-failed` (page 2, sequence 2, `raw-evidence`) unconditionally, so on CI the use case would have to treat that `OSError` like "not found". The architect decides; the human writes O5 knowing it.
   - **Assumptions of the test-writer where the plan is silent (check them at gate 2):** `outcome.message` contains the target id for `INVALID_TARGET` and for every chain refusal that ends `NOT_STARTED`; when `start_run` is lost and then repeated, the path continues with `storage-failed` (the scope's first page, sequence `None`) and no `run-started` is appended; a `KeyboardInterrupt` inside `start_run` gives `INTERRUPTED` with `execution_id` and `run_status` both `None`; a local-only observation 0 gives `sequence-gap` with sequence 0; the repositories are closed even when `KeyboardInterrupt` or `SystemExit` propagates; the write order has `reporter.run_started` between `start_run` and the `run-started` event, and the exclusion is the first write.
-- Next step: O6a, the executor writes only the importable skeleton of `interfaces/ingest_command.py` and the optional `ingest` subparser in `cli.py`; then O6b (test-writer, stop M5-red) and O6c. F-2 and F-3 wait for the architect; the human decides whether the pull request is opened before or after the CLI
+- Next step: the human reviews and approves (or rejects) intent Revision 7, plan Revision 5 and this file Revision 2. Once F-3 is approved, the test-writer adds the AC6 (d) unit tests (token `storage`, plan AC6 row) to `tests/unit/ingest/test_ingest_use_case.py`; the `OSError` case is expected to pass against the current `run_ingest`, and the `EvidenceIntegrityError` case to fail until the human extends the read-back catch in `run_ingest` (the O5 owner). Then O6a, the executor writes only the importable skeleton of `interfaces/ingest_command.py` and the optional `ingest` subparser in `cli.py`; then O6b (test-writer, stop M5-red) and O6c. The human decides whether the pull request is opened before or after the CLI
 
 ## Finding responses
 | Finding | Response | Evidence |
@@ -321,6 +324,8 @@ Where an AC has a use-case part and a CLI part, the use-case part is tested in O
 | T-1 (architect, 2026-10-15): the plan's § Rollout says M1 and M2 land "with" their tests but not who writes them | Decided by the human on 2026-10-15: in O1 and O2 the test-writer writes the tests first, red, and the executor implements until green without modifying them | § Outcomes O1 and O2; § Constraints "The executor never edits tests" |
 | T-2 (architect, 2026-10-15): after M3 the CLI tests could fail only because `interfaces/ingest_command.py` did not exist | Decided by the human on 2026-10-15, option 3: the CLI tests are a second red phase inside M5. O6a is the executor's importable skeleton (no behavior) and the `ingest` subparser. O6b is the test-writer's CLI and end-to-end tests with functional red evidence, then the stop M5-red. O6c is the executor's green, without editing the tests. M3 gets no `ingest_command` stub | § Outcomes O3, O4, O6a, O6b and O6c; § Gates and review stops |
 | F-1 (test-writer, 2026-10-16): with `tests/integration/ingest/conftest.py` next to `tests/integration/conftest.py` and no `__init__.py` in the test folders, `uv run mypy .` aborts with `Duplicate module named "conftest"`; the same would happen with `tests/unit/ingest/conftest.py` | Decided by the human on 2026-10-16, option (a): `explicit_package_bases = true` and `mypy_path = "src"` under `[tool.mypy]` in `pyproject.toml`. The specs are not changed. Consequence to carry: the AC20 / O7 check that `pyproject.toml` shows no diff (`git diff main --stat -- ... pyproject.toml uv.lock`) now sees this one `[tool.mypy]` change (no dependency, `uv.lock` unchanged); the auditor and O7 must expect exactly these two keys, and only the mypy settings | `pyproject.toml` `[tool.mypy]`; `uv run mypy .` -> 58 `attr-defined` errors in 4 files over 39 checked files, all the expected red-phase noise (the missing `list_runs`, `try_acquire_ingest_exclusion`, `INGEST_EXCLUSION_KEY` and `MigrationLockError`), no other error |
+| F-2 (raised during O5, 2026-10-17): plan § Public names and intent Q7 say the ingest execution id has 33 characters, but the pinned pattern `ingest-[0-9]{8}t[0-9]{6}z-[0-9a-f]{8}` gives 32 | Architect proposal (2026-10-17), approved by the human on 2026-10-17: a documentation correction to 32 characters in intent Q7 and plan § Public names and signatures. The pattern, the F1 pattern `[a-z0-9][a-z0-9-]{0,63}` (which a 32-character id satisfies) and the reserved-name rule are unchanged; code and tests need no change | intent Revision 7 Q7; plan Revision 5 § Public names and signatures; `7 + 8 + 1 + 6 + 1 + 1 + 8 = 32` |
+| F-3 (raised during O5, 2026-10-17): plan P step 3 does not say what happens when the read-back `store.read_observation` itself raises `OSError` (Linux: `NotADirectoryError` for a file at `observations`) or `EvidenceIntegrityError` (a corrupt record) after a failed `store` | Architect proposal (2026-10-17), approved by the human on 2026-10-17, written from the human's reasoning of 2026-10-17: a read-back that raises `EvidenceNotFoundError`, `OSError` or `EvidenceIntegrityError` counts as not recorded: `storage-failed` (page, sequence, `raw-evidence`), run `failed`, exit 1. The use case cannot tell whether a file was published and cannot record what it cannot read; nothing is lost, because a resumption requests the page again and an unreadable or orphan file counts for nothing (RE-9, AC9). `KeyboardInterrupt`, `SystemExit` and `MemoryError` keep the State machine K handling (SA-11, Q11). The `OSError` half matches the current `run_ingest`; the `EvidenceIntegrityError` half needs the human's change to the catch and the new AC6 (d) tests | intent Revision 7 AC6 (d); plan Revision 5 § State machine P step 3, the seams table and the AC6 row; O5 note on F-3 |
 
 ## Checkpoint
-Gate 1 was approved on 2026-10-15 and the Day 18 journal is written. After the human's explicit merge OK of PR #24, resume at O1 (M1) on a new implementation branch cut from the updated `main`: the test-writer writes and records the listing tests red, then the executor makes them green.
+O1 to O5 are done and pushed on `feat/ingest-command` (2026-10-17). Revision 7 of the intent, Revision 5 of the plan and Revision 2 of this file (F-2, F-3, F-1 in the specs) were approved by the human on 2026-10-17. Next: the test-writer adds the AC6 (d) tests, the human widens the read-back catch in `run_ingest`, and the executor starts O6a.
