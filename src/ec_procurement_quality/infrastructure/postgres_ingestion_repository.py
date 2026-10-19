@@ -12,7 +12,9 @@ is one transaction, so it is applied completely or not at all:
   and a `PersistenceIntegrityError` otherwise, never an overwrite. JSON values
   (a scope) are compared with `same_json`, so `True` is not `1`;
 - times are stored as instants and read back in UTC (the offset is not stored);
-- an observation's size is read from `raw_evidence` by join.
+- an observation's size is read from `raw_evidence` by join;
+- the ingest exclusion is held by the connection, not by a transaction: until
+  `close()` or the end of the session, and it never waits.
 
 A connection lost before the statements are sent, or while the transaction is
 open, leaves nothing written. A connection lost while the commit is in flight
@@ -66,6 +68,10 @@ from ec_procurement_quality.infrastructure.postgres_settings import (
 
 _MAX_SEQUENCE = 2_147_483_647  # PostgreSQL `integer`
 _MAX_SIZE = 9_223_372_036_854_775_807  # PostgreSQL `bigint`
+
+# The key of the ingest exclusion: the ASCII bytes of "ecpqingx". It differs from
+# the migration runner's key, so neither blocks the other.
+INGEST_EXCLUSION_KEY: int = 0x6563_7071_696E_6778
 
 _RUN_COLUMNS = "execution_id, scope, started_at, finished_at, status"
 _OBSERVATION_COLUMNS = (
@@ -246,6 +252,7 @@ class PostgresIngestionRepository:
         self._connection: PostgresConnection = open_connection(settings)
         self._closed = False
         self._lost = False
+        self._exclusion_held = False
 
     # --- Runs ---------------------------------------------------------------
 
@@ -342,6 +349,48 @@ class PostgresIngestionRepository:
                 connection, execution_id, "read_run", lock=False
             ),
         )
+
+    def list_runs(self, status: RunStatus) -> tuple[IngestionRun, ...]:
+        """Return the runs with `status`, ordered by start time then execution id."""
+        self._require_usable("list_runs")
+        if not isinstance(status, RunStatus):
+            raise ValueError("status must be a RunStatus")  # noqa: TRY004
+        return self._transaction(
+            "list_runs",
+            status.value,
+            lambda connection: tuple(
+                _run_from_row(row, "list_runs")
+                for row in connection.execute(
+                    f"SELECT {_RUN_COLUMNS} FROM ingestion_run WHERE status = %s "
+                    "ORDER BY started_at, execution_id",
+                    (status.value,),
+                ).fetchall()
+            ),
+        )
+
+    def try_acquire_ingest_exclusion(self) -> bool:
+        """Take the ingest exclusion, or confirm this repository holds it.
+
+        `False` when another session holds it; it never waits. The hold belongs
+        to the connection, not to a transaction: it lasts until `close()` or the
+        end of the session, and there is no release operation.
+        """
+        self._require_usable("try_acquire_ingest_exclusion")
+
+        def work(connection: PostgresConnection) -> bool:
+            if self._exclusion_held:
+                # No second acquisition (it would stack); the statement only
+                # shows whether the connection is still there.
+                connection.execute("SELECT 1")
+                return True
+            row = connection.execute(
+                "SELECT pg_try_advisory_lock(%s::bigint)", (INGEST_EXCLUSION_KEY,)
+            ).fetchone()
+            return row is not None and row[0] is True
+
+        held = self._transaction("try_acquire_ingest_exclusion", "ingest", work)
+        self._exclusion_held = held
+        return held
 
     # --- Observations -------------------------------------------------------
 
@@ -552,6 +601,7 @@ class PostgresIngestionRepository:
             raise RuntimeError("the ingestion repository is closed")
         if self._lost or self._connection.closed:
             self._lost = True
+            self._exclusion_held = False
             raise PersistenceConnectionError(
                 f"{operation}: the database connection was lost"
             )
@@ -584,6 +634,7 @@ class PostgresIngestionRepository:
         """Choose the error for a driver failure; nothing of `error` is kept."""
         if connection_was_lost(self._connection, error):
             self._lost = True
+            self._exclusion_held = False
             return PersistenceConnectionError(
                 f"{operation} {subject}: the database connection was lost"
             )

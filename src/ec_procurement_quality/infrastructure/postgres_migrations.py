@@ -38,6 +38,7 @@ import psycopg
 
 from ec_procurement_quality.domain.persistence_errors import (
     MigrationError,
+    MigrationLockError,
     PersistenceConnectionError,
 )
 from ec_procurement_quality.infrastructure.postgres_settings import (
@@ -294,7 +295,8 @@ def apply_migrations(settings: PostgresSettings, directory: Path) -> tuple[str, 
 
     Raises `MigrationError` for a bad directory, file or applied-file mismatch
     (before any connection is opened for the first two), for a lock held by
-    another run, and for a file the database refused. Raises
+    another run (`MigrationLockError`, a `MigrationError`), and for a file the
+    database refused. Raises
     `PersistenceConnectionError` when the database cannot be reached or the
     connection is lost.
     """
@@ -305,7 +307,7 @@ def apply_migrations(settings: PostgresSettings, directory: Path) -> tuple[str, 
         if failure is not None:
             _raise_for(failure, "the migration lock cannot be taken")
         if not locked:
-            raise MigrationError("another migration run holds the lock")
+            raise MigrationLockError("another migration run holds the lock")
         try:
             return _apply_pending(connection, migrations)
         finally:

@@ -19,6 +19,7 @@ bytes or header values.
 
 import json
 import os
+import re
 import tempfile
 from collections.abc import Sequence
 from datetime import datetime
@@ -39,6 +40,8 @@ _OBJECTS = "objects"
 _OBSERVATIONS = "observations"
 _TEMPORARY = "tmp"
 _SET_COOKIE = "set-cookie"
+# `<n>.json` with `n` in canonical decimal form: no sign, no leading zero but `0`.
+_SEQUENCE_FILE = re.compile(r"(0|[1-9][0-9]*)\.json", re.ASCII)
 
 _RECORD_KEYS = frozenset(
     {
@@ -149,6 +152,36 @@ class LocalDiskRawEvidenceStore:
                 "execution or sequence"
             )
         return observation
+
+    def list_observation_sequences(self, execution_id: str) -> tuple[int, ...]:
+        """Return the sequences of the observations of `execution_id`, sorted.
+
+        Read-only: it lists the execution folder and reads no file contents, so a
+        corrupt record is still listed and reading it decides. It does not stop at
+        a gap. An unknown execution has no sequences; nothing is created.
+        """
+        validate_execution_id(execution_id)
+        directory = self._root / _OBSERVATIONS / execution_id
+        if not directory.exists():
+            return ()
+        if not directory.is_dir():
+            raise EvidenceIntegrityError(
+                f"observations of execution {execution_id} at {directory} is not "
+                "a folder"
+            )
+        sequences: list[int] = []
+        try:
+            for entry in directory.iterdir():
+                match = _SEQUENCE_FILE.fullmatch(entry.name)
+                if match is None or entry.is_symlink() or not entry.is_file():
+                    raise EvidenceIntegrityError(
+                        f"execution {execution_id} holds an entry at {entry} that "
+                        "is not an observation file"
+                    )
+                sequences.append(int(match.group(1)))
+        except FileNotFoundError:
+            return ()
+        return tuple(sorted(sequences))
 
     # --- Paths --------------------------------------------------------------
 

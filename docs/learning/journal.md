@@ -1414,3 +1414,76 @@ Ver [plan.md](plan.md).
 - **Siguiente paso:** el merge del PR de las specs solo con tu OK explícito.
   Luego Día 19: F4 en rojo y verde según `tasks.md` (O1 y O2 con sus pruebas,
   O3 contratos, O4 pruebas en rojo y puerta 2, O5 `run_ingest` escrito por ti).
+
+## Día 19: F4 `ingest-command`, rojo y verde (2026-10-16 al 2026-10-17)
+
+- **Objetivo:** llevar F4 de las specs aprobadas a los contratos, las pruebas en
+  rojo del caso de uso y el caso de uso escrito por mí, sin tocar las specs ni
+  las pruebas para que pasen.
+- **Qué hice:**
+  - Actualicé `main` (`6b34374`, con el PR #24 integrado), borré la rama de las
+    specs y creé `feat/ingest-command`. La línea base salió igual que la anotada:
+    1132 pasan y 175 se saltan sin base, 1307 pasan con la base (cobertura 96 %).
+    Docker estaba apagado, así que lo arranqué y levanté Compose.
+  - **O1:** pruebas en rojo del listado de F1 (25, todas por `AttributeError`) y
+    luego verde con `list_observation_sequences`. Revisé el rojo y el verde antes
+    de seguir.
+  - **O2:** pruebas en rojo de la extensión de F3 y de `MigrationLockError`
+    (34 fallos, todos por `AttributeError` o por un `ImportError` dentro de la
+    prueba), y luego verde con `list_runs`, la exclusión de ingesta y el error del
+    lock. La única edición de una prueba anterior fue la aserción de PS-4, con 3
+    líneas añadidas y ninguna borrada.
+  - **F-1:** al añadir el `conftest.py` de `tests/integration/ingest`, `mypy .`
+    se detuvo con `Duplicate module named "conftest"`. Elegí la opción (a):
+    `explicit_package_bases = true` y `mypy_path = "src"` en `[tool.mypy]`. Es el
+    único cambio en `pyproject.toml`; no toca dependencias ni `uv.lock`.
+  - **O3:** cuatro módulos de contratos (catálogo de dominio, puertos, tipos con
+    el stub de `run_ingest`, reloj) sin pruebas y sin tocar `interfaces`.
+  - **O4 y puerta 2:** 387 pruebas en `tests/unit/ingest`; las 268 del caso de
+    uso fallaban todas por `NotImplementedError`, las 119 de catálogo y capas ya
+    pasaban. En la puerta 2 lo dejé como "rojo por el motivo correcto".
+  - **O5:** escribí `run_ingest` a mano en `application/ingest_use_case.py`. Las
+    268 pruebas pasan, todo `tests/unit/ingest` queda en 387 y la suite con base en
+    1754 pasan (cobertura 95 %), sin editar ninguna prueba.
+- **Qué aprendí (con mis palabras):**
+  - Una prueba en rojo solo sirve si falla por el comportamiento que falta. Por
+    eso O3 va antes que las pruebas del caso de uso: así el rojo es
+    `NotImplementedError` y no un módulo que no existe.
+  - Un `OSError` del almacén no demuestra que no se escribió nada. Si al
+    comprobarlo con `read_observation` también falla con `OSError`, no se puede
+    saber si el archivo quedó publicado. Lo tratamos como "no encontrado":
+    registramos `storage-failed` para `raw-evidence` y cerramos la ejecución como
+    `failed`. Así Windows y Linux se comportan igual, y la reanudación vuelve a
+    pedir esa página sin perder nada.
+  - Una restricción de las herramientas (mypy con varios `conftest.py`) puede
+    obligar a cambiar la configuración, pero eso se decide y se registra, no se
+    arregla en silencio.
+  - Escribir yo el caso de uso me obligó a entender las máquinas de estado del
+    plan una por una, en lugar de aceptar que un agente las implementara.
+  - **Lo que me costó entender:**
+    - Qué hacer cuando el plan no dice nada, como el `OSError` de la lectura de
+      vuelta. Lo escribí con la interpretación más segura y lo llevo al architect
+      en vez de decidirlo por mi cuenta.
+- **Verificación (comando y resultado):**
+  - `uv run pytest -q` sin base: 1548 pasan y 206 saltadas.
+  - `uv run --env-file .env pytest --cov=ec_procurement_quality
+    --cov-report=term-missing`: 1754 pasan, cobertura total 95 %.
+  - `uv run ruff check .`, `uv run ruff format --check .` (113 archivos) y
+    `uv run mypy .` (47 archivos): sin errores. No queda ninguna base
+    `ecpq_test_`.
+  - Los tres grupos `-k` de O5: 88, 213 y 51 pasan.
+- **Dudas abiertas:**
+  - **F-2:** el plan dice que el id de ingesta tiene 33 caracteres, pero su
+    patrón da 32. Se lo llevo al architect; el código sigue el patrón.
+  - **F-3:** el plan no dice qué pasa si `read_observation` lanza
+    `EvidenceIntegrityError` tras un `store` fallido. Mi código solo cubre
+    `EvidenceNotFoundError` y `OSError`. Se lo llevo al architect.
+  - La prueba AC6 (a) en Linux (CI) se razonó, pero no se ejecutó allí.
+  - El glosario sigue diciendo "ejecución de ingesta" y la tabla se llama
+    `ingestion_run`; falta decidir.
+  - El comportamiento frente al SERCOP real sigue sin verificarse (reserva U1 de
+    `source-access`); se compara en la primera ingesta real.
+- **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
+- **Siguiente paso:** O6a: esqueleto de `interfaces/ingest_command.py` y el
+  subcomando `ingest` en `cli.py`; luego O6b (pruebas rojas del CLI y parada
+  M5-red) y O6c. Antes, llevar F-2 y F-3 al architect.

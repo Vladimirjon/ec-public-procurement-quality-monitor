@@ -87,8 +87,12 @@ evidence content hashes and sizes, observations and audit events, with
 append-only triggers), the runner's contract (`apply_migrations` in
 `infrastructure`: numbered files, a recorded checksum per file, one transaction
 per file, a non-waiting advisory lock), the `IngestionRepository` port in
-`application` and its `psycopg` adapter. They are a library: no CLI command or
-use case calls them yet, and the response bytes are not stored in PostgreSQL.
+`application` and its `psycopg` adapter. The `ingest` command (F4) now uses
+them: it applies the pending migrations, records each run, observation and
+audit event through the port, and takes an exclusion that allows one ingest at a
+time per database. The exclusion is an advisory lock inside the adapter, and the
+port speaks only of the exclusion. The response bytes are still not stored in
+PostgreSQL.
 
 No distributed infrastructure is justified until measurable workload,
 reliability, or operational requirements demonstrate a need. See
@@ -101,11 +105,13 @@ reliability, or operational requirements demonstrate a need. See
   with the buyer-name query and `api/record`, as recorded in
   [the source observations](sources/sercop-observations.md) and implemented by
   the source adapter. Other response variants stay open until observed.)
-- What are the minimum audit events and quality-rule contracts? (Partly
-  answered for storage: an audit event is stored with a non-empty type and a
-  JSON object, and the catalogue of event types and the content of a run's
-  scope stay open until the ingestion defines them. The quality-rule contracts
-  stay open.)
+- What are the minimum audit events and quality-rule contracts? (Answered for
+  ingestion: an audit event is stored with a non-empty type and a JSON object,
+  and the ingestion defines a closed catalogue of event types with the detail
+  each one carries, and the exact content of a run's scope (source, base URL,
+  buyer, year and page range). They are specified in the ingest command's intent
+  (question Q6 and criterion AC13) and execution plan (§ Audit details). The
+  quality-rule contracts stay open.)
 - Which raw-storage compression and retention policies are supported by
   observed usage and legal or operational requirements? (The paths and
   metadata fields of the local store are answered by
