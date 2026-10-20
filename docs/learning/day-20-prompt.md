@@ -41,8 +41,10 @@ hallazgo para mí.
   `final_close_error`, `final_close_interrupt`, `exit_code_final_close_*`,
   `generic_fallback`). Registras la evidencia roja. No hagas push de commits
   rojos a un PR con Auto-fix activo.
-- **A3:** yo digo quién corrige `run_ingest` (lo registras en O10). El arreglo
-  sigue el registro explícito del repositorio actual. Corrige también el
+- **A3:** el executor corrige `run_ingest` e `ingest_command.py` contra las
+  pruebas rojas, como en las rondas 1 a 4; yo delegué esa decisión en el chat el
+  2026-10-20 y queda registrada en tasks.md § Working state. El arreglo sigue el
+  registro explícito del repositorio actual. Corrige también el
   to-do del README y el texto desactualizado de F-12.
 - **A4:** checks en silencio, commit, push, PR con Auto-fix activo y sin
   auto-merge, `tests` y `feedback` verdes.
