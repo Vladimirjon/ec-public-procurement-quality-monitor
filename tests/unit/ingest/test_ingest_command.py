@@ -54,6 +54,14 @@ The audit round 3 of 2026-10-18 added, at the end of the file (plan Revision 8):
 - `exit_code_start_run_unconfirmed` (AC8, AC15, F-20): a lost `start_run` whose
   recovery fails prints `<id> running`, exit 1, and no `run <id> started` line.
 
+The audit round 5 rework of 2026-10-20 added, at the end of the file (plan
+Revisions 9 and 10): `exit_code_reconnect_close_interrupt` (F-21),
+`exit_code_final_close_error` and `exit_code_final_close_interrupt` (F-22),
+`exit_code_start_run_second_loss`, `exit_code_unexpected_cleanup_interrupt`,
+`exit_code_recovery_double_fault` and `exit_code_refusal_not_retried` (sweep A2), and
+`result_line_stream_fault` and `handler_stream_fault` (sweep N-7: a stream that fails
+while the command writes its result, through the `RaisingStream` double).
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and the markers `synthetic-password-marker`,
 `synthetic-body-marker` and `synthetic-header-marker`.
@@ -69,7 +77,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 import pytest
@@ -2734,3 +2742,664 @@ def test_exit_code_start_run_unconfirmed_prints_running_without_a_started_line(
     assert lab.source.calls == []
     assert lab.opener.opens == 2
     assert lab.opener.all_closed
+
+
+# === Audit round 5 rework (2026-10-20), plan Revisions 9 and 10 ================
+#
+# Written red against the Revision 12/10/7 specs (approved on 2026-10-20), before the
+# round 5 fix. Command-tier tokens: `exit_code_reconnect_close_interrupt` (F-21, E12),
+# `exit_code_final_close_error` and `exit_code_final_close_interrupt` (F-22),
+# `exit_code_start_run_second_loss` (N-1), `exit_code_unexpected_cleanup_interrupt`
+# (N-2), `exit_code_recovery_double_fault` (N-3), `exit_code_refusal_not_retried`
+# (N-4), and, for N-7, `result_line_stream_fault` and `handler_stream_fault`.
+#
+# The close fault of a repository is `lab.opener.close_faults` (conftest). The raising
+# stream is `RaisingStream` below, passed to `run_ingest_command` as `stdout` or
+# `stderr` through `invoke_through` (the existing injectable `TextIO` parameters: no
+# new product seam). Progress lines also go to the injected stderr, so a fault is
+# aimed by the text of the write.
+
+
+class RaisingStream(io.StringIO):
+    """A text stream that raises once, on a chosen write (plan Revision 10, seams).
+
+    `trigger` is asked about the text of every write. The `nth` write it accepts
+    raises `error()`, after the text was stored (`keep`) or before. It raises once:
+    the writes that follow succeed, so the lines written after the failure can be
+    seen. `writes` keeps every text it was asked to write, and `fired` tells whether
+    it raised. `print` writes the text and the line end in two calls.
+    """
+
+    def __init__(
+        self,
+        error: Callable[[], BaseException],
+        trigger: Callable[[str], bool],
+        *,
+        nth: int = 1,
+        keep: bool = True,
+    ) -> None:
+        super().__init__()
+        self._error = error
+        self._trigger = trigger
+        self._nth = nth
+        self._keep = keep
+        self._matched = 0
+        self.writes: list[str] = []
+        self.fired = False
+
+    def write(self, text: str) -> int:
+        self.writes.append(text)
+        if not self.fired and self._trigger(text):
+            self._matched += 1
+            if self._matched == self._nth:
+                self.fired = True
+                if self._keep:
+                    super().write(text)
+                raise self._error()
+        return super().write(text)
+
+
+class Phase:
+    """Tells a trigger whether `run_ingest` has already returned or raised."""
+
+    def __init__(self) -> None:
+        self.over = False
+
+
+def watched(
+    phase: Phase, inner: Callable[..., IngestOutcome]
+) -> Callable[..., IngestOutcome]:
+    """`inner`, which sets `phase.over` when it returns or raises."""
+
+    def run_ingest_watched(*args: object, **kwargs: object) -> IngestOutcome:
+        try:
+            return inner(*args, **kwargs)
+        finally:
+            phase.over = True
+
+    return run_ingest_watched
+
+
+def watch_run_ingest(monkeypatch: pytest.MonkeyPatch) -> Phase:
+    """Replace `run_ingest` of the command by itself, watched."""
+    phase = Phase()
+    original: Callable[..., IngestOutcome] = ingest_command.run_ingest
+    monkeypatch.setattr(ingest_command, "run_ingest", watched(phase, original))
+    return phase
+
+
+def after_run_ingest(phase: Phase) -> Callable[[str], bool]:
+    """The first text write once `run_ingest` is over: the command's own final text."""
+    return lambda text: phase.over and text != "\n"
+
+
+def invoke_through(rig: Rig, out: io.StringIO, err: io.StringIO) -> int:
+    """`run_ingest_command` with the streams given; whatever escapes fails the test."""
+    arguments = cli.build_parser().parse_args(["ingest", *SCOPE_ARGS])
+    try:
+        return run_ingest_command(
+            arguments,
+            environ=dict(GOOD_ENVIRON),
+            wiring=rig.wiring(),
+            stdout=out,
+            stderr=err,
+        )
+    except (Exception, KeyboardInterrupt) as error:
+        raise AssertionError(
+            f"the command let {type(error).__name__} escape"
+        ) from error
+
+
+CLOSE_MOMENTS = pytest.mark.parametrize("when", ["before", "after"])
+
+
+# === exit_code_reconnect_close_interrupt (F-21, E12) ===========================
+
+
+@CLOSE_MOMENTS
+@pytest.mark.parametrize(
+    ("make_error", "code"),
+    [
+        pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c"),
+        pytest.param(lambda: MemoryError(), 1, id="memory-error"),
+    ],
+)
+def test_exit_code_reconnect_close_interrupt_prints_running_and_runs_no_cleanup(
+    rig: Rig,
+    make_error: Callable[[], BaseException],
+    code: int,
+    when: Literal["before", "after"],
+) -> None:
+    """E12: the lost repository's `close()` raises after a loss at page 2.
+
+    `<A> running`, 130 for Ctrl+C and 1 for `MemoryError`; no stderr line names a
+    read of the run, `RuntimeError` or `run-interrupted`; no traceback.
+    """
+    lab = rig.lab
+    lose_the_second_observation(lab, other_session=False)
+    lab.opener.close_faults[1] = [lab.faults.close_raises(make_error, when=when)]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert_the_run_stays_running(result, lab, code)
+    for word in (*CLEANUP_WORDS, "RuntimeError"):
+        assert stderr_lines(result, word) == [], result.err
+    assert lab.opener.opens == 1
+
+
+# === exit_code_final_close_error, exit_code_final_close_interrupt (F-22) =======
+
+
+def test_exit_code_final_close_interrupt_a_succeeded_run_exits_130_and_prints_succeeded(
+    rig: Rig,
+) -> None:
+    """F-22: Ctrl+C while the final repository closes, after the AC1 run.
+
+    Exit 130, stdout exactly one line `<A> succeeded`, stderr says interrupted.
+    """
+    lab = rig.lab
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(lambda: KeyboardInterrupt(), when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} succeeded\n"
+    assert "interrupted" in result.err
+    assert "Traceback" not in result.err
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "page-completed",
+    ]
+
+
+def test_exit_code_final_close_interrupt_a_failed_run_exits_130_and_prints_failed(
+    rig: Rig,
+) -> None:
+    """F-22: the same after the AC4 run (page 2 answers 500) -> exactly `<A> failed`."""
+    lab = rig.lab
+    lab.source.script(2, lab.status_failure(2, 500))
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(lambda: KeyboardInterrupt(), when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} failed\n"
+    assert "interrupted" in result.err
+    assert "Traceback" not in result.err
+    assert lab.event_types(run_id) == ["run-started", "page-completed", "page-failed"]
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(lambda: OSError("synthetic close failure"), id="os-error"),
+        pytest.param(lambda: MemoryError(), id="memory-error"),
+    ],
+)
+def test_exit_code_final_close_error_changes_nothing_exit_0_and_succeeded(
+    rig: Rig, make_error: Callable[[], BaseException]
+) -> None:
+    """F-22: an error from the final close is suppressed: exit 0, `<A> succeeded`.
+
+    No stderr line names the error or says `unexpected error`.
+    """
+    lab = rig.lab
+    lab.opener.close_faults[1] = [lab.faults.close_raises(make_error, when="after")]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 0
+    assert result.out == f"{run_id} succeeded\n"
+    for text in ("OSError", "MemoryError", "unexpected error", "Traceback"):
+        assert text not in result.err, result.err
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+
+
+# === exit_code_start_run_second_loss (N-1) =====================================
+
+
+def lose_start_run_on_both(
+    lab: Lab, first: Literal["before", "after"], second: Literal["before", "after"]
+) -> None:
+    """`start_run` is lost on the first repository and again on the second."""
+    for open_index, when in ((1, first), (2, second)):
+        lab.opener.faults[open_index] = [
+            lab.faults.lost_before_commit("start_run")
+            if when == "before"
+            else lab.faults.lost_after_commit("start_run")
+        ]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), [("before", "before"), ("before", "after"), ("after", "after")]
+)
+def test_exit_code_start_run_second_loss_prints_running_without_a_started_line(
+    rig: Rig, first: Literal["before", "after"], second: Literal["before", "after"]
+) -> None:
+    """N-1: the repeat of `start_run` is lost too -> exit 1, stdout `<id> running`.
+
+    The run was never announced, so there is no `run <id> started` line; two lines
+    name the lost `start_run`; nothing reads the run.
+    """
+    lab = rig.lab
+    lose_start_run_on_both(lab, first, second)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 1
+    assert result.out == f"{FIRST_DRAWN_ID} running\n"
+    assert f"run {FIRST_DRAWN_ID} started" not in result.err
+    assert stderr_lines(result, "started") == []
+    assert stderr_lines(result, "read_run") == []
+    assert len(stderr_lines(result, "start_run", FIRST_DRAWN_ID)) == 2, result.err
+    assert_safe_stderr(result)
+    assert lab.source.calls == []
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+@CLOSE_MOMENTS
+@pytest.mark.parametrize(
+    ("make_error", "code"),
+    [
+        pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c"),
+        pytest.param(lambda: MemoryError(), 1, id="memory-error"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("first", "second"), [("before", "before"), ("after", "after")]
+)
+def test_exit_code_start_run_second_loss_an_error_on_the_second_line_prints_nothing(
+    command_rig: Rig,
+    first: Literal["before", "after"],
+    second: Literal["before", "after"],
+    make_error: Callable[[], BaseException],
+    code: int,
+    when: Literal["before", "after"],
+) -> None:
+    """N-1: the stderr stream raises on the second write that names `start_run`.
+
+    Ctrl+C gives 130 and `MemoryError` 1; no run was confirmed, so stdout is empty;
+    no stderr line names `read_run`; nothing escapes, so no traceback.
+    """
+    lab = command_rig.lab
+    lose_start_run_on_both(lab, first, second)
+    out = io.StringIO()
+    err = RaisingStream(
+        make_error, lambda text: "start_run" in text, nth=2, keep=when == "after"
+    )
+
+    result = invoke_through(command_rig, out, err)
+
+    assert err.fired
+    assert result == code
+    assert out.getvalue() == ""
+    assert "read_run" not in err.getvalue()
+    assert "started" not in err.getvalue()
+    assert "Traceback" not in err.getvalue()
+    assert lab.source.calls == []
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === exit_code_unexpected_cleanup_interrupt (N-2) ==============================
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(lambda: MemoryError(BODY_MARKER), id="memory-error"),
+        pytest.param(lambda: SyntheticDefect(BODY_MARKER), id="synthetic-defect"),
+    ],
+)
+def test_exit_code_unexpected_cleanup_interrupt_exits_130_and_prints_running(
+    rig: Rig, make_error: Callable[[], BaseException]
+) -> None:
+    """N-2: an unexpected exception at page 2, then Ctrl+C on the `unexpected-error` append.
+
+    Exit 130, stdout exactly one line `<A> running`, stderr says interrupted and holds
+    no marker and no traceback.
+    """
+    lab = rig.lab
+    lab.source.script(2, make_error())
+    lab.opener.faults[1] = [
+        lab.faults.interrupts("append_audit_event", detail="unexpected-error")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} running\n"
+    assert "interrupted" in result.err
+    assert BODY_MARKER not in result.err
+    assert "Traceback" not in result.err
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert lab.event_types(run_id) == ["run-started", "page-completed"]
+    assert lab.opener.all_closed
+
+
+# === exit_code_recovery_double_fault (N-3) =====================================
+
+
+def test_exit_code_recovery_double_fault_a_ctrl_c_among_two_exceptions_exits_130(
+    rig: Rig,
+) -> None:
+    """N-3, case (a): the second exclusion raises `MemoryError`, its close Ctrl+C.
+
+    Exit 130, stdout exactly `<A> running`, one stderr line holds
+    `try_acquire_ingest_exclusion`, none holds `read_run`, `RuntimeError` or
+    `run-interrupted`, no traceback.
+    """
+    lab = rig.lab
+    lose_the_second_observation(lab, other_session=False)
+    lab.opener.faults[2] = [
+        lab.faults.raises("try_acquire_ingest_exclusion", lambda: MemoryError())
+    ]
+    lab.opener.close_faults[2] = [
+        lab.faults.close_raises(lambda: KeyboardInterrupt(), when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert_the_run_stays_running(result, lab, 130)
+    assert len(stderr_lines(result, "try_acquire_ingest_exclusion")) == 1, result.err
+    for word in (*CLEANUP_WORDS, "RuntimeError"):
+        assert stderr_lines(result, word) == [], result.err
+    assert lab.opener.opens == 2
+
+
+# === exit_code_refusal_not_retried (N-4) =======================================
+
+
+def refuse_every_call(lab: Lab, operation: str, *, detail: str | None = None) -> None:
+    """The first repository refuses each of the next calls of `operation`."""
+    lab.opener.faults.setdefault(1, []).extend(
+        lab.faults.refuses(
+            operation,
+            lambda: PersistenceIntegrityError("synthetic refusal"),
+            detail=detail,
+        )
+        for _ in range(3)
+    )
+
+
+def test_exit_code_refusal_not_retried_a_refused_observation_exits_130_and_prints_failed(
+    command_rig: Rig,
+) -> None:
+    """N-4 case (i): Ctrl+C on the line of a refused `record_observation` of sequence 2.
+
+    The cleanup does not record it again, so it closes the run `failed`: exit 130,
+    stdout exactly `<A> failed`, no traceback.
+    """
+    lab = command_rig.lab
+    refuse_every_call(lab, "record_observation", detail="2")
+    out = io.StringIO()
+    err = RaisingStream(
+        lambda: KeyboardInterrupt(), lambda text: "record_observation" in text
+    )
+
+    result = invoke_through(command_rig, out, err)
+
+    run_id = the_run(lab)
+    assert err.fired
+    assert result == 130
+    assert out.getvalue() == f"{run_id} failed\n"
+    assert "Traceback" not in err.getvalue()
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+
+
+def test_exit_code_refusal_not_retried_a_refused_failing_finish_exits_130_and_prints_running(
+    command_rig: Rig,
+) -> None:
+    """N-4 case (iv): Ctrl+C on the line of a refused `finish_run(FAILED)` (AC4 path).
+
+    Nothing more is written to the run: exit 130, stdout exactly `<A> running`.
+    """
+    lab = command_rig.lab
+    lab.source.script(2, lab.status_failure(2, 500))
+    refuse_every_call(lab, "finish_run", detail="failed")
+    out = io.StringIO()
+    err = RaisingStream(lambda: KeyboardInterrupt(), lambda text: "finish_run" in text)
+
+    result = invoke_through(command_rig, out, err)
+
+    run_id = the_run(lab)
+    assert err.fired
+    assert result == 130
+    assert out.getvalue() == f"{run_id} running\n"
+    assert "Traceback" not in err.getvalue()
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+
+
+# === result_line_stream_fault (AC15; sweep N-7) ================================
+#
+# Plan Revision 10, § Output, "Writing the result", with the human's amendment: an
+# exception while the command writes its result keeps the confirmed status, never
+# writes a second result line, never touches PostgreSQL and never escapes. A Ctrl+C
+# gives 130, any other exception 1 (130 kept when already determined).
+
+STREAM_ERRORS = [
+    pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c"),
+    pytest.param(lambda: OSError("synthetic stream failure"), 1, id="os-error"),
+    pytest.param(lambda: MemoryError(), 1, id="memory-error"),
+]
+STORING = pytest.mark.parametrize(
+    "keep", [True, False], ids=["after-storing", "before-storing"]
+)
+
+
+def assert_the_stored_run_is_as_confirmed(lab: Lab, status: str) -> None:
+    """The run keeps its status and nothing was written after the outcome."""
+    run_id = the_run(lab)
+    assert run_id == FIRST_DRAWN_ID
+    assert lab.database.runs[run_id].status is RunStatus(status)
+    labels = lab.journal.labels(run_id)
+    assert labels[-1] == f"finish_run:{status}"
+    assert [label for label in labels if label.startswith("finish_run")] == [labels[-1]]
+
+
+@STORING
+@pytest.mark.parametrize(("make_error", "code"), STREAM_ERRORS)
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_result_line_stream_fault_a_failing_final_message_keeps_the_confirmed_status(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    make_error: Callable[[], BaseException],
+    code: int,
+    keep: bool,
+) -> None:
+    """N-7 (a): stderr raises on the final outcome message, after the run returned.
+
+    The result line is still written once, with the confirmed status: never
+    `<A> running`. 130 for Ctrl+C, 1 for any other error; the stored run is as
+    confirmed and nothing was written to it after the outcome.
+    """
+    lab = command_rig.lab
+    if status == "failed":
+        lab.source.script(2, lab.status_failure(2, 500))
+    phase = watch_run_ingest(monkeypatch)
+    out = io.StringIO()
+    err = RaisingStream(make_error, after_run_ingest(phase), keep=keep)
+
+    result = invoke_through(command_rig, out, err)
+
+    assert err.fired
+    assert result == code
+    assert out.getvalue() == f"{FIRST_DRAWN_ID} {status}\n"
+    assert_the_stored_run_is_as_confirmed(lab, status)
+    assert lab.opener.all_closed
+
+
+STDOUT_MODES = [
+    pytest.param("text-after", id="text-after-storing"),
+    pytest.param("text-before", id="text-before-storing"),
+    pytest.param("line-end", id="line-end"),
+]
+
+
+@pytest.mark.parametrize("mode", STDOUT_MODES)
+@pytest.mark.parametrize(("make_error", "code"), STREAM_ERRORS)
+def test_result_line_stream_fault_a_failing_result_line_is_attempted_once(
+    command_rig: Rig,
+    make_error: Callable[[], BaseException],
+    code: int,
+    mode: str,
+) -> None:
+    """N-7 (b): stdout raises while the result line `<A> succeeded` is written.
+
+    On the text (after storing it, and before) or on the line end that follows it.
+    130 for Ctrl+C, 1 for any other error. stdout holds that one attempt only: the
+    line with or without its line end, or nothing; never a second line or `running`.
+    The stored run is still `succeeded`.
+    """
+    lab = command_rig.lab
+    line = f"{FIRST_DRAWN_ID} succeeded"
+    out = RaisingStream(
+        make_error,
+        (lambda text: text.endswith("\n"))
+        if mode == "line-end"
+        else (lambda text: line in text),
+        keep=mode != "text-before",
+    )
+    err = io.StringIO()
+
+    result = invoke_through(command_rig, out, err)
+
+    assert out.fired
+    assert result == code
+    assert out.getvalue() in {"", line, f"{line}\n"}, out.getvalue()
+    assert [text for text in out.writes if "running" in text] == []
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert lab.opener.all_closed
+
+
+# === handler_stream_fault (AC15; sweep N-7) ====================================
+#
+# The command's own handlers for an exception that escaped `run_ingest` after the run
+# was announced. `run_ingest` is replaced by a function that announces `<A>` and then
+# raises, as in `output_escaping_exception`. A stream that fails inside a handler
+# never lets an exception escape, never writes `<A> running` twice, and the exit code
+# is 130 for a Ctrl+C, or when it was already determined, and 1 otherwise.
+
+HANDLER_FAULTS = [
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        "stderr",
+        lambda: KeyboardInterrupt(),
+        130,
+        id="ctrl-c-then-stderr-ctrl-c",
+    ),
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        "stderr",
+        lambda: OSError("synthetic stream failure"),
+        130,
+        id="ctrl-c-then-stderr-os-error",
+    ),
+    pytest.param(
+        lambda: SyntheticDefect(BODY_MARKER),
+        "stderr",
+        lambda: KeyboardInterrupt(),
+        130,
+        id="defect-then-stderr-ctrl-c",
+    ),
+    pytest.param(
+        lambda: SyntheticDefect(BODY_MARKER),
+        "stderr",
+        lambda: OSError("synthetic stream failure"),
+        1,
+        id="defect-then-stderr-os-error",
+    ),
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        "stdout",
+        lambda: KeyboardInterrupt(),
+        130,
+        id="ctrl-c-then-stdout-ctrl-c",
+    ),
+    pytest.param(
+        lambda: SyntheticDefect(BODY_MARKER),
+        "stdout",
+        lambda: KeyboardInterrupt(),
+        130,
+        id="defect-then-stdout-ctrl-c",
+    ),
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        "stdout",
+        lambda: OSError("synthetic stream failure"),
+        130,
+        id="ctrl-c-then-stdout-os-error",
+    ),
+    pytest.param(
+        lambda: SyntheticDefect(BODY_MARKER),
+        "stdout",
+        lambda: OSError("synthetic stream failure"),
+        1,
+        id="defect-then-stdout-os-error",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("make_escape", "broken", "make_error", "code"), HANDLER_FAULTS
+)
+def test_handler_stream_fault_a_failing_stream_in_a_handler_never_escapes(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    make_escape: Callable[[], BaseException],
+    broken: str,
+    make_error: Callable[[], BaseException],
+    code: int,
+) -> None:
+    """N-7 (c): `run_ingest` announces `<A>` and raises; a stream fails in the handler.
+
+    `run_ingest_command` returns the code (130 for a Ctrl+C or when already determined,
+    1 otherwise), so nothing escapes and no traceback can be printed. A failing stderr
+    leaves stdout exactly `<A> running`; a failing stdout holds that one attempt at
+    most. `<A> running` is never written twice.
+    """
+    lab = command_rig.lab
+    phase = Phase()
+    monkeypatch.setattr(
+        ingest_command, "run_ingest", watched(phase, escaping(lab.A, make_escape))
+    )
+    running = f"{lab.A} running"
+    out = io.StringIO()
+    err = io.StringIO()
+    if broken == "stderr":
+        failing_err = RaisingStream(make_error, after_run_ingest(phase))
+        err = failing_err
+        fired = failing_err
+    else:
+        failing_out = RaisingStream(make_error, lambda text: running in text)
+        out = failing_out
+        fired = failing_out
+
+    result = invoke_through(command_rig, out, err)
+
+    assert fired.fired
+    assert result == code
+    if broken == "stderr":
+        assert out.getvalue() == f"{running}\n"
+    else:
+        assert out.getvalue() in {"", running, f"{running}\n"}, out.getvalue()
+        assert len([text for text in fired.writes if "running" in text]) == 1
+    assert "Traceback" not in err.getvalue()
+    assert BODY_MARKER not in err.getvalue()

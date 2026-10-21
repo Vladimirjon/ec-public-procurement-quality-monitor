@@ -1042,12 +1042,38 @@ class FaultKit:
             operation, when, nth, detail, error=error, execution_id=execution_id
         )
 
+    @staticmethod
+    def close_raises(
+        error: Callable[[], BaseException],
+        *,
+        when: Literal["before", "after"] = "after",
+    ) -> CloseFault:
+        """One faulty `close()`: delegated first when `when` is `"after"`."""
+        return CloseFault(error=error, when=when)
+
+
+@dataclass
+class CloseFault:
+    """A fault of one `close()` of a repository (plan Revision 9, seams table).
+
+    `close()` raises `error` instead of returning: with `when="after"` the close is
+    delegated first, so the repository is closed, as the real adapter is after it
+    closed its connection and then failed; with `when="before"` nothing is
+    delegated and the repository stays open. A repository takes a list of these,
+    one per successive `close()`: each is one-shot, and a `close()` past the list
+    delegates (plan Revision 10, sweep finding N-10).
+    """
+
+    error: Callable[[], BaseException]
+    when: Literal["before", "after"] = "after"
+
 
 class FlakyRepository:
     """Wraps an `InMemoryIngestionRepository` and applies its faults.
 
     It records every call it receives in `log` (shared by all repositories of one
-    opener) so a test can compare the values of a call and of its repeat.
+    opener) so a test can compare the values of a call and of its repeat. Its
+    `close_calls` counts the `close()` calls it received, faulty or not.
     """
 
     def __init__(
@@ -1057,11 +1083,14 @@ class FlakyRepository:
         open_index: int,
         faults: Sequence[Fault],
         log: list[Attempt],
+        close_faults: Sequence[CloseFault] = (),
     ) -> None:
         self.inner = inner
         self._open_index = open_index
         self._faults = list(faults)
         self._log = log
+        self._close_faults = list(close_faults)
+        self.close_calls = 0
 
     def _call[T](
         self,
@@ -1195,6 +1224,12 @@ class FlakyRepository:
         )
 
     def close(self) -> None:
+        self.close_calls += 1
+        if self._close_faults:
+            fault = self._close_faults.pop(0)
+            if fault.when == "after":
+                self.inner.close()
+            raise fault.error()
         self.inner.close()
 
 
@@ -1215,6 +1250,8 @@ class RepositoryOpenerDouble:
         # `KeyboardInterrupt` or a `MemoryError` included.
         self.open_errors: dict[int, Callable[[], BaseException]] = {}
         self.faults: dict[int, list[Fault]] = {}
+        # Plan Revision 9: the faults of the `close()` calls of the n-th repository.
+        self.close_faults: dict[int, list[CloseFault]] = {}
         self.attempts: list[Attempt] = []
         self.repositories: list[FlakyRepository] = []
 
@@ -1231,6 +1268,7 @@ class RepositoryOpenerDouble:
             open_index=self.opens,
             faults=self.faults.get(self.opens, []),
             log=self.attempts,
+            close_faults=self.close_faults.get(self.opens, []),
         )
         self.repositories.append(repository)
         return repository
@@ -1346,6 +1384,44 @@ class RecordingReporter:
 
     def progress(self, message: str) -> None:
         self.messages.append(message)
+
+
+class RaisingReporter(RecordingReporter):
+    """A `RecordingReporter` whose `progress` raises once, on a chosen message.
+
+    It raises `error()` on the `nth` message that holds every one of `words` (the
+    first by default), after recording that message (`when="after"`) or before
+    (`when="before"`, so the message is lost). Only that one call raises; every
+    other message is recorded. `fired` tells whether it did (plan Revision 9, the
+    seams table; Revision 10: the count).
+    """
+
+    def __init__(
+        self,
+        journal: Journal,
+        *,
+        words: Sequence[str],
+        error: Callable[[], BaseException],
+        nth: int = 1,
+        when: Literal["before", "after"] = "after",
+    ) -> None:
+        super().__init__(journal)
+        self._words = tuple(words)
+        self._error = error
+        self._nth = nth
+        self._when = when
+        self._matched = 0
+        self.fired = False
+
+    def progress(self, message: str) -> None:
+        if not self.fired and all(word in message for word in self._words):
+            self._matched += 1
+            if self._matched == self._nth:
+                self.fired = True
+                if self._when == "after":
+                    super().progress(message)
+                raise self._error()
+        super().progress(message)
 
 
 # --- The simulated transport (cases that go through SercopSource) -----------
@@ -1788,6 +1864,20 @@ class Lab:
     def faulty_reads(self) -> ReadFaultStore:
         """The store of this lab, with reads that a test makes fail on demand."""
         return ReadFaultStore(self.store)
+
+    def raising_reporter(
+        self,
+        *words: str,
+        error: Callable[[], BaseException],
+        nth: int = 1,
+        when: Literal["before", "after"] = "after",
+    ) -> RaisingReporter:
+        """Replace the reporter by one that raises on the n-th message with `words`."""
+        reporter = RaisingReporter(
+            self.journal, words=words, error=error, nth=nth, when=when
+        )
+        self.reporter = reporter
+        return reporter
 
     def other_session_finishes(
         self, execution_id: str, status: RunStatus, finished_at: datetime
