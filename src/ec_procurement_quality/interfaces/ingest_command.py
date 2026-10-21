@@ -12,7 +12,7 @@ exception that escapes is reported by its class name only.
 import argparse
 import logging
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -190,7 +190,7 @@ def _httpcore_above_debug() -> Iterator[None]:
 class _StderrReporter:
     """Writes the progress to stderr and remembers the id of the run it started.
 
-    It also remembers that the result line was written: at most one per invocation.
+    It also remembers that the result line was attempted: at most one per invocation.
     """
 
     def __init__(self, stderr: TextIO) -> None:
@@ -224,24 +224,67 @@ _EXIT_CODES = {
 }
 
 
+def _attempt(write: Callable[[], None]) -> BaseException | None:
+    """Make one write of the result; return what it raised instead of raising it.
+
+    A failing stream never lets an exception escape the command, and the write is
+    not repeated. `SystemExit` is not caught.
+    """
+    try:
+        write()
+    except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 -- see above.
+        return error
+    return None
+
+
+def _settled_code(code: int, failures: Sequence[BaseException | None]) -> int:
+    """The exit code after the result was written, or failed to be.
+
+    A `KeyboardInterrupt` while writing gives 130; any other exception gives 1,
+    unless 130 was already determined.
+    """
+    if any(isinstance(failure, KeyboardInterrupt) for failure in failures):
+        return EXIT_INTERRUPTED
+    if code != EXIT_INTERRUPTED and any(failure is not None for failure in failures):
+        return EXIT_FAILED
+    return code
+
+
 def _report(
     outcome: IngestOutcome, reporter: _StderrReporter, stdout: TextIO, stderr: TextIO
 ) -> int:
-    """Write the final message and the result line; return the exit code."""
-    print(outcome.message, file=stderr)
-    if outcome.execution_id is not None and outcome.run_status is not None:
-        print(f"{outcome.execution_id} {outcome.run_status.value}", file=stdout)
+    """Write the final message and the result line; return the exit code.
+
+    The outcome's line is the only result line attempted, once, with the status
+    the run confirmed: a failure of either write changes only the exit code.
+    """
     reporter.result_written = True
-    return _EXIT_CODES[outcome.end]
+    failures = [_attempt(lambda: print(outcome.message, file=stderr))]
+    if outcome.execution_id is not None and outcome.run_status is not None:
+        line = f"{outcome.execution_id} {outcome.run_status.value}"
+        failures.append(_attempt(lambda: print(line, file=stdout)))
+    return _settled_code(_EXIT_CODES[outcome.end], failures)
 
 
 def _print_running(reporter: _StderrReporter, stdout: TextIO) -> None:
     """An exception escaped after the run was announced: closing is unconfirmed.
 
-    Nothing is printed when the result line was already written.
+    Nothing is printed when a result line was already attempted.
     """
     if reporter.execution_id is not None and not reporter.result_written:
+        reporter.result_written = True
         print(f"{reporter.execution_id} running", file=stdout)
+
+
+def _end_after_escape(
+    reporter: _StderrReporter, stdout: TextIO, stderr: TextIO, code: int, text: str
+) -> int:
+    """The handlers of an exception that escaped `run_ingest`: the line, then `text`."""
+    failures = [
+        _attempt(lambda: _print_running(reporter, stdout)),
+        _attempt(lambda: print(text, file=stderr)),
+    ]
+    return _settled_code(code, failures)
 
 
 def _migrate(
@@ -320,7 +363,10 @@ def run_ingest_command(
     outcome names a run. Everything else goes to ``stderr``. An exception that
     escapes the use case after the run was started prints
     ``<execution id> running``, because closing was not confirmed: exit 130 for
-    a ``KeyboardInterrupt``, 1 for any other exception.
+    a ``KeyboardInterrupt``, 1 for any other exception. A stream that fails while
+    the result is written never lets an exception escape: the confirmed status
+    stays in the one line attempted, a ``KeyboardInterrupt`` gives 130 and any
+    other exception gives 1 unless 130 was already determined.
     """
     reporter = _StderrReporter(stderr)
     try:
@@ -346,10 +392,14 @@ def run_ingest_command(
                 stderr=stderr,
             )
     except KeyboardInterrupt:
-        _print_running(reporter, stdout)
-        print("interrupted", file=stderr)
-        return EXIT_INTERRUPTED
+        return _end_after_escape(
+            reporter, stdout, stderr, EXIT_INTERRUPTED, "interrupted"
+        )
     except Exception as error:  # noqa: BLE001 -- only the class name is reported.
-        _print_running(reporter, stdout)
-        print(f"unexpected error: {type(error).__name__}", file=stderr)
-        return EXIT_FAILED
+        return _end_after_escape(
+            reporter,
+            stdout,
+            stderr,
+            EXIT_FAILED,
+            f"unexpected error: {type(error).__name__}",
+        )
