@@ -8,11 +8,14 @@ import argparse
 import os
 import sys
 from collections.abc import Iterable
+from contextlib import suppress
 from importlib.metadata import version
-from typing import Any
+from typing import Any, NoReturn
 
 from ec_procurement_quality.infrastructure.sercop_source import DEFAULT_BASE_URL
 from ec_procurement_quality.interfaces.ingest_command import (
+    EXIT_FAILED,
+    EXIT_INTERRUPTED,
     default_wiring,
     request_from_arguments,
     run_ingest_command,
@@ -22,7 +25,21 @@ PROGRAM_NAME = "ec-procurement-quality"
 DISTRIBUTION_NAME = "ec-procurement-quality"
 
 
-class _IngestParser(argparse.ArgumentParser):
+class _CliParser(argparse.ArgumentParser):
+    """The parser of the command line: ``argparse``'s own, but a failing write shows.
+
+    ``argparse`` suppresses an ``OSError`` from its own writes (``--version``,
+    ``--help``, the usage and the error message). Here it reaches the handler of
+    ``main``. Only the writing hook changes; ``argparse`` itself is not patched.
+    """
+
+    def _print_message(self, message: str, file: Any = None) -> None:
+        if message:
+            with suppress(AttributeError):
+                (file or sys.stderr).write(message)
+
+
+class _IngestParser(_CliParser):
     """The ``ingest`` parser, which also checks the rules ``argparse`` cannot state.
 
     A problem ends in ``error``: the usage line on stderr and exit code 2, before
@@ -41,7 +58,7 @@ class _IngestParser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=PROGRAM_NAME)
+    parser = _CliParser(prog=PROGRAM_NAME)
     parser.add_argument(
         "--version",
         action="version",
@@ -60,22 +77,43 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _exit_after_writing(text: str, code: int) -> NoReturn:
+    """Make one attempt to write ``text`` on stderr, then exit with ``code``.
+
+    A ``KeyboardInterrupt`` while it is written makes the code 130 and a
+    ``SystemExit`` propagates in its place. Any other exception is ignored.
+    """
+    with suppress(Exception):
+        try:
+            print(text, file=sys.stderr)
+        except KeyboardInterrupt:
+            code = EXIT_INTERRUPTED
+    raise SystemExit(code)
+
+
 def main(argv: list[str] | None = None) -> None:
     """Parse ``argv`` (or the process arguments when ``None``).
 
     ``--version``, usage errors and the ``ingest`` command end through
-    ``SystemExit`` (code 0, 2 and the command's exit code).
+    ``SystemExit`` (code 0, 2 and the command's exit code). Anything else that is
+    raised ends the same way, naming only its class on stderr: 130 for a
+    ``KeyboardInterrupt``, 1 otherwise. A ``SystemExit`` is never converted.
     """
-    parser = build_parser()
-    arguments = parser.parse_args(argv)
-    if arguments.command == "ingest":
-        code = run_ingest_command(
-            arguments,
-            environ=os.environ,
-            wiring=default_wiring(),
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        )
-        raise SystemExit(code)
-    parser.print_usage(sys.stderr)
-    raise SystemExit(2)
+    try:
+        parser = build_parser()
+        arguments = parser.parse_args(argv)
+        if arguments.command == "ingest":
+            code = run_ingest_command(
+                arguments,
+                environ=os.environ,
+                wiring=default_wiring(),
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+            raise SystemExit(code)
+        parser.print_usage(sys.stderr)
+        raise SystemExit(2)
+    except KeyboardInterrupt:
+        _exit_after_writing("interrupted", EXIT_INTERRUPTED)
+    except Exception as error:  # noqa: BLE001 -- only the class name is reported.
+        _exit_after_writing(f"unexpected error: {type(error).__name__}", EXIT_FAILED)

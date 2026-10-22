@@ -328,6 +328,7 @@ def _invoke(
     except Exception as error:  # noqa: BLE001 -- see `_SOURCE_CONFIGURATION_MESSAGE`.
         print(f"{_SOURCE_CONFIGURATION_MESSAGE}: {type(error).__name__}", file=stderr)
         return EXIT_USAGE
+    exiting = False
     try:
         stopped = _migrate(wiring, settings, migrations_dir, stderr)
         if stopped is not None:
@@ -343,10 +344,18 @@ def _invoke(
             reporter=reporter,
         )
         return _report(outcome, reporter, stdout, stderr)
+    except SystemExit:
+        exiting = True
+        raise
     finally:
-        # Closing must not change how the run ended.
-        with suppress(Exception):
-            source.close()
+        # Closing must not change how the run ended. A `SystemExit` that propagates
+        # goes on whatever the close raises: it is preserved, never replaced.
+        try:
+            with suppress(Exception):
+                source.close()
+        except BaseException:
+            if not exiting:
+                raise
 
 
 def run_ingest_command(

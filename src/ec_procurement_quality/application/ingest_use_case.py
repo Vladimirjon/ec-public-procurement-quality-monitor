@@ -1263,8 +1263,8 @@ def run_ingest(
             execution_ids=execution_ids,
             reporter=reporter,
         )
-    except BaseException:
-        _close_while_propagating(session)
+    except BaseException as propagating:
+        _close_while_propagating(session, propagating)
         raise
     return _close_after_outcome(outcome, session)
 
@@ -1287,14 +1287,17 @@ def _close_remaining(session: _PersistenceSession) -> BaseException | None:
     return raised
 
 
-def _close_while_propagating(session: _PersistenceSession) -> None:
-    """The final close while an exception leaves `run_ingest`.
+def _close_while_propagating(
+    session: _PersistenceSession, propagating: BaseException
+) -> None:
+    """The final close while `propagating` leaves `run_ingest`.
 
     An `Exception` from it is suppressed and the propagating exception goes on; a
-    `KeyboardInterrupt` or a `SystemExit` from it propagates in its place.
+    `KeyboardInterrupt` or a `SystemExit` from it propagates in its place, unless a
+    `SystemExit` already propagates: then it goes on whatever the close raises.
     """
     raised = _close_remaining(session)
-    if raised is not None:
+    if raised is not None and not isinstance(propagating, SystemExit):
         raise raised
 
 
