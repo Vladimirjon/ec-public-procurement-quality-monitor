@@ -1473,17 +1473,17 @@ Ver [plan.md](plan.md).
     `ecpq_test_`.
   - Los tres grupos `-k` de O5: 88, 213 y 51 pasan.
 - **Dudas abiertas:**
-  - **F-2:** el plan dice que el id de ingesta tiene 33 caracteres, pero su
-    patrón da 32. Se lo llevo al architect; el código sigue el patrón.
-  - **F-3:** el plan no dice qué pasa si `read_observation` lanza
-    `EvidenceIntegrityError` tras un `store` fallido. Mi código solo cubre
-    `EvidenceNotFoundError` y `OSError`. Se lo llevo al architect.
-  - La prueba AC6 (a) en Linux (CI) se razonó, pero no se ejecutó allí.
+  - **F-2 y F-3:** resueltos después en las specs (el id tiene 32 caracteres; una
+    lectura de vuelta que falla cuenta como no registrada) y en el código.
+  - La prueba AC6 (a) en Linux (CI) se confirmó después: el CI del PR #25 pasó.
   - El glosario sigue diciendo "ejecución de ingesta" y la tabla se llama
     `ingestion_run`; falta decidir.
   - El comportamiento frente al SERCOP real sigue sin verificarse (reserva U1 de
     `source-access`); se compara en la primera ingesta real.
 - **Respuestas de autoevaluación:** el plan no trae preguntas para hoy.
-- **Siguiente paso:** O6a: esqueleto de `interfaces/ingest_command.py` y el
-  subcomando `ingest` en `cli.py`; luego O6b (pruebas rojas del CLI y parada
-  M5-red) y O6c. Antes, llevar F-2 y F-3 al architect.
+- **Siguiente paso:** el Día 19 terminó con O1 a O7 y O9 hechos, el PR #25 integrado
+  en `main` (2026-10-19) con la puerta 3 todavía abierta (la auditoría de la
+  ronda 4 rechazó por F-21) y el trabajo restante en `fix/ingest-audit-hardening`:
+  aprobar las specs 11/9/6, pruebas en rojo, arreglo, auditoría de la ronda 5 y
+  puerta 3; después la documentación y el archivo (O11) y la primera ingesta real
+  acotada. El detalle está en `specs/ingest-command/tasks.md` § Working state.

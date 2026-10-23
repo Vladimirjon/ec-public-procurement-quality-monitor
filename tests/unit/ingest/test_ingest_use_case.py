@@ -57,6 +57,15 @@ The audit round 3 of 2026-10-18 added, at the end of the file (plan Revision 8):
 The first two are red against the use case of `d83cd55`; the last two protect
 behavior that already holds (F-20).
 
+The audit round 5 rework of 2026-10-20 added, at the end of the file (plan
+Revisions 9 and 10; the section comment there lists the tokens): the lost
+repository's close, the loss line and the closes of the second repository
+(`reconnect_close_interrupt`, `reconnect_loss_line_interrupt`,
+`reconnect_false_close_interrupt`, F-21), the final close (`final_close_error`,
+`final_close_interrupt`, F-22), `generic_fallback` (F-20), and the sweep A2 tokens
+`start_run_second_loss`, `unexpected_cleanup_interrupt`, `recovery_double_fault` and
+`refusal_not_retried`.
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and page bodies report `pages` 9 unless a
 test says another value. Runs `A`, `B`, `C` and `D` are the seeded runs of `Lab`.
@@ -4772,4 +4781,1987 @@ def test_read_back_record_failure_a_lost_record_with_no_new_connection_stays_run
     assert_names_no_run(line)
     assert attempts_after_the_loss(lab, "record_observation", "2") == []
     assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === Audit round 5 rework (2026-10-20), plan Revisions 9 and 10 ================
+#
+# Written red against the Revision 12/10/7 specs (approved on 2026-10-20), before the
+# round 5 fix of `run_ingest`. Tokens of Revision 9: `reconnect_close_interrupt`,
+# `reconnect_loss_line_interrupt`, `reconnect_false_close_interrupt` (F-21),
+# `final_close_error`, `final_close_interrupt` (F-22) and `generic_fallback` (F-20).
+# Tokens of Revision 10 (the architect's sweep A2): `start_run_second_loss` (N-1),
+# `unexpected_cleanup_interrupt` (N-2), `recovery_double_fault` (N-3) and
+# `refusal_not_retried` (N-4). The seams are new in `conftest.py`: the close fault
+# (`lab.opener.close_faults`, `lab.faults.close_raises`) and the raising reporter
+# (`lab.raising_reporter`).
+
+
+def call_without_escape(
+    lab: Lab,
+    request: IngestRequest | ResumeRequest,
+    *,
+    store: RawEvidenceStore | None = None,
+) -> IngestOutcome:
+    """The call of `call`, where any exception that escapes fails the test by name.
+
+    `call` turns only a `KeyboardInterrupt` into a failure. A defect of Revision 9
+    is an `OSError` or a `MemoryError` that escapes from a `close()`, so this one
+    names whatever escaped.
+    """
+    try:
+        return call_propagating(lab, request, store=store)
+    except (Exception, KeyboardInterrupt) as error:
+        raise AssertionError(f"run_ingest let {type(error).__name__} escape") from error
+
+
+# What the lost repository's close, the second repository's close and the reporter
+# raise: Ctrl+C ends `INTERRUPTED`, a `MemoryError` ends `RUN_FAILED` once the run
+# exists and `NOT_STARTED` while `start_run` is the lost operation.
+CLOSE_ERRORS = [
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        KeyboardInterrupt,
+        IngestEnd.INTERRUPTED,
+        IngestEnd.INTERRUPTED,
+        id="ctrl-c",
+    ),
+    pytest.param(
+        lambda: MemoryError(),
+        MemoryError,
+        IngestEnd.RUN_FAILED,
+        IngestEnd.NOT_STARTED,
+        id="memory-error",
+    ),
+]
+# Plan Revision 9, F-21: nothing after the loss line may name one of these.
+NAMES_AFTER_THE_LOSS = (
+    "read_run",
+    "append_audit_event",
+    "finish_run",
+    "open_repository",
+    "try_acquire_ingest_exclusion",
+    "RuntimeError",
+)
+
+
+def assert_names_nothing_after_the_loss(lab: Lab, operation: str) -> None:
+    """No line after the one of the lost operation names an operation of the cleanup."""
+    after = messages_after_the_loss(lab, operation)
+    assert not any(
+        name in message for message in after for name in NAMES_AFTER_THE_LOSS
+    ), lab.reporter.messages
+
+
+def assert_names_no_read_of_the_run(lab: Lab) -> None:
+    """No message names `read_run` or holds `RuntimeError` (it was never attempted)."""
+    assert not any(
+        "read_run" in message or "RuntimeError" in message
+        for message in lab.reporter.messages
+    ), lab.reporter.messages
+
+
+def arrange_lost_page_completed(lab: Lab, loss: Loss) -> tuple[IngestRequest, str, str]:
+    """Lose the first connection before the commit of the `page-completed` of page 1."""
+    lab.script_ids(FREE_ID)
+    lab.opener.faults[1] = [
+        lab.faults.lost_before_commit(
+            "append_audit_event", detail="page-completed", hook=loss
+        )
+    ]
+    return fresh(lab, 1, 3), "append_audit_event", "page-completed"
+
+
+# === reconnect_close_interrupt (AC7, AC8 c, AC15, AC18; F-21, E1, E13) ========
+#
+# Plan Revision 9, § State machine C step 1 and "The explicit record": from the loss
+# on no repository is current. A `KeyboardInterrupt` or a `MemoryError` raised by the
+# lost repository's `close()` ends C in the window: nothing is read or written, the
+# cleanup is not entered, and the final close attempts the lost repository once more.
+
+
+@EXCLUSION_STATES
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize("place", ["observation", "final-finish"])
+@pytest.mark.parametrize(("make_error", "error", "end", "window_end"), CLOSE_ERRORS)
+def test_reconnect_close_interrupt_runs_no_cleanup_and_leaves_the_run_running(
+    lab: Lab,
+    make_error: Callable[[], BaseException],
+    error: type[BaseException],
+    end: IngestEnd,
+    window_end: IngestEnd,
+    place: str,
+    when: Moment,
+    other_session: bool,
+) -> None:
+    """F-21, C step 1: the lost repository's `close()` raises Ctrl+C or `MemoryError`.
+
+    After the lost call nothing is attempted on any repository (in particular no
+    `read_run`); C ends at step 1, so only one repository was opened; `<A>` is
+    stored `running` with what it held at the loss; no line after the loss line names
+    an operation of the cleanup; the lost repository is closed by the final close.
+    """
+    loss = Loss(lab, other_session=other_session)
+    request, operation, detail = arrange_loss(lab, place, loss)
+    lab.opener.close_faults[1] = [lab.faults.close_raises(make_error, when=when)]
+
+    outcome = call_without_escape(lab, request)
+
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert lab.reporter.started == [FREE_ID]
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == []
+    assert_names_nothing_after_the_loss(lab, operation)
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+@EXCLUSION_STATES
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "error", "end", "window_end"), CLOSE_ERRORS)
+def test_reconnect_close_interrupt_while_start_run_is_pending_keeps_the_outcome(
+    lab: Lab,
+    make_error: Callable[[], BaseException],
+    error: type[BaseException],
+    end: IngestEnd,
+    window_end: IngestEnd,
+    when: Moment,
+    other_session: bool,
+) -> None:
+    """C step 1 with `start_run` lost before commit: no run is known.
+
+    Ctrl+C gives INTERRUPTED and `MemoryError` NOT_STARTED, with no run and
+    `run_started` not called; nothing is written; every repository is closed.
+    """
+    loss = Loss(lab, other_session=other_session)
+    request, operation, detail = arrange_loss(lab, "start-run", loss)
+    lab.opener.close_faults[1] = [lab.faults.close_raises(make_error, when=when)]
+
+    outcome = call_without_escape(lab, request)
+
+    assert_window_outcome(lab, outcome, window_end, error)
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == []
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+@EXCLUSION_STATES
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize("place", ["observation", "final-finish"])
+def test_reconnect_close_interrupt_an_os_error_from_the_lost_close_changes_nothing(
+    lab: Lab, place: str, when: Moment, other_session: bool
+) -> None:
+    """C step 1: an `Exception` other than `MemoryError` is suppressed, no line.
+
+    The recovery goes on: a second repository is opened. With the exclusion free the
+    run ends as the AC8 (a) path (a lost observation) or is confirmed by the repeat
+    (the final `finish_run`, P-2); with another session holding it the exclusion
+    returns `False` and the run is untouched.
+    """
+    loss = Loss(lab, other_session=other_session)
+    request, operation, detail = arrange_loss(lab, place, loss)
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(lambda: OSError(REFUSAL_TEXT), when=when)
+    ]
+
+    outcome = call_without_escape(lab, request)
+
+    assert outcome.execution_id == FREE_ID
+    assert lab.opener.opens == 2
+    assert not any(
+        "OSError" in message or REFUSAL_TEXT in message
+        for message in lab.reporter.messages
+    ), lab.reporter.messages
+    if other_session:
+        assert outcome.end is IngestEnd.RUN_FAILED
+        assert outcome.run_status is RunStatus.RUNNING
+        assert_the_run_was_not_touched(lab, loss)
+        assert attempts_after_the_loss(lab, operation, detail) == [
+            "2 try_acquire_ingest_exclusion"
+        ]
+    elif place == "observation":
+        assert outcome.end is IngestEnd.RUN_FAILED
+        assert outcome.run_status is RunStatus.FAILED
+        assert lab.details(FREE_ID, "storage-failed") == [
+            {"page": 2, "sequence": 2, "store": "postgresql"}
+        ]
+    else:
+        assert outcome.end is IngestEnd.SUCCEEDED
+        assert outcome.run_status is RunStatus.SUCCEEDED
+    if when == "after":
+        # Raised before delegating, the lost repository stays open: an `OSError`
+        # counts the repository as closed, so nothing attempts it again.
+        assert lab.opener.all_closed
+
+
+# === reconnect_loss_line_interrupt (AC7, AC15; F-21, E3) =======================
+#
+# The reporter raises while the line of the lost operation is written. The record of
+# the current repository is *none* before that line, so the cleanup is not entered.
+
+LOSS_LINES = [
+    pytest.param("observation", ("record_observation", FREE_ID), id="observation"),
+    pytest.param(
+        "page-completed",
+        ("append_audit_event", "page-completed", FREE_ID),
+        id="page-completed-append",
+    ),
+]
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "error", "end", "window_end"), CLOSE_ERRORS)
+@pytest.mark.parametrize(("place", "words"), LOSS_LINES)
+def test_reconnect_loss_line_interrupt_runs_no_cleanup_and_leaves_the_run_running(
+    lab: Lab,
+    place: str,
+    words: tuple[str, ...],
+    make_error: Callable[[], BaseException],
+    error: type[BaseException],
+    end: IngestEnd,
+    window_end: IngestEnd,
+    when: Moment,
+) -> None:
+    """F-21, experiment E3: the line of the lost operation raises Ctrl+C or `MemoryError`.
+
+    The line is recorded first (`after`) or lost (`before`). Nothing is attempted
+    after the lost call, nothing is written, no second repository is opened, and no
+    message names `read_run` or holds `RuntimeError`.
+    """
+    loss = Loss(lab, other_session=False)
+    if place == "observation":
+        request, operation, detail = arrange_loss(lab, "observation", loss)
+    else:
+        request, operation, detail = arrange_lost_page_completed(lab, loss)
+    reporter = lab.raising_reporter(*words, error=make_error, when=when)
+
+    outcome = call_without_escape(lab, request)
+
+    assert reporter.fired
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert reporter.started == [FREE_ID]
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == []
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("when", WHEN)
+def test_reconnect_loss_line_interrupt_the_line_of_a_refused_second_exclusion(
+    lab: Lab, when: Moment
+) -> None:
+    """F-21: the second exclusion is refused and the reporter raises Ctrl+C on its line.
+
+    INTERRUPTED with `running`; nothing is read or written; the only attempt after
+    the lost call is the second exclusion; both repositories are closed.
+    """
+    loss = Loss(lab, other_session=False)
+    request, operation, detail = arrange_loss(lab, "observation", loss)
+    lab.opener.faults[2] = [
+        lab.faults.refuses(
+            "try_acquire_ingest_exclusion",
+            lambda: PersistenceIntegrityError(REFUSAL_TEXT),
+        )
+    ]
+    reporter = lab.raising_reporter(
+        "try_acquire_ingest_exclusion", error=lambda: KeyboardInterrupt(), when=when
+    )
+
+    outcome = call_without_escape(lab, request)
+
+    assert reporter.fired
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == [
+        "2 try_acquire_ingest_exclusion"
+    ]
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === reconnect_false_close_interrupt (AC7, AC8 c, AC15, AC18; F-21, E2, E2b) ===
+#
+# Another session holds the exclusion at the loss, so the second exclusion returns
+# `False`, and then the second repository's `close()` raises.
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "error", "end", "window_end"), CLOSE_ERRORS)
+def test_reconnect_false_close_interrupt_runs_no_cleanup_and_leaves_the_run_running(
+    lab: Lab,
+    make_error: Callable[[], BaseException],
+    error: type[BaseException],
+    end: IngestEnd,
+    window_end: IngestEnd,
+    when: Moment,
+) -> None:
+    """F-21, C step 3: `False`, then the second repository's close raises.
+
+    The only attempt after the lost call is the second exclusion; the `False` adds no
+    line; the other session still holds the exclusion; both repositories end closed
+    (the second one, when its close raised before delegating, by the final close).
+    """
+    loss = Loss(lab, other_session=True)
+    request, operation, detail = arrange_loss(lab, "observation", loss)
+    lab.opener.close_faults[2] = [lab.faults.close_raises(make_error, when=when)]
+
+    outcome = call_without_escape(lab, request)
+
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == [
+        "2 try_acquire_ingest_exclusion"
+    ]
+    assert progress_lines(lab, "try_acquire_ingest_exclusion") == []
+    assert_names_no_read_of_the_run(lab)
+    assert lab.database.exclusion_holder is loss.holder
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("when", WHEN)
+def test_reconnect_false_close_interrupt_an_os_error_from_that_close_changes_nothing(
+    lab: Lab, when: Moment
+) -> None:
+    """C step 3: an `Exception` other than `MemoryError` from that close is suppressed.
+
+    The `False` outcome is unchanged: RUN_FAILED with `running`, the run untouched.
+    """
+    loss = Loss(lab, other_session=True)
+    request, operation, detail = arrange_loss(lab, "observation", loss)
+    lab.opener.close_faults[2] = [
+        lab.faults.close_raises(lambda: OSError(REFUSAL_TEXT), when=when)
+    ]
+
+    outcome = call_without_escape(lab, request)
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == [
+        "2 try_acquire_ingest_exclusion"
+    ]
+    assert progress_lines(lab, "try_acquire_ingest_exclusion") == []
+    assert not any("OSError" in message for message in lab.reporter.messages)
+    assert lab.opener.opens == 2
+
+
+# === final_close_error, final_close_interrupt (AC7, AC15; F-22, E7, E8) =======
+#
+# Plan Revision 9, § Public names, "The final close": closing the final repository
+# never changes how the run ended. An `Exception` from that `close()` is suppressed; a
+# `KeyboardInterrupt` returns the determined outcome as `INTERRUPTED`, with the same
+# run and the same confirmed status.
+
+
+@dataclass(frozen=True)
+class FinalClose:
+    """One ending of `run_ingest` and the repository whose close is faulty."""
+
+    request: IngestRequest
+    open_index: int
+    end: IngestEnd
+    run_status: RunStatus | None
+    events: list[str] | None
+    last_write: str | None
+
+
+def arrange_final_close(lab: Lab, name: str) -> FinalClose:
+    """The four endings of plan Revision 9 (AC1, AC4, a refused exclusion, AC8 a)."""
+    if name == "ac1-run":
+        lab.script_ids(FREE_ID)
+        lab.source.script(1, lab.ok(1, pages=3))
+        lab.source.script(2, lab.ok(2, pages=3))
+        return FinalClose(
+            fresh(lab, 1, 2),
+            1,
+            IngestEnd.SUCCEEDED,
+            RunStatus.SUCCEEDED,
+            ["run-started", "page-completed", "page-completed"],
+            "finish_run:succeeded",
+        )
+    if name == "ac4-run":
+        lab.script_ids(FREE_ID)
+        lab.source.script(2, lab.status_failure(2, 500))
+        return FinalClose(
+            fresh(lab, 1, 3),
+            1,
+            IngestEnd.RUN_FAILED,
+            RunStatus.FAILED,
+            ["run-started", "page-completed", "page-failed"],
+            "finish_run:failed",
+        )
+    if name == "refused-exclusion":
+        lab.database.hold_exclusion_elsewhere()
+        return FinalClose(fresh(lab, 1, 2), 1, IngestEnd.NOT_STARTED, None, None, None)
+    assert name == "recovery"
+    lab.script_ids(FREE_ID)
+    lab.opener.faults[1] = [
+        lab.faults.lost_before_commit("record_observation", detail="2")
+    ]
+    return FinalClose(
+        fresh(lab, 1, 3),
+        2,
+        IngestEnd.RUN_FAILED,
+        RunStatus.FAILED,
+        ["run-started", "page-completed", "storage-failed"],
+        "finish_run:failed",
+    )
+
+
+FINAL_CLOSE_ENDINGS = ["ac1-run", "ac4-run", "refused-exclusion", "recovery"]
+FINAL_CLOSE_ERRORS = [
+    pytest.param(lambda: OSError(REFUSAL_TEXT), OSError, id="os-error"),
+    pytest.param(lambda: MemoryError(), MemoryError, id="memory-error"),
+]
+
+
+def assert_the_run_ended_as_determined(
+    lab: Lab, outcome: IngestOutcome, ending: FinalClose
+) -> None:
+    """Nothing was added to the run after the outcome, and the stored run is as is."""
+    if ending.events is None:
+        assert lab.database.runs == {}
+        assert lab.reporter.started == []
+        return
+    run_id = created(outcome)
+    assert lab.event_types(run_id) == ending.events
+    assert lab.journal.labels(run_id)[-1] == ending.last_write
+    assert len(written(lab, "finish_run")) == 1
+    assert lab.database.runs[run_id].status is ending.run_status
+
+
+@pytest.mark.parametrize("name", FINAL_CLOSE_ENDINGS)
+@pytest.mark.parametrize(("make_error", "error"), FINAL_CLOSE_ERRORS)
+def test_final_close_error_never_changes_how_the_run_ended(
+    lab: Lab,
+    make_error: Callable[[], BaseException],
+    error: type[BaseException],
+    name: str,
+) -> None:
+    """F-22, experiment E8: an `Exception` from the final close is suppressed.
+
+    The outcome already determined is returned unchanged, nothing escapes, nothing is
+    added to the run, and no message names the close or the error.
+    """
+    ending = arrange_final_close(lab, name)
+    lab.opener.close_faults[ending.open_index] = [
+        lab.faults.close_raises(make_error, when="after")
+    ]
+
+    outcome = call_without_escape(lab, ending.request)
+
+    assert outcome.end is ending.end
+    assert outcome.run_status is ending.run_status
+    assert (outcome.execution_id is None) == (ending.run_status is None)
+    assert_the_run_ended_as_determined(lab, outcome, ending)
+    assert not any(
+        "close" in message.lower()
+        or error.__name__ in message
+        or REFUSAL_TEXT in message
+        for message in lab.reporter.messages
+    ), lab.reporter.messages
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("name", FINAL_CLOSE_ENDINGS)
+def test_final_close_interrupt_keeps_the_outcome_and_records_the_interrupt(
+    lab: Lab, name: str
+) -> None:
+    """F-22, experiment E7: Ctrl+C during the final close, after it delegated.
+
+    The determined outcome is returned as INTERRUPTED with the same run and the same
+    confirmed status (`None` when no run exists); the message says the ingest was
+    interrupted; the run is not read or written because of it; nothing escapes.
+    """
+    ending = arrange_final_close(lab, name)
+    lab.opener.close_faults[ending.open_index] = [
+        lab.faults.close_raises(lambda: KeyboardInterrupt(), when="after")
+    ]
+
+    outcome = call_without_escape(lab, ending.request)
+
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.run_status is ending.run_status
+    assert (outcome.execution_id is None) == (ending.run_status is None)
+    assert "interrupt" in outcome.message.lower(), outcome.message
+    assert_the_run_ended_as_determined(lab, outcome, ending)
+    assert lab.opener.all_closed
+
+
+# === generic_fallback (AC15; F-20, E6) =========================================
+#
+# Plan Revision 9: a non-database exception before the run exists, with no lost
+# connection, outside the recovery window, ends `NOT_STARTED` with no run.
+
+
+@pytest.mark.parametrize(
+    ("make_error", "error"),
+    [
+        pytest.param(lambda: MemoryError(), MemoryError, id="memory-error"),
+        pytest.param(
+            lambda: SyntheticDefect(BODY_MARKER), SyntheticDefect, id="synthetic-defect"
+        ),
+    ],
+)
+def test_generic_fallback_a_start_run_defect_ends_not_started_with_no_run(
+    lab: Lab, make_error: Callable[[], BaseException], error: type[BaseException]
+) -> None:
+    """E6: `start_run` raises before delegating -> NOT_STARTED, nothing written.
+
+    No run, no id, no `run_started`, no request; the message is at most the class
+    name and holds no marker; one repository is opened and closed.
+    """
+    lab.script_ids(FREE_ID)
+    lab.opener.faults[1] = [lab.faults.raises("start_run", make_error)]
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert_not_started(outcome)
+    assert BODY_MARKER not in outcome.message
+    assert set(CAMEL_CASE.findall(outcome.message)) <= {error.__name__}
+    assert lab.database.runs == {}
+    assert lab.reporter.started == []
+    assert lab.source.requests == []
+    assert not any(BODY_MARKER in message for message in lab.reporter.messages)
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+# === start_run_second_loss (AC8, AC15; sweep N-1) ==============================
+#
+# Plan Revision 10, § State machine C step 6: when the repeat of `start_run` on the
+# second repository is lost too, the second loss gives `RUN_FAILED` with `running`;
+# a Ctrl+C that lands afterwards gives no run, and so does any other exception. The
+# code behaves this way at `beadcf8`: these tests protect the round 5 restructuring.
+
+
+def lose_start_run_twice(lab: Lab, first: Moment, second: Moment) -> None:
+    """`start_run` is lost on the first repository and again on the second one."""
+    lab.script_ids(FREE_ID)
+    lost_at(lab, "start_run", None, first)
+    lost_at(lab, "start_run", None, second, open_index=2)
+
+
+def assert_nothing_after_the_second_loss(lab: Lab) -> None:
+    """The second lost `start_run` is the last call any repository received."""
+    attempts = lab.opener.attempts
+    assert [a.open_index for a in lab.opener.attempts_of("start_run")] == [1, 2]
+    assert attempts[-1].operation == "start_run"
+    assert attempts[-1].open_index == 2
+    assert not any("read_run" in message for message in lab.reporter.messages)
+    assert lab.reporter.started == []
+    assert lab.events(FREE_ID) == []
+    assert lab.source.requests == []
+    stored = lab.database.runs.get(FREE_ID)
+    assert stored is None or stored.status is RunStatus.RUNNING
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+def assert_no_run_is_known(
+    outcome: IngestOutcome, end: IngestEnd, error: type[BaseException]
+) -> None:
+    """The outcome names no run, whether or not the first `start_run` committed."""
+    assert outcome.end is end
+    assert outcome.execution_id is None
+    assert outcome.run_status is None
+    assert REFUSAL_TEXT not in outcome.message
+    assert set(CAMEL_CASE.findall(outcome.message)) <= {error.__name__}
+
+
+@pytest.mark.parametrize("second", WHEN)
+@pytest.mark.parametrize("first", WHEN)
+def test_start_run_second_loss_leaves_the_run_running_with_two_lines(
+    lab: Lab, first: Moment, second: Moment
+) -> None:
+    """C step 6: `RUN_FAILED`, the drawn id, `running`; two lines name `start_run`."""
+    lose_start_run_twice(lab, first, second)
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert outcome.end is IngestEnd.RUN_FAILED
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    lines = progress_lines(lab, "start_run", FREE_ID)
+    assert len(lines) == 2, lab.reporter.messages
+    for line in lines:
+        assert_names_at_most(line, PersistenceConnectionError)
+    assert_clean_messages(lab)
+    assert_nothing_after_the_second_loss(lab)
+
+
+SECOND_LOSS_INTERRUPTIONS = [
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        IngestEnd.INTERRUPTED,
+        KeyboardInterrupt,
+        id="ctrl-c",
+    ),
+    pytest.param(
+        lambda: MemoryError(), IngestEnd.NOT_STARTED, MemoryError, id="memory-error"
+    ),
+]
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "end", "error"), SECOND_LOSS_INTERRUPTIONS)
+@pytest.mark.parametrize("second", WHEN)
+@pytest.mark.parametrize("first", WHEN)
+def test_start_run_second_loss_an_exception_on_the_second_line_gives_no_run(
+    lab: Lab,
+    first: Moment,
+    second: Moment,
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    error: type[BaseException],
+    when: Moment,
+) -> None:
+    """C step 6: the reporter raises on the second line that names `start_run`.
+
+    Ctrl+C gives INTERRUPTED and `MemoryError` NOT_STARTED, both with no run and
+    `run_started` not called; nothing is written; no third connection is opened.
+    """
+    lose_start_run_twice(lab, first, second)
+    reporter = lab.raising_reporter(
+        "start_run", FREE_ID, error=make_error, nth=2, when=when
+    )
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert reporter.fired
+    assert_no_run_is_known(outcome, end, error)
+    assert_nothing_after_the_second_loss(lab)
+
+
+# === unexpected_cleanup_interrupt (AC7, AC15; sweep N-2) =======================
+#
+# Plan Revision 10, § Public names and § State machine K: any `KeyboardInterrupt`
+# during the cleanup propagates out of `run_ingest`, whatever the cleanup was entered
+# for. Here it was entered for a `MemoryError` or a synthetic exception at page 2.
+# `_cleanup_step` and K's handler catch `Exception` only, so these protect the code.
+
+
+@dataclass(frozen=True)
+class CleanupInterrupt:
+    """Where the second Ctrl+C lands in the cleanup, and what must hold after it."""
+
+    store: RawEvidenceStore | None
+    last_operation: str
+    appended: bool
+    status: RunStatus
+
+
+def arrange_cleanup_interrupt(
+    lab: Lab, where: str, make_error: Callable[[], BaseException]
+) -> CleanupInterrupt:
+    """Page 1 completes; `make_error` is raised at page 2; Ctrl+C lands in `where`."""
+    lab.script_ids(FREE_ID)
+    store: RawEvidenceStore | None = None
+    if where == "record":
+        # The store publishes sequence 2 and then raises: sequence 2 is pending.
+        store = lab.publishes_then_fails(on_call=2, error=make_error)
+    else:
+        lab.source.script(2, make_error())
+    faults = lab.opener.faults.setdefault(1, [])
+    if where == "read-run":
+        faults.append(
+            lab.faults.raises(
+                "read_run", lambda: KeyboardInterrupt(), nth=2, execution_id=FREE_ID
+            )
+        )
+        return CleanupInterrupt(None, "read_run", False, RunStatus.RUNNING)
+    if where == "reporter-line":
+        faults.append(
+            lab.faults.refuses(
+                "read_run",
+                lambda: PersistenceIntegrityError(REFUSAL_TEXT),
+                nth=2,
+                execution_id=FREE_ID,
+            )
+        )
+        lab.raising_reporter(
+            "read_run", FREE_ID, error=lambda: KeyboardInterrupt(), when="after"
+        )
+        return CleanupInterrupt(None, "read_run", False, RunStatus.RUNNING)
+    if where == "record":
+        faults.append(lab.faults.interrupts("record_observation", detail="2"))
+        return CleanupInterrupt(store, "record_observation", False, RunStatus.RUNNING)
+    moment: Moment = "after" if where.endswith("after") else "before"
+    if where.startswith("append"):
+        faults.append(
+            lab.faults.interrupts(
+                "append_audit_event", detail="unexpected-error", when=moment
+            )
+        )
+        return CleanupInterrupt(
+            None, "append_audit_event", moment == "after", RunStatus.RUNNING
+        )
+    assert where.startswith("finish")
+    faults.append(lab.faults.interrupts("finish_run", detail="failed", when=moment))
+    return CleanupInterrupt(
+        None,
+        "finish_run",
+        True,
+        RunStatus.FAILED if moment == "after" else RunStatus.RUNNING,
+    )
+
+
+CLEANUP_INTERRUPT_PLACES = [
+    "read-run",
+    "append-before",
+    "append-after",
+    "finish-before",
+    "finish-after",
+    "record",
+    "reporter-line",
+]
+UNEXPECTED_TRIGGERS = [
+    pytest.param(lambda: MemoryError(), id="memory-error"),
+    pytest.param(lambda: SyntheticDefect(BODY_MARKER), id="synthetic-defect"),
+]
+
+
+@pytest.mark.parametrize("where", CLEANUP_INTERRUPT_PLACES)
+@pytest.mark.parametrize("make_error", UNEXPECTED_TRIGGERS)
+def test_unexpected_cleanup_interrupt_propagates_and_leaves_the_run_running(
+    lab: Lab, make_error: Callable[[], BaseException], where: str
+) -> None:
+    """N-2: Ctrl+C during the cleanup of a `MemoryError` or a defect escapes.
+
+    Nothing is attempted after the operation that raised, no event follows the
+    `unexpected-error` append, and the run stays `running` (`failed` only when the
+    `finish_run(FAILED)` delegated before it raised). The final close was attempted.
+    """
+    case = arrange_cleanup_interrupt(lab, where, make_error)
+
+    with pytest.raises(KeyboardInterrupt):
+        call_propagating(lab, fresh(lab, 1, 3), store=case.store)
+
+    assert lab.opener.attempts[-1].operation == case.last_operation
+    expected_events = ["run-started", "page-completed"]
+    if case.appended:
+        expected_events.append("unexpected-error")
+    assert lab.event_types(FREE_ID) == expected_events
+    assert lab.database.runs[FREE_ID].status is case.status
+    assert lab.sequences(FREE_ID) == (1,)
+    assert lab.reporter.started == [FREE_ID]
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+# === recovery_double_fault (AC7, AC8 c, AC15; sweep N-3) =======================
+#
+# Plan Revision 10, § State machine C, "Two or more exceptions": a Ctrl+C among them
+# decides INTERRUPTED; otherwise the other exception decides, and it prevails over a
+# `False`. Nothing is read or written and the cleanup is not entered.
+
+
+@dataclass(frozen=True)
+class DoubleFault:
+    """What one case of N-3 expects once the faults are set."""
+
+    exclusion_error: type[BaseException] | None
+    end: IngestEnd
+    opens: int
+    other_session: bool
+
+
+def arrange_double_fault(lab: Lab, kind: str, when: Moment) -> DoubleFault:
+    """Set the two faults of one case; `when` places the close of the second repository."""
+    exclusion = lab.faults
+    if kind == "a":
+        lab.opener.faults[2] = [
+            exclusion.raises("try_acquire_ingest_exclusion", lambda: MemoryError())
+        ]
+        lab.opener.close_faults[2] = [
+            lab.faults.close_raises(lambda: KeyboardInterrupt(), when=when)
+        ]
+        return DoubleFault(MemoryError, IngestEnd.INTERRUPTED, 2, False)
+    if kind == "b":
+        lab.opener.faults[2] = [
+            exclusion.raises(
+                "try_acquire_ingest_exclusion", lambda: KeyboardInterrupt()
+            )
+        ]
+        lab.opener.close_faults[2] = [
+            lab.faults.close_raises(lambda: MemoryError(), when=when)
+        ]
+        return DoubleFault(KeyboardInterrupt, IngestEnd.INTERRUPTED, 2, False)
+    if kind == "c-memory-then-ctrl-c":
+        lab.opener.close_faults[1] = [
+            lab.faults.close_raises(lambda: MemoryError(), when="before"),
+            lab.faults.close_raises(lambda: KeyboardInterrupt(), when="after"),
+        ]
+        return DoubleFault(None, IngestEnd.INTERRUPTED, 1, False)
+    if kind == "c-ctrl-c-then-memory":
+        lab.opener.close_faults[1] = [
+            lab.faults.close_raises(lambda: KeyboardInterrupt(), when="before"),
+            lab.faults.close_raises(lambda: MemoryError(), when="after"),
+        ]
+        return DoubleFault(None, IngestEnd.INTERRUPTED, 1, False)
+    if kind == "d-os-error":
+        lab.opener.faults[2] = [
+            exclusion.raises("try_acquire_ingest_exclusion", lambda: MemoryError())
+        ]
+        lab.opener.close_faults[2] = [
+            lab.faults.close_raises(lambda: OSError(REFUSAL_TEXT), when="after")
+        ]
+        return DoubleFault(MemoryError, IngestEnd.RUN_FAILED, 2, False)
+    assert kind == "d-false"
+    lab.opener.close_faults[2] = [
+        lab.faults.close_raises(lambda: MemoryError(), when="after")
+    ]
+    return DoubleFault(None, IngestEnd.RUN_FAILED, 2, True)
+
+
+DOUBLE_FAULTS = [
+    pytest.param("a", "after", id="a-memory-error-exclusion-ctrl-c-close-after"),
+    pytest.param("a", "before", id="a-memory-error-exclusion-ctrl-c-close-before"),
+    pytest.param("b", "after", id="b-ctrl-c-exclusion-memory-error-close-after"),
+    pytest.param("b", "before", id="b-ctrl-c-exclusion-memory-error-close-before"),
+    pytest.param("c-memory-then-ctrl-c", "after", id="c-memory-error-then-ctrl-c"),
+    pytest.param("c-ctrl-c-then-memory", "after", id="c-ctrl-c-then-memory-error"),
+    pytest.param("d-os-error", "after", id="d-exclusion-memory-error-close-os-error"),
+    pytest.param("d-false", "after", id="d-false-close-memory-error"),
+]
+
+
+@pytest.mark.parametrize(("kind", "when"), DOUBLE_FAULTS)
+def test_recovery_double_fault_the_precedence_decides_and_nothing_is_touched(
+    lab: Lab, kind: str, when: Moment
+) -> None:
+    """N-3: a Ctrl+C among two exceptions gives INTERRUPTED, else the other decides.
+
+    The lost operation is the observation of sequence 2. After the lost call nothing
+    is attempted but the second opening, the second exclusion and the closes; the
+    exclusion line is written only when the exclusion raised, named alone; every
+    repository ends closed; nothing escapes.
+    """
+    probe = Loss(lab, other_session=kind == "d-false")
+    request, operation, detail = arrange_loss(lab, "observation", probe)
+    case = arrange_double_fault(lab, kind, when)
+
+    outcome = call_without_escape(lab, request)
+
+    assert outcome.end is case.end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert_the_run_was_not_touched(lab, probe)
+    expected_attempts = ["2 try_acquire_ingest_exclusion"] if case.opens == 2 else []
+    assert attempts_after_the_loss(lab, operation, detail) == expected_attempts
+    if case.exclusion_error is None:
+        assert progress_lines(lab, "try_acquire_ingest_exclusion") == []
+    else:
+        line = assert_one_progress_line(
+            lab, "try_acquire_ingest_exclusion", case.exclusion_error
+        )
+        assert_names_no_run(line)
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == case.opens
+    assert lab.opener.all_closed
+
+
+WINDOW_DOUBLE_FAULTS = [
+    pytest.param("a", "after", IngestEnd.INTERRUPTED, KeyboardInterrupt, id="a-after"),
+    pytest.param(
+        "a", "before", IngestEnd.INTERRUPTED, KeyboardInterrupt, id="a-before"
+    ),
+    pytest.param("b", "after", IngestEnd.INTERRUPTED, KeyboardInterrupt, id="b-after"),
+    pytest.param(
+        "b", "before", IngestEnd.INTERRUPTED, KeyboardInterrupt, id="b-before"
+    ),
+    pytest.param("d-false", "after", IngestEnd.NOT_STARTED, MemoryError, id="d-false"),
+]
+
+
+@pytest.mark.parametrize(("kind", "when", "end", "error"), WINDOW_DOUBLE_FAULTS)
+def test_recovery_double_fault_while_start_run_is_pending_gives_no_run(
+    lab: Lab, kind: str, when: Moment, end: IngestEnd, error: type[BaseException]
+) -> None:
+    """N-3 with `start_run` lost before commit: a `False` yields to a `MemoryError`.
+
+    (a) and (b) give INTERRUPTED with no run; the `False` with a `MemoryError` from
+    the close gives NOT_STARTED with no run; nothing is written, nothing announced.
+    """
+    probe = Loss(lab, other_session=kind == "d-false")
+    request, operation, detail = arrange_loss(lab, "start-run", probe)
+    case = arrange_double_fault(lab, kind, when)
+
+    outcome = call_without_escape(lab, request)
+
+    assert_window_outcome(lab, outcome, end, error)
+    assert_the_run_was_not_touched(lab, probe)
+    assert attempts_after_the_loss(lab, operation, detail) == [
+        "2 try_acquire_ingest_exclusion"
+    ]
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == case.opens
+    assert lab.opener.all_closed
+
+
+# === refusal_not_retried (AC6 c, AC6 e, AC7, AC15; sweep N-4) ==================
+#
+# Plan Revision 10, § State machine P and K: a write the database refused is answered
+# and never attempted again in the invocation, the cleanup included. A refused
+# `record_observation` ends its pending period at the refusal; after a refused
+# `finish_run(FAILED)` nothing more is written. The refusal wrapper refuses every call
+# of the operation, so a retry would be refused again.
+
+REFUSAL_FLAVORS = [PersistenceIntegrityError, PersistenceError]
+INTERRUPTIONS = [
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        IngestEnd.INTERRUPTED,
+        "run-interrupted",
+        id="ctrl-c",
+    ),
+    pytest.param(
+        lambda: MemoryError(),
+        IngestEnd.RUN_FAILED,
+        "unexpected-error",
+        id="memory-error",
+    ),
+]
+
+
+def refuse_every_call(
+    lab: Lab,
+    operation: str,
+    error: Callable[[str], PersistenceError],
+    *,
+    detail: str | None = None,
+    open_index: int = 1,
+) -> None:
+    """The repository number `open_index` refuses each of the next calls."""
+    lab.opener.faults.setdefault(open_index, []).extend(
+        lab.faults.refuses(operation, lambda: error(REFUSAL_TEXT), detail=detail)
+        for _ in range(3)
+    )
+
+
+def assert_refusal_answered_once(
+    lab: Lab,
+    outcome: IngestOutcome,
+    *,
+    end: IngestEnd,
+    event_type: str,
+    recorded: bool,
+    records: list[int],
+    current: int,
+    lines_before: int = 0,
+) -> None:
+    """The refused observation 2 is attempted once per repository, never by the cleanup."""
+    assert [
+        a.open_index for a in lab.opener.attempts_of("record_observation", "2")
+    ] == records
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.FAILED
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed", event_type]
+    expected = (
+        {"page": 2}
+        if event_type == "run-interrupted"
+        else {
+            "page": 2,
+            "error_type": "MemoryError",
+        }
+    )
+    assert lab.details(FREE_ID, event_type) == [expected]
+    assert lab.details(FREE_ID, "storage-failed") == []
+    assert_follows_catalogue(lab.events(FREE_ID))
+    assert lab.sequences(FREE_ID) == (1,)
+    assert lab.local_sequences(FREE_ID) == (1, 2)
+    # The cleanup ran on the current repository: `read_run`, then the close of the run.
+    assert lab.opener.attempts_of("read_run")[-1].open_index == current
+    assert [a.open_index for a in lab.opener.attempts_of("finish_run", "failed")] == [
+        current
+    ]
+    lines = progress_lines(lab, "record_observation", FREE_ID)
+    assert len(lines) == lines_before + (1 if recorded else 0), lab.reporter.messages
+    if recorded:
+        assert number_in(lines[-1], 2), lines
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "end", "event_type"), INTERRUPTIONS)
+@pytest.mark.parametrize("refusal", REFUSAL_FLAVORS)
+def test_refusal_not_retried_a_refused_observation_is_not_recorded_by_the_cleanup(
+    lab: Lab,
+    refusal: type[PersistenceError],
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    event_type: str,
+    when: Moment,
+) -> None:
+    """Case (i), P step 4: the interruption lands on the line of the refusal.
+
+    `record_observation` of sequence 2 is attempted once; the cleanup reads the run,
+    appends `run-interrupted` (or `unexpected-error`) and closes it `failed`; there is
+    no `storage-failed` and no observation 2 in PostgreSQL, while the store keeps it.
+    """
+    lab.script_ids(FREE_ID)
+    refuse_every_call(lab, "record_observation", refusal, detail="2")
+    reporter = lab.raising_reporter(
+        "record_observation", FREE_ID, error=make_error, when=when
+    )
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert reporter.fired
+    assert_refusal_answered_once(
+        lab,
+        outcome,
+        end=end,
+        event_type=event_type,
+        recorded=when == "after",
+        records=[1],
+        current=1,
+    )
+    assert lab.opener.opens == 1
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "end", "event_type"), INTERRUPTIONS)
+@pytest.mark.parametrize("refusal", REFUSAL_FLAVORS)
+def test_refusal_not_retried_a_refused_read_back_record_is_not_recorded_by_the_cleanup(
+    lab: Lab,
+    refusal: type[PersistenceError],
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    event_type: str,
+    when: Moment,
+) -> None:
+    """Case (ii), the read-back path: the store publishes 2 and fails, PostgreSQL refuses.
+
+    The read-back finds observation 2 and its record is refused once; the interruption
+    on the refusal's line does not make the cleanup record it again.
+    """
+    lab.script_ids(FREE_ID)
+    refuse_every_call(lab, "record_observation", refusal, detail="2")
+    reporter = lab.raising_reporter(
+        "record_observation", FREE_ID, error=make_error, when=when
+    )
+    store = lab.publishes_then_fails(on_call=2)
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3), store=store)
+
+    assert reporter.fired
+    assert_refusal_answered_once(
+        lab,
+        outcome,
+        end=end,
+        event_type=event_type,
+        recorded=when == "after",
+        records=[1],
+        current=1,
+    )
+    assert lab.opener.opens == 1
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "end", "event_type"), INTERRUPTIONS)
+@pytest.mark.parametrize("refusal", REFUSAL_FLAVORS)
+def test_refusal_not_retried_a_refused_repeat_on_the_second_repository_is_not_recorded_again(
+    lab: Lab,
+    refusal: type[PersistenceError],
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    event_type: str,
+    when: Moment,
+) -> None:
+    """Case (iii): the record is lost on the first repository, refused on the second.
+
+    It is attempted once on each; the interruption on the refusal's line (the second
+    line that names `record_observation`, the first being the loss) does not make the
+    cleanup record it a third time; the cleanup runs on the second repository.
+    """
+    lab.script_ids(FREE_ID)
+    lab.opener.faults[1] = [
+        lab.faults.lost_before_commit("record_observation", detail="2")
+    ]
+    refuse_every_call(lab, "record_observation", refusal, detail="2", open_index=2)
+    reporter = lab.raising_reporter(
+        "record_observation", FREE_ID, error=make_error, nth=2, when=when
+    )
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert reporter.fired
+    assert_refusal_answered_once(
+        lab,
+        outcome,
+        end=end,
+        event_type=event_type,
+        recorded=when == "after",
+        records=[1, 2],
+        current=2,
+        lines_before=1,
+    )
+    assert lab.opener.opens == 2
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(
+    ("make_error", "end"),
+    [
+        pytest.param(lambda: KeyboardInterrupt(), IngestEnd.INTERRUPTED, id="ctrl-c"),
+        pytest.param(lambda: MemoryError(), IngestEnd.RUN_FAILED, id="memory-error"),
+    ],
+)
+@pytest.mark.parametrize("refusal", REFUSAL_FLAVORS)
+def test_refusal_not_retried_a_refused_failing_finish_writes_nothing_more(
+    lab: Lab,
+    refusal: type[PersistenceError],
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    when: Moment,
+) -> None:
+    """Case (iv): `finish_run(FAILED)` is refused on the AC4 path (page 2 answers 500).
+
+    The interruption lands on the refusal's line. `finish_run(FAILED)` is attempted
+    once; nothing is read or written after the refusal (no `run-interrupted`, no
+    `unexpected-error`); the run stays `running`.
+    """
+    lab.script_ids(FREE_ID)
+    lab.source.script(2, lab.status_failure(2, 500))
+    refuse_every_call(lab, "finish_run", refusal, detail="failed")
+    reporter = lab.raising_reporter("finish_run", FREE_ID, error=make_error, when=when)
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert reporter.fired
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert [a.open_index for a in lab.opener.attempts_of("finish_run", "failed")] == [1]
+    assert lab.opener.attempts[-1].operation == "finish_run"
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed", "page-failed"]
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    lines = progress_lines(lab, "finish_run", FREE_ID)
+    assert len(lines) == (1 if when == "after" else 0), lab.reporter.messages
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("refusal", REFUSAL_FLAVORS)
+def test_refusal_not_retried_control_the_answering_append_interrupted(
+    lab: Lab, refusal: type[PersistenceError]
+) -> None:
+    """Control (v), expected green: the `storage-failed` append that answers (i) raises Ctrl+C.
+
+    It raises before delegating, so no run write was refused again: observation 2 was
+    attempted once and the cleanup appends `run-interrupted` and finishes `failed`.
+    """
+    lab.script_ids(FREE_ID)
+    refuse_every_call(lab, "record_observation", refusal, detail="2")
+    lab.opener.faults[1].append(
+        lab.faults.interrupts("append_audit_event", detail="storage-failed")
+    )
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.FAILED
+    assert [
+        a.open_index for a in lab.opener.attempts_of("record_observation", "2")
+    ] == [1]
+    assert lab.event_types(FREE_ID) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+    assert lab.details(FREE_ID, "run-interrupted") == [{"page": 2}]
+    assert_follows_catalogue(lab.events(FREE_ID))
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+def test_refusal_not_retried_control_an_interrupt_before_any_write_records_once(
+    lab: Lab,
+) -> None:
+    """Control (vi), expected green: Ctrl+C on the page line of sequence 2 (F-01).
+
+    No write was attempted yet, so the cleanup records observation 2 exactly once,
+    then appends `run-interrupted` and closes the run `failed`.
+    """
+    lab.script_ids(FREE_ID)
+    reporter = lab.raising_reporter(
+        digest(lab.body(2)), error=lambda: KeyboardInterrupt(), when="after"
+    )
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert reporter.fired
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.FAILED
+    assert [
+        a.open_index for a in lab.opener.attempts_of("record_observation", "2")
+    ] == [1]
+    assert lab.sequences(FREE_ID) == (1, 2)
+    assert lab.event_types(FREE_ID) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+    assert lab.journal.labels(FREE_ID)[-4:] == [
+        "store:2",
+        "record_observation:2",
+        "append:run-interrupted",
+        "finish_run:failed",
+    ]
+    assert lab.opener.all_closed
+
+
+# === Audit round 5 rework, step 2 (2026-10-21), plan Revision 11 ================
+#
+# Written against the Revision 13/11/8 specs (approved on 2026-10-21), before the
+# rework of `run_ingest`. Tokens, by finding:
+#
+# - F-24 (decision D-1, option A: a `SystemExit` always wins and is preserved):
+#   `system_exit_window` and `system_exit_final_close` (the command-tier tokens
+#   `exit_code_system_exit_final_close` and `system_exit_command_end` are in
+#   `test_ingest_command.py`). Kills M5, M14 and M15.
+# - F-25 (required paths that no test pinned): `window_line_fault` (M16),
+#   `close_while_propagating` (M15), `p2_read_run_loss_line` (M28) and
+#   `interrupted_outcome_close`. They protect behavior that already holds.
+# - F-23 (decision D-2, option 1: the current behavior): `refusal_then_interrupt`.
+#
+# No new double: the faults, the close fault, the raising reporter and the refusal
+# wrapper already accept any `BaseException`. `Raised` only remembers the exception
+# objects a fault made, so that a test can check that the very object propagates.
+
+
+class Raised:
+    """A maker of exceptions that remembers each one it made.
+
+    It is passed wherever a fault takes `Callable[[], BaseException]`, so that the
+    test can check, by identity, which exception object leaves `run_ingest`.
+    """
+
+    def __init__(self, make: Callable[[], BaseException]) -> None:
+        self._make = make
+        self.made: list[BaseException] = []
+
+    def __call__(self) -> BaseException:
+        error = self._make()
+        self.made.append(error)
+        return error
+
+    @property
+    def first(self) -> BaseException:
+        assert self.made, "the fault never raised"
+        return self.made[0]
+
+
+def interrupt_error() -> BaseException:
+    return KeyboardInterrupt()
+
+
+def memory_error() -> BaseException:
+    return MemoryError()
+
+
+def os_error() -> BaseException:
+    return OSError(REFUSAL_TEXT)
+
+
+def synthetic_defect() -> BaseException:
+    return SyntheticDefect(BODY_MARKER)
+
+
+def call_exiting(
+    lab: Lab,
+    request: IngestRequest | ResumeRequest,
+    *,
+    store: RawEvidenceStore | None = None,
+) -> SystemExit:
+    """The call, which must end through a `SystemExit`: return that very object.
+
+    Any other exception that escapes (a `KeyboardInterrupt` included, which would end
+    the whole pytest session) fails the test by name.
+    """
+    try:
+        with pytest.raises(SystemExit) as stop:
+            call_propagating(lab, request, store=store)
+    except (Exception, KeyboardInterrupt) as error:
+        raise AssertionError(
+            f"run_ingest let {type(error).__name__} escape in place of the SystemExit"
+        ) from error
+    return stop.value
+
+
+# === system_exit_window (AC7, AC8 c, AC15; F-24, decision D-1, M5) ==============
+#
+# Plan § Public names, "`SystemExit`": in the window of State machine C a
+# `SystemExit` always wins, whatever else arrives and in whatever order. It leaves
+# `run_ingest` as the very object that was raised, nothing more is read or written,
+# K is not entered, and every repository is still closed.
+
+
+def arrange_system_exit_window(
+    lab: Lab, case: str, when: Moment
+) -> tuple[Raised, list[str]]:
+    """Set the faults of one case of F-24 in the window; `record_observation` 2 is lost.
+
+    Return the maker of the `SystemExit(3)` and the attempts expected after the lost
+    call (the second exclusion, when a second repository was opened).
+    """
+    exits = Raised(lambda: SystemExit(3))
+    after_a_second_open = ["2 try_acquire_ingest_exclusion"]
+    if case == "a":
+        lab.opener.faults[2] = [
+            lab.faults.raises("try_acquire_ingest_exclusion", interrupt_error)
+        ]
+        lab.opener.close_faults[2] = [lab.faults.close_raises(exits, when=when)]
+        return exits, after_a_second_open
+    if case == "b":
+        lab.opener.faults[2] = [
+            lab.faults.raises("try_acquire_ingest_exclusion", exits)
+        ]
+        lab.opener.close_faults[2] = [
+            lab.faults.close_raises(interrupt_error, when=when)
+        ]
+        return exits, after_a_second_open
+    if case == "c":
+        lab.opener.faults[2] = [
+            lab.faults.raises("try_acquire_ingest_exclusion", interrupt_error)
+        ]
+        lab.raising_reporter("try_acquire_ingest_exclusion", error=exits, when=when)
+        return exits, after_a_second_open
+    if case == "d":
+        lab.opener.close_faults[1] = [
+            lab.faults.close_raises(exits, when="before"),
+            lab.faults.close_raises(interrupt_error, when="after"),
+        ]
+        return exits, []
+    assert case == "e"
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(interrupt_error, when="before"),
+        lab.faults.close_raises(exits, when="after"),
+    ]
+    return exits, []
+
+
+SYSTEM_EXIT_WINDOW_CASES = [
+    pytest.param("a", "after", id="a-exclusion-ctrl-c-close-system-exit-after"),
+    pytest.param("a", "before", id="a-exclusion-ctrl-c-close-system-exit-before"),
+    pytest.param("b", "after", id="b-exclusion-system-exit-close-ctrl-c-after"),
+    pytest.param("b", "before", id="b-exclusion-system-exit-close-ctrl-c-before"),
+    pytest.param("c", "after", id="c-exclusion-ctrl-c-line-system-exit-after"),
+    pytest.param("c", "before", id="c-exclusion-ctrl-c-line-system-exit-before"),
+    pytest.param("d", "after", id="d-step-1-close-system-exit-final-close-ctrl-c"),
+    pytest.param("e", "after", id="e-step-1-close-ctrl-c-final-close-system-exit"),
+]
+
+
+@pytest.mark.parametrize(("case", "when"), SYSTEM_EXIT_WINDOW_CASES)
+def test_system_exit_window_a_system_exit_wins_and_nothing_is_touched(
+    lab: Lab, case: str, when: Moment
+) -> None:
+    """F-24, D-1: the `SystemExit(3)` the fault raised leaves `run_ingest` itself.
+
+    After the lost call nothing is attempted except the window operations and the
+    closes (no `read_run`); `<A>` keeps what it held at the loss and is `running`,
+    with no `run-interrupted` and no `unexpected-error`; every repository is closed.
+    """
+    loss = Loss(lab, other_session=False)
+    request, operation, detail = arrange_loss(lab, "observation", loss)
+    exits, expected_attempts = arrange_system_exit_window(lab, case, when)
+
+    stop = call_exiting(lab, request)
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert lab.reporter.started == [FREE_ID]
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == expected_attempts
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed"]
+    assert lab.sequences(FREE_ID) == (1,)
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == (2 if expected_attempts else 1)
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("when", WHEN)
+def test_system_exit_window_while_start_run_is_pending_nothing_is_written(
+    lab: Lab, when: Moment
+) -> None:
+    """Case (a) with `start_run` lost before commit: no run is known.
+
+    The `SystemExit(3)` propagates, nothing is written and `run_started` is not called.
+    """
+    loss = Loss(lab, other_session=False)
+    request, operation, detail = arrange_loss(lab, "start-run", loss)
+    exits, expected_attempts = arrange_system_exit_window(lab, "a", when)
+
+    stop = call_exiting(lab, request)
+
+    assert stop is exits.first
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == expected_attempts
+    assert lab.database.runs == {}
+    assert lab.reporter.started == []
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === system_exit_final_close (AC7, AC15; F-24, decision D-1, M14, M15) ==========
+#
+# Plan § Public names, "The final close" and "`SystemExit`": a `SystemExit` from the
+# final close after the outcome was determined propagates and no outcome is returned;
+# while a `SystemExit` propagates, nothing the final close raises replaces it, and
+# every repository is attempted once; while another exception propagates, a
+# `SystemExit` from the close replaces it.
+
+
+@pytest.mark.parametrize("name", ["ac1-run", "ac4-run", "refused-exclusion"])
+def test_system_exit_final_close_after_the_outcome_propagates_and_returns_no_outcome(
+    lab: Lab, name: str
+) -> None:
+    """(f): the final close raises `SystemExit(3)` after delegating, outcome known.
+
+    After the AC1 run, the AC4 run and a refused exclusion: the `SystemExit` leaves
+    `run_ingest` and no outcome is returned; nothing was added to the run after the
+    outcome (journal); the close was attempted once.
+    """
+    ending = arrange_final_close(lab, name)
+    exits = Raised(lambda: SystemExit(3))
+    lab.opener.close_faults[ending.open_index] = [
+        lab.faults.close_raises(exits, when="after")
+    ]
+
+    stop = call_exiting(lab, ending.request)
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert len(exits.made) == 1
+    assert lab.opener.repositories[0].close_calls == 1
+    if ending.events is None:
+        assert lab.database.runs == {}
+        assert lab.reporter.started == []
+    else:
+        assert lab.event_types(FREE_ID) == ending.events
+        assert lab.journal.labels(FREE_ID)[-1] == ending.last_write
+        assert len(written(lab, "finish_run")) == 1
+        assert lab.database.runs[FREE_ID].status is ending.run_status
+    assert lab.opener.all_closed
+
+
+def test_system_exit_final_close_replaces_a_ctrl_c_that_propagates_from_the_cleanup(
+    lab: Lab,
+) -> None:
+    """(g): the N-2 setup, with the final close raising `SystemExit(3)` after delegating.
+
+    A `MemoryError` at page 2, then Ctrl+C from K's `unexpected-error` append before
+    delegating: the `SystemExit(3)` propagates in place of the Ctrl+C; `<A>` is
+    `running` with the events it had.
+    """
+    lab.script_ids(FREE_ID)
+    lab.source.script(2, MemoryError())
+    lab.opener.faults[1] = [
+        lab.faults.interrupts("append_audit_event", detail="unexpected-error")
+    ]
+    exits = Raised(lambda: SystemExit(3))
+    lab.opener.close_faults[1] = [lab.faults.close_raises(exits, when="after")]
+
+    stop = call_exiting(lab, fresh(lab, 1, 3))
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert lab.opener.attempts[-1].operation == "append_audit_event"
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed"]
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.opener.repositories[0].close_calls == 1
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize(
+    ("make_close_error", "when"),
+    [
+        pytest.param(interrupt_error, "after", id="close-ctrl-c-after"),
+        pytest.param(interrupt_error, "before", id="close-ctrl-c-before"),
+        pytest.param(lambda: SystemExit(4), "after", id="close-system-exit-4-after"),
+    ],
+)
+def test_system_exit_final_close_the_first_system_exit_propagates(
+    lab: Lab, make_close_error: Callable[[], BaseException], when: Moment
+) -> None:
+    """(h): the transport raises `SystemExit(3)` at page 2; the final close raises too.
+
+    Whether it raises Ctrl+C (after or before delegating) or another `SystemExit`, the
+    first one propagates; the close is attempted exactly once; `<A>` is `running` with
+    page 1's events and nothing after them.
+    """
+    lab.script_ids(FREE_ID)
+    first = SystemExit(3)
+    lab.source.script(2, first)
+    lab.opener.close_faults[1] = [lab.faults.close_raises(make_close_error, when=when)]
+
+    stop = call_exiting(lab, fresh(lab, 1, 3))
+
+    assert stop is first
+    assert stop.code == 3
+    assert lab.opener.repositories[0].close_calls == 1
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed"]
+    assert lab.sequences(FREE_ID) == (1,)
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.reporter.started == [FREE_ID]
+
+
+# === window_line_fault (AC7, AC8 c, AC15; F-25, M16) ============================
+#
+# Plan § State machine C, "Two or more exceptions" and "The line rule of the window":
+# a window operation (the second `open_repository()` or the second exclusion) that
+# raises something other than a `PersistenceError` has its own line written; when
+# that line raises in turn, `_prevailing` decides, so a Ctrl+C is never hidden.
+
+WINDOW_LINE_CASES = [
+    pytest.param(
+        "exclusion",
+        interrupt_error,
+        memory_error,
+        IngestEnd.INTERRUPTED,
+        id="exclusion-ctrl-c-line-memory-error",
+    ),
+    pytest.param(
+        "exclusion",
+        interrupt_error,
+        os_error,
+        IngestEnd.INTERRUPTED,
+        id="exclusion-ctrl-c-line-os-error",
+    ),
+    pytest.param(
+        "open",
+        interrupt_error,
+        memory_error,
+        IngestEnd.INTERRUPTED,
+        id="open-ctrl-c-line-memory-error",
+    ),
+    pytest.param(
+        "open",
+        interrupt_error,
+        os_error,
+        IngestEnd.INTERRUPTED,
+        id="open-ctrl-c-line-os-error",
+    ),
+    pytest.param(
+        "exclusion",
+        memory_error,
+        interrupt_error,
+        IngestEnd.INTERRUPTED,
+        id="control-exclusion-memory-error-line-ctrl-c",
+    ),
+    pytest.param(
+        "exclusion",
+        synthetic_defect,
+        memory_error,
+        IngestEnd.RUN_FAILED,
+        id="control-exclusion-defect-line-memory-error",
+    ),
+]
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(
+    ("place", "make_window_error", "make_line_error", "end"), WINDOW_LINE_CASES
+)
+def test_window_line_fault_the_line_of_a_window_operation_never_hides_a_ctrl_c(
+    lab: Lab,
+    place: str,
+    make_window_error: Callable[[], BaseException],
+    make_line_error: Callable[[], BaseException],
+    end: IngestEnd,
+    when: Moment,
+) -> None:
+    """F-25: the window operation raises and the reporter raises on its line.
+
+    A Ctrl+C among the two gives INTERRUPTED, else the window operation's exception
+    decides (RUN_FAILED); `running` with `<A>` either way. After the lost call only the
+    window operations and the closes are attempted (no `read_run`); nothing is written.
+    """
+    loss = Loss(lab, other_session=False)
+    request, operation, detail = arrange_loss(lab, "observation", loss)
+    if place == "exclusion":
+        lab.opener.faults[2] = [
+            lab.faults.raises("try_acquire_ingest_exclusion", make_window_error)
+        ]
+        words = "try_acquire_ingest_exclusion"
+        expected_attempts = ["2 try_acquire_ingest_exclusion"]
+    else:
+        lab.opener.open_errors[2] = make_window_error
+        words = "open_repository"
+        expected_attempts = []
+    reporter = lab.raising_reporter(words, error=make_line_error, when=when)
+
+    outcome = call_without_escape(lab, request)
+
+    assert reporter.fired
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert reporter.started == [FREE_ID]
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == expected_attempts
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed"]
+    assert lab.sequences(FREE_ID) == (1,)
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === close_while_propagating (AC7, AC15; F-25, N-9, M15) ========================
+#
+# Plan § Public names, "The final close", last bullets: while a `KeyboardInterrupt`
+# propagates out of `run_ingest`, the final close is still attempted; a
+# `KeyboardInterrupt` from it propagates in its place (its own object); an `Exception`
+# from it is suppressed and the propagating Ctrl+C goes on unchanged.
+
+
+def arrange_propagating_ctrl_c(lab: Lab, setup: str) -> Raised:
+    """A Ctrl+C that leaves `run_ingest` from State machine K; return its maker.
+
+    `n2`: a `MemoryError` at page 2, then K's `unexpected-error` append raises Ctrl+C
+    before delegating. `ac7`: Ctrl+C at page 2, then K's `run-interrupted` append
+    raises a second one before delegating.
+    """
+    own = Raised(interrupt_error)
+    lab.script_ids(FREE_ID)
+    if setup == "n2":
+        lab.source.script(2, MemoryError())
+        event_type = "unexpected-error"
+    else:
+        assert setup == "ac7"
+        lab.source.script(2, KeyboardInterrupt())
+        event_type = "run-interrupted"
+    lab.opener.faults[1] = [
+        lab.faults.raises("append_audit_event", own, detail=event_type, when="before")
+    ]
+    return own
+
+
+def assert_the_cleanup_wrote_nothing(lab: Lab) -> None:
+    """K's append raised before delegating: `<A>` holds page 1's events and is `running`."""
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed"]
+    assert lab.sequences(FREE_ID) == (1,)
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.opener.repositories[0].close_calls == 1
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize("setup", ["n2", "ac7"])
+def test_close_while_propagating_a_ctrl_c_from_the_close_replaces_the_propagating_one(
+    lab: Lab, setup: str, when: Moment
+) -> None:
+    """The close raises Ctrl+C (after delegating, and before) while K's Ctrl+C propagates.
+
+    The Ctrl+C that leaves `run_ingest` is the close's own object, not K's; the close
+    is attempted exactly once; in the after-delegating case the repository is closed.
+    """
+    own = arrange_propagating_ctrl_c(lab, setup)
+    closing = Raised(interrupt_error)
+    lab.opener.close_faults[1] = [lab.faults.close_raises(closing, when=when)]
+
+    with pytest.raises(KeyboardInterrupt) as stop:
+        call_propagating(lab, fresh(lab, 1, 3))
+
+    assert stop.value is closing.first
+    assert stop.value is not own.first
+    assert_the_cleanup_wrote_nothing(lab)
+    if when == "after":
+        assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("setup", ["n2", "ac7"])
+def test_close_while_propagating_an_os_error_from_the_close_leaves_the_ctrl_c_unchanged(
+    lab: Lab, setup: str
+) -> None:
+    """The close raises `OSError`: it is suppressed and K's own Ctrl+C leaves unchanged."""
+    own = arrange_propagating_ctrl_c(lab, setup)
+    lab.opener.close_faults[1] = [lab.faults.close_raises(os_error, when="after")]
+
+    with pytest.raises(KeyboardInterrupt) as stop:
+        call_propagating(lab, fresh(lab, 1, 3))
+
+    assert stop.value is own.first
+    assert_the_cleanup_wrote_nothing(lab)
+    assert lab.opener.all_closed
+
+
+# === p2_read_run_loss_line (AC8, AC15; F-25, C step 6, M28) =====================
+#
+# Plan § State machine C, step 6 (P-2): the final `finish_run(SUCCEEDED)` is lost, its
+# repeat on the second repository is refused, and the `read_run` that decides what the
+# refusal means is lost too. A loss makes no repository current before its line is
+# written, so an exception on that line ends C with nothing more attempted.
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(
+    ("make_error", "end"),
+    [
+        pytest.param(interrupt_error, IngestEnd.INTERRUPTED, id="ctrl-c"),
+        pytest.param(memory_error, IngestEnd.RUN_FAILED, id="memory-error"),
+    ],
+)
+def test_p2_read_run_loss_line_an_exception_on_the_line_ends_the_recovery(
+    lab: Lab, make_error: Callable[[], BaseException], end: IngestEnd, when: Moment
+) -> None:
+    """The reporter raises on the line of the lost P-2 `read_run`.
+
+    INTERRUPTED (or RUN_FAILED) with `<A>` and `running`; nothing is attempted on any
+    repository after the lost `read_run`; at most one message names it; no
+    `run-interrupted`, `unexpected-error`, `storage-failed` or `finish_run(FAILED)`.
+    """
+    lose_the_final_finish(lab, "before")
+    lab.opener.faults[2] = [
+        lab.faults.refuses(
+            "finish_run",
+            lambda: PersistenceIntegrityError(REFUSAL_TEXT),
+            detail="succeeded",
+        ),
+        lab.faults.lost_before_commit("read_run", execution_id=FREE_ID),
+    ]
+    reporter = lab.raising_reporter("read_run", FREE_ID, error=make_error, when=when)
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 2))
+
+    assert reporter.fired
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    last = lab.opener.attempts[-1]
+    assert (last.open_index, last.operation) == (2, "read_run")
+    # The drawn id was checked with a `read_run` on the first repository; the second
+    # repository received only the P-2 `read_run`, never a second one from the cleanup.
+    reads = [a for a in lab.opener.attempts_of("read_run") if a.open_index == 2]
+    assert len(reads) == 1
+    assert len(progress_lines(lab, "read_run")) <= 1, lab.reporter.messages
+    assert lab.event_types(FREE_ID) == [
+        "run-started",
+        "page-completed",
+        "page-completed",
+    ]
+    assert lab.opener.attempts_of("finish_run", "failed") == []
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === interrupted_outcome_close (AC7, AC15; F-25) ================================
+#
+# Plan § Public names, "The final close": an `INTERRUPTED` outcome whose final close
+# is interrupted keeps its run and its status.
+
+
+def test_interrupted_outcome_close_keeps_the_run_and_its_status(lab: Lab) -> None:
+    """The AC7 run (Ctrl+C at page 2), then Ctrl+C from the final close.
+
+    K appends `run-interrupted` and finishes the run `failed`; the outcome stays
+    INTERRUPTED with `<A>` and `failed`, and says the ingest was interrupted;
+    `finish_run` was called once and nothing follows `run-interrupted`.
+    """
+    lab.script_ids(FREE_ID)
+    lab.source.script(2, KeyboardInterrupt())
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(interrupt_error, when="after")
+    ]
+
+    outcome = call_without_escape(lab, fresh(lab, 1, 3))
+
+    assert outcome.end is IngestEnd.INTERRUPTED
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.FAILED
+    assert "interrupt" in outcome.message.lower(), outcome.message
+    assert len(written(lab, "finish_run")) == 1
+    assert lab.event_types(FREE_ID) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+    assert lab.journal.labels(FREE_ID)[-2:] == [
+        "append:run-interrupted",
+        "finish_run:failed",
+    ]
+    assert lab.database.runs[FREE_ID].status is RunStatus.FAILED
+    assert lab.opener.all_closed
+
+
+# === refusal_then_interrupt (AC6 e, AC7, AC15; F-23, decision D-2 option 1) =====
+#
+# Plan § State machine K, with decision D-2 (option 1, the current behavior): after a
+# refused write other than `finish_run(FAILED)`, an interruption that lands before the
+# run is closed enters K. The cleanup audits it and closes the run `failed`; the
+# refused write is not attempted again and its event is not added.
+
+REFUSED_WRITES = ["page-failed", "storage-failed", "page-completed", "final-finish"]
+
+
+@dataclass(frozen=True)
+class RefusedWrite:
+    """One refused write of F-23 and what the cleanup that follows must show."""
+
+    request: IngestRequest
+    store: RawEvidenceStore | None
+    operation: str
+    detail: str
+    page: int
+    events: list[str]
+
+    @property
+    def words(self) -> tuple[str, str]:
+        """The two words of the refusal's line: the operation and its detail."""
+        return self.operation, self.detail
+
+
+def arrange_refused_write(
+    lab: Lab, name: str, refusal: type[PersistenceError]
+) -> RefusedWrite:
+    """Refuse every call of one write (so that a retry would be refused again)."""
+    lab.script_ids(FREE_ID)
+    if name == "page-failed":
+        lab.source.script(2, lab.status_failure(2, 500))
+        refuse_every_call(lab, "append_audit_event", refusal, detail="page-failed")
+        return RefusedWrite(
+            fresh(lab, 1, 3),
+            None,
+            "append_audit_event",
+            "page-failed",
+            2,
+            ["run-started", "page-completed"],
+        )
+    if name == "storage-failed":
+        refuse_every_call(lab, "append_audit_event", refusal, detail="storage-failed")
+        return RefusedWrite(
+            fresh(lab, 1, 3),
+            lab.refuses_to_store(on_call=2),
+            "append_audit_event",
+            "storage-failed",
+            2,
+            ["run-started", "page-completed"],
+        )
+    if name == "page-completed":
+        refuse_every_call(lab, "append_audit_event", refusal, detail="page-completed")
+        return RefusedWrite(
+            fresh(lab, 1, 3),
+            None,
+            "append_audit_event",
+            "page-completed",
+            1,
+            ["run-started"],
+        )
+    assert name == "final-finish"
+    refuse_every_call(lab, "finish_run", refusal, detail="succeeded")
+    return RefusedWrite(
+        fresh(lab, 1, 2),
+        None,
+        "finish_run",
+        "succeeded",
+        2,
+        ["run-started", "page-completed", "page-completed"],
+    )
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "end", "event_type"), INTERRUPTIONS)
+@pytest.mark.parametrize("refusal", REFUSAL_FLAVORS)
+@pytest.mark.parametrize("name", REFUSED_WRITES)
+def test_refusal_then_interrupt_the_cleanup_audits_it_and_closes_the_run_failed(
+    lab: Lab,
+    name: str,
+    refusal: type[PersistenceError],
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    event_type: str,
+    when: Moment,
+) -> None:
+    """The interruption lands on the line of the refusal: K runs on the first repository.
+
+    The refused call is attempted once; K reads the run, appends `run-interrupted` (or
+    `unexpected-error`) for the page being processed and finishes the run `failed`;
+    the refused event is not stored; there is no `storage-failed` and no second
+    `finish_run`.
+    """
+    case = arrange_refused_write(lab, name, refusal)
+    reporter = lab.raising_reporter(*case.words, error=make_error, when=when)
+
+    outcome = call_without_escape(lab, case.request, store=case.store)
+
+    assert reporter.fired
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.FAILED
+    assert len(lab.opener.attempts_of(case.operation, case.detail)) == 1
+    assert lab.event_types(FREE_ID) == [*case.events, event_type]
+    expected = (
+        {"page": case.page}
+        if event_type == "run-interrupted"
+        else {"page": case.page, "error_type": "MemoryError"}
+    )
+    assert lab.details(FREE_ID, event_type) == [expected]
+    assert lab.details(FREE_ID, "storage-failed") == []
+    assert_follows_catalogue(lab.events(FREE_ID))
+    assert lab.opener.attempts_of("read_run")[-1].open_index == 1
+    assert len(lab.opener.attempts_of("finish_run", "failed")) == 1
+    assert lab.database.runs[FREE_ID].status is RunStatus.FAILED
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(("make_error", "end", "event_type"), INTERRUPTIONS)
+@pytest.mark.parametrize("refusal", REFUSAL_FLAVORS)
+def test_refusal_then_interrupt_a_refused_cleanup_append_stops_the_cleanup(
+    lab: Lab,
+    refusal: type[PersistenceError],
+    make_error: Callable[[], BaseException],
+    end: IngestEnd,
+    event_type: str,
+    when: Moment,
+) -> None:
+    """(v): case (i) with the cleanup's own append refused too.
+
+    K's `run-interrupted` (or `unexpected-error`) append is refused, writes its one
+    line and stops K: no `finish_run(FAILED)`, `<A>` stays `running`.
+    """
+    case = arrange_refused_write(lab, "page-failed", refusal)
+    refuse_every_call(lab, "append_audit_event", refusal, detail=event_type)
+    reporter = lab.raising_reporter(*case.words, error=make_error, when=when)
+
+    outcome = call_without_escape(lab, case.request)
+
+    assert reporter.fired
+    assert outcome.end is end
+    assert outcome.execution_id == FREE_ID
+    assert outcome.run_status is RunStatus.RUNNING
+    assert lab.event_types(FREE_ID) == case.events
+    assert lab.opener.attempts_of("finish_run") == []
+    assert len(progress_lines(lab, "append_audit_event", event_type)) == 1, (
+        lab.reporter.messages
+    )
+    assert_follows_catalogue(lab.events(FREE_ID))
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.opener.opens == 1
     assert lab.opener.all_closed
