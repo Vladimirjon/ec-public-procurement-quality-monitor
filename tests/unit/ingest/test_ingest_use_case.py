@@ -66,6 +66,11 @@ repository's close, the loss line and the closes of the second repository
 `start_run_second_loss`, `unexpected_cleanup_interrupt`, `recovery_double_fault` and
 `refusal_not_retried`.
 
+The audit round 6 rework of 2026-10-23 added, at the end of the file (outcome O10,
+plan Revision 12, finding F-28; the section comment there explains them):
+`system_exit_first_wins`, `window_system_exit_line` and `cleanup_system_exit` (AC7,
+AC8 c, AC15). They protect behavior that already holds: a `SystemExit` always wins.
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and page bodies report `pages` 9 unless a
 test says another value. Runs `A`, `B`, `C` and `D` are the seeded runs of `Lab`.
@@ -6763,5 +6768,218 @@ def test_refusal_then_interrupt_a_refused_cleanup_append_stops_the_cleanup(
     )
     assert_follows_catalogue(lab.events(FREE_ID))
     assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.opener.opens == 1
+    assert lab.opener.all_closed
+
+
+# === Audit round 6 rework (2026-10-23), plan Revision 12 ========================
+#
+# Feature ingest-command (F4), outcome O10, rework of round 6, audit finding F-28
+# (AC7, AC8 c, AC15; decision D-1: a `SystemExit` always wins and is preserved). The
+# code already behaves as planned (audit experiments X29 to X31); these tests exist so
+# that removing that behavior fails a test. Tokens: `system_exit_first_wins` (N31),
+# `window_system_exit_line` (N38) and `cleanup_system_exit` (N39); the command-tier
+# twin `exit_code_cleanup_system_exit` is in `test_ingest_command.py`. No new double:
+# the faults, the close fault, the raising reporter and `RepositoryOpenerDouble` accept
+# any `BaseException`, and `Raised` remembers the objects they made.
+
+
+# === system_exit_first_wins (AC7, AC8 c, AC15; F-28, D-1, N31) ==================
+#
+# Plan § State machine C, "Two or more exceptions": of two `SystemExit` in the window
+# the first one propagates, whatever order the closes and the line arrive in.
+
+
+def arrange_first_system_exit(
+    lab: Lab, case: str, when: Moment
+) -> tuple[Raised, Raised]:
+    """`record_observation` 2 is lost; two `SystemExit` meet in the window.
+
+    `exclusion`: the second exclusion raises `SystemExit(3)` and the second
+    repository's `close()` raises `SystemExit(4)`. `line`: the second exclusion raises
+    Ctrl+C, its line raises `SystemExit(3)` (reporter, `when`) and that close raises
+    `SystemExit(4)`. Return the makers of the first and of the second.
+    """
+    first = Raised(lambda: SystemExit(3))
+    second = Raised(lambda: SystemExit(4))
+    if case == "exclusion":
+        lab.opener.faults[2] = [
+            lab.faults.raises("try_acquire_ingest_exclusion", first)
+        ]
+    else:
+        assert case == "line"
+        lab.opener.faults[2] = [
+            lab.faults.raises("try_acquire_ingest_exclusion", interrupt_error)
+        ]
+        lab.raising_reporter("try_acquire_ingest_exclusion", error=first, when=when)
+    lab.opener.close_faults[2] = [lab.faults.close_raises(second, when=when)]
+    return first, second
+
+
+@pytest.mark.parametrize("when", WHEN)
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param("exclusion", id="exclusion-system-exit"),
+        pytest.param("line", id="exclusion-ctrl-c-line-system-exit"),
+    ],
+)
+def test_system_exit_first_wins_of_two_system_exit_in_the_window(
+    lab: Lab, case: str, when: Moment
+) -> None:
+    """F-28, D-1: the `SystemExit(3)` raised first leaves `run_ingest`, never the second.
+
+    The second repository's `close()` raises `SystemExit(4)` (after delegating, and
+    before): the object that propagates is the first one. After the lost call only the
+    second exclusion is attempted, nothing is read or written, `<A>` stays `running`,
+    and every repository is closed.
+    """
+    loss = Loss(lab, other_session=False)
+    request, operation, detail = arrange_loss(lab, "observation", loss)
+    first, second = arrange_first_system_exit(lab, case, when)
+
+    stop = call_exiting(lab, request)
+
+    assert second.made, "the second SystemExit was never raised"
+    assert stop is first.first
+    assert stop is not second.first
+    assert stop.code == 3
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == [
+        "2 try_acquire_ingest_exclusion"
+    ]
+    assert lab.event_types(FREE_ID) == ["run-started", "page-completed"]
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert_names_no_read_of_the_run(lab)
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === window_system_exit_line (AC7, AC8 c, AC15; F-28, D-1, N38) =================
+#
+# Plan § State machine C, "The line rule of the window": a `SystemExit` in the window
+# gets no progress line, so that no line names `try_acquire_ingest_exclusion` or
+# `open_repository` and none holds `SystemExit`.
+
+
+@pytest.mark.parametrize("place", ["exclusion", "open"])
+def test_window_system_exit_line_a_system_exit_in_the_window_gets_no_progress_line(
+    lab: Lab, place: str
+) -> None:
+    """F-28, D-1: the second exclusion (or the second `open_repository()`) raises it.
+
+    `record_observation` 2 is lost. The `SystemExit(3)` object propagates; no message
+    after the loss line names an operation of the window, and none holds `SystemExit`.
+    """
+    loss = Loss(lab, other_session=False)
+    request, operation, detail = arrange_loss(lab, "observation", loss)
+    exits = Raised(lambda: SystemExit(3))
+    if place == "exclusion":
+        lab.opener.faults[2] = [
+            lab.faults.raises("try_acquire_ingest_exclusion", exits)
+        ]
+        expected_attempts = ["2 try_acquire_ingest_exclusion"]
+    else:
+        lab.opener.open_errors[2] = exits
+        expected_attempts = []
+
+    stop = call_exiting(lab, request)
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert_names_nothing_after_the_loss(lab, operation)
+    assert not any("SystemExit" in message for message in lab.reporter.messages), (
+        lab.reporter.messages
+    )
+    assert_the_run_was_not_touched(lab, loss)
+    assert attempts_after_the_loss(lab, operation, detail) == expected_attempts
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === cleanup_system_exit (AC7, AC15; F-28, D-1, N39) ============================
+#
+# Plan § State machine K: K never turns a `SystemExit` into an outcome. A `SystemExit`
+# raised by one of its operations propagates out of `run_ingest` as that object; nothing
+# is read or written after it and no event follows the one that raised.
+
+
+def arrange_cleanup_system_exit(
+    lab: Lab, where: str, when: Moment
+) -> tuple[Raised, str, list[str]]:
+    """Page 1 completes, page 2 fails, and K's `where` raises `SystemExit(3)`.
+
+    Return the maker, the operation that raised (the last attempt) and the events the
+    run must hold afterwards.
+    """
+    lab.script_ids(FREE_ID)
+    exits = Raised(lambda: SystemExit(3))
+    faults = lab.opener.faults.setdefault(1, [])
+    stored = ["run-started", "page-completed"]
+    if where == "unexpected-error":
+        lab.source.script(2, MemoryError())
+        faults.append(
+            lab.faults.raises(
+                "append_audit_event", exits, detail="unexpected-error", when=when
+            )
+        )
+        return (
+            exits,
+            "append_audit_event",
+            stored + (["unexpected-error"] if when == "after" else []),
+        )
+    lab.source.script(2, KeyboardInterrupt())
+    if where == "read-run":
+        faults.append(lab.faults.raises("read_run", exits, nth=2, execution_id=FREE_ID))
+        return exits, "read_run", stored
+    if where == "run-interrupted":
+        faults.append(
+            lab.faults.raises(
+                "append_audit_event", exits, detail="run-interrupted", when=when
+            )
+        )
+        return (
+            exits,
+            "append_audit_event",
+            stored + (["run-interrupted"] if when == "after" else []),
+        )
+    assert where == "finish-run"
+    faults.append(lab.faults.raises("finish_run", exits, detail="failed", when=when))
+    return exits, "finish_run", [*stored, "run-interrupted"]
+
+
+CLEANUP_SYSTEM_EXIT_CASES = [
+    pytest.param("read-run", "before", id="read-run-before"),
+    pytest.param("run-interrupted", "before", id="ctrl-c-append-before"),
+    pytest.param("run-interrupted", "after", id="ctrl-c-append-after"),
+    pytest.param("finish-run", "before", id="finish-run-before"),
+    pytest.param("unexpected-error", "before", id="unexpected-append-before"),
+]
+
+
+@pytest.mark.parametrize(("where", "when"), CLEANUP_SYSTEM_EXIT_CASES)
+def test_cleanup_system_exit_k_never_turns_a_system_exit_into_an_outcome(
+    lab: Lab, where: str, when: Moment
+) -> None:
+    """F-28, D-1: a Ctrl+C (or `MemoryError`) at page 2 enters K; K's operation raises.
+
+    The `SystemExit(3)` object leaves `run_ingest` and no outcome is returned; the last
+    attempt is the operation that raised and nothing follows it; no event follows the
+    one that raised; `<A>` is stored `running` (with the `run-interrupted` event only
+    when that append delegated first); every repository is closed.
+    """
+    exits, operation, events = arrange_cleanup_system_exit(lab, where, when)
+
+    stop = call_exiting(lab, fresh(lab, 1, 3))
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert len(exits.made) == 1
+    assert lab.opener.attempts[-1].operation == operation
+    assert lab.event_types(FREE_ID) == events
+    assert lab.database.runs[FREE_ID].status is RunStatus.RUNNING
+    assert lab.sequences(FREE_ID) == (1,)
+    assert lab.reporter.started == [FREE_ID]
     assert lab.opener.opens == 1
     assert lab.opener.all_closed
