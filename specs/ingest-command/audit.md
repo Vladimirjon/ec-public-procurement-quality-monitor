@@ -1,524 +1,475 @@
 # Audit: Ingest command (F4)
 
-Auditor: `sdd-auditor` (outcome O10), round 5, 2026-10-21.
-Reviewed: branch `fix/ingest-audit-hardening` at `80c8aab064704a92de289c0502c48025f03eae1e`
-(PR #26 against `main` at `eca3cc4`, which holds PR #25 and the round 4 code).
-Specs: `intent.md` Revision 12, `execution-plan.md` Revision 10 and `tasks.md`
-Revision 7, all approved by the human on 2026-10-20. The working tree held one
-uncommitted change to `specs/ingest-command/tasks.md` (the PR #26 and CI
-accounting entry); it is not part of the audited head and was not used as
-evidence. Three working-tree files (`ingest_use_case.py`, `ingest_command.py`,
-`test_local_disk_raw_evidence_store_listing.py`) carry CRLF line ends while the
-index holds LF (`.gitattributes` says `eol=lf`); the content is identical
-(`diff -rq --strip-trailing-cr` against `git archive HEAD` is empty), so this is
-a checkout artifact, not a change.
+Auditor: `sdd-auditor` (outcome O10), round 6, 2026-10-22.
+Reviewed: branch `fix/ingest-audit-hardening` at `c20827d05e4de53cbd73bfe97b93fdfef2d73c10`
+(PR #26 against `main` at `eca3cc4`). The previous validated head was `80c8aab`
+(round 5 report committed at `5574cd6`). Since then: `c70a6bd` (specs, intent
+Revision 13, plan Revision 11, tasks Revision 8), `22cd04c` (159 new tests, +1585/-0)
+and `c20827d` (the fix: `ingest_use_case.py` +9/-6, `ingest_command.py` +13/-2,
+`cli.py` +54/-18). Specs: `intent.md` Revision 13, `execution-plan.md` Revision 11
+and `tasks.md` Revision 8, all approved by the human on 2026-10-21 (D-1 option A,
+D-2 option 1, D-3 option B, D-4 option 1, D-5 option a). The working tree was clean
+for the whole round; the source under `src/` is byte-identical to `HEAD` once line
+ends are normalized (two empty, untracked folders `tests/contract` and
+`tests/end_to_end` exist and hold nothing).
 
-The whole feature was audited again, and nothing from rounds 1 to 4 was assumed
-to still hold. `application/ingest_use_case.py` (1693 lines),
-`interfaces/ingest_command.py` (405 lines) and `interfaces/cli.py` were read in
-full against the state machines P, C (with "The current repository", "The
-explicit record" and "Two or more exceptions"), K, T, R, H and I, the "Refused
-writes" table and "A refusal is answered, never retried", the required progress
-lines, the invocation order, § Output (including "Writing the result"),
-§ Exit codes and AC1 to AC25. `git diff main` was read line by line: the use
-case (+206/-57), the command (+65/-15), the README (+25/-7), the specs and
-2018 added test lines. The only two removed test lines are an import widened to
-`TYPE_CHECKING, Literal` in `test_ingest_command.py` and one docstring line of
-`FlakyRepository` in `tests/unit/ingest/conftest.py`; no assertion was removed or
-weakened. The executor's commit `80c8aab` touches only `README.md`,
-`ingest_use_case.py` and `ingest_command.py`; the tests came in the test-writer's
-commit `3844101`.
+The whole feature was audited again; nothing from rounds 1 to 5 was assumed to
+still hold. `application/ingest_use_case.py` (1697 lines), `interfaces/ingest_command.py`
+(415 lines) and `interfaces/cli.py` (120 lines) were read in full against the state
+machines P, C (with "The current repository", "The explicit record" and "Two or more
+exceptions"), K (with "After any other refusal"), T, R, H and I, the "Refused writes"
+table and "A refusal is answered, never retried", the required progress lines, the
+invocation order (with "Where step 1 runs"), § Output (with "Writing the result"),
+§ Exit codes, the "`SystemExit`" rule and its combination table, "The handler of
+`main`", the D-5 parser constraint and AC1 to AC25. `git diff main` was read for the
+specs, the README, `src/` and the tests; the new tests were read against the four new
+§ Validation rows.
 
 Evidence labels:
 
 - `rerun`: the auditor ran it in this round.
 - `reused`: a recorded result that is still current (the CI runs of PR #26 at
-  `80c8aab`).
-- `experiment`: a throwaway auditor test or mutant, run in the session
-  scratchpad, never in the repository. It runs on a scratch copy of `src/` and
-  `tests/` extracted with `git archive HEAD`, checked byte for byte against a
-  second pristine archive before the run and after every mutant (47 mutants, all
-  restored), with the repository's own doubles from `tests/unit/ingest/conftest.py`.
+  `c20827d`, finished before this report).
+- `experiment`: a throwaway auditor script, test or mutant, run only in the session
+  scratchpad on copies of `src/` and `tests/` extracted with `git archive HEAD`. The
+  mutant copy was checked byte for byte against a second pristine archive before the
+  run and after every mutant (57 mutants, 57 restorations identical). Experiments that
+  needed the repository's doubles ran in a third archive copy with one added scratch
+  test file. Real-process experiments ran with the pristine copy's `src/` on
+  `PYTHONPATH`, outside the repository, with no network, no database connection and
+  no `ingest` run against real collaborators.
 - `unavailable`: it could not be checked.
 
 ## Final verdict
 
-APPROVED WITH RESERVATIONS
+REJECTED
 
-**Summary**: F-20, F-21 and F-22 are resolved, F-01 to F-19 are still resolved,
-and every N-1 to N-11 rule of the sweep holds in the code and in the tests:
-2616 tests pass locally and in CI, every focused row of § Validation passes, and
-40 of 47 mutants are killed (2 of the 7 survivors are equivalent). Only LOW
-findings remain: two spec questions the approved text leaves open (F-23, the
-refused write followed by a Ctrl+C in its line; F-24, `SystemExit` against
-`KeyboardInterrupt`), plan-required paths with no test that would fail (F-25),
-a Ctrl+C or a stream error during invocation step 1 that escapes the command
-(F-26), and stale text in `tasks.md` (F-12). The human decides at gate 3 whether
-to accept them as reservations.
+**Summary**: The round 5 reservations are closed in the code and pinned by tests: the
+`SystemExit` rule (D-1) holds at every place it names, F-23 is settled as the current
+behavior and pinned, F-26 is closed by the handler of `main` and the one local parser
+class, F-25's paths have tests (M5, M14, M15, M16 and M28 are now killed), F-01 to F-22
+are still resolved, 2775 tests pass locally and in CI, and 47 of 57 mutants are
+killed. One MEDIUM finding blocks: F-27, a closed stdout pipe (or a stdout file that
+cannot be written) does not give exit 1 in a real process, as AC15, AC14 (D-5) and
+the README say; the line is buffered, so the failure shows only when Python flushes
+stdout at exit, which prints `Exception ignored on flushing sys.stdout: OSError: ...`
+and exits 120.
 
-One classification needs the human's eye: F-26 is rated LOW because the plan's
-own CLI design leaves the argument parsing of step 1 in `main()` without any
-handler, so the § Exit codes sentence "a `KeyboardInterrupt` that ... interrupts
-steps 1 to 4" cannot be read literally for all of step 1. If the human reads
-that sentence as binding for the part of step 1 inside `run_ingest_command`,
-F-26 is an unmet binding constraint, it blocks, and the verdict is REJECTED.
+F-27 was present at `80c8aab` and round 5 did not raise it: its AC21 row checked the
+README sentence against the in-process behavior only. Its classification needs the
+human's eye. The plan's "Writing the result" scopes the exit-1 rule to an exception
+"raised while it writes", and under that reading the code conforms and only the
+README's example ("for example, a closed output stream") is wrong, which is still a
+documentation deviation (AC21, MEDIUM). Read literally for a real process, AC15's
+"any other error that prevents writing the result ... gives exit 1" is unmet, which
+blocks at any severity. Either reading blocks.
 
 **Critical Issues** (must fix before merge):
-- none
+- F-27 (MEDIUM, blocking): in a real process, a closed stdout pipe makes the command exit 120 with Python's `Exception ignored on flushing sys.stdout` report, not exit 1. This holds for a confirmed result line, and for `--version` and `--help`. AC15 (N-7), AC14 (D-5) and README § Ingesting (lines 290-295) promise exit 1.
 
 **Warnings** (should fix, not blocking):
-- F-23 (LOW, needs a spec decision): after a refused `page-failed`, `storage-failed` or normal-path append, or a refused final `finish_run(succeeded)`, a Ctrl+C or a `MemoryError` that lands in the refusal's progress line makes State machine K append `run-interrupted` (or `unexpected-error`) and call `finish_run(failed)`. It is another write, not a retry, and it matches the plan's K, but AC6 (e) "no further event is added" can be read to forbid it.
-- F-24 (LOW, needs a spec decision): the spec does not decide `SystemExit` against `KeyboardInterrupt`. The code lets `SystemExit` win in the recovery window, while at the final close a `KeyboardInterrupt` replaces a propagating `SystemExit`; a `SystemExit` from the final close also drops the result line of a confirmed run. No test pins any of it (mutants M5, M14 and M15 survive).
-- F-26 (LOW): a Ctrl+C, or an error of the stream, during invocation step 1 inside `run_ingest_command` (the argument and environment checks and the write of the usage error) escapes the command, so `main()` ends with a traceback instead of returning 130 or 2. Nothing is built or written. Present since round 1.
+- F-28 (LOW): some required behavior of D-1 and D-3 has no test that would fail if it were removed. That covers the handler line of `main` (`cli.py:89-90`, a Ctrl+C or a `SystemExit` while `main`'s handler writes its own line), the first of two `SystemExit` in the recovery window, no progress line for a `SystemExit` in the window, and a `SystemExit` raised during State machine K. The surviving mutants are N10, N11, N12, N31, N38 and N39. The code behaves as planned in every one of these cases (experiments X26, X29, X30 and X31).
+- F-12 (LOW, carried): `tasks.md` and one heading of the plan still describe the state before the round 5 rework. Examples: "pending approval" for the approved Revision 13/11/8, "uncommitted, awaiting the human's review" for the committed fix, "Next: the round 5 rework", PR #26 head `5574cd6`, and "the F-21 README to-do of Revision 6 is open".
 
 **Recommendations** (nice to have):
-- F-25 (LOW): permanent tests for the plan-required paths that no test pins: a window operation whose own line raises (`ingest_use_case.py:212-213`, N-3; mutant M16 survives), a `KeyboardInterrupt` from the final close while another exception propagates (1298, N-9; M15 survives), and the `on_loss` hook of the P-2 `read_run` (636, C step 6; M28 survives). 1313 and 1315 follow F-24 and free wording.
-- F-12 (LOW, carried): `tasks.md` at `80c8aab` is stale in five places (§ Status, § Checkpoint, the O8 Revision 6 to-do, O10 round 4 step 1 and the "uncommitted" round 5 green evidence).
+- F-29 (LOW): two new test names (`..._a_failing_write_of_a_usage_error_...`, `..._a_usage_error_still_exits_2`, 21 items) contain `usage`, which plan Revision 11's token rule forbids. As a result, AC14's `-k "usage or environment"` row now selects 87 tests instead of 66. The selection is harmless (they are AC14 tests).
 
-Next role: the human at gate 3. If the human accepts the reservations, the
-spec questions F-23, F-24 and F-26 go to the architect when the human wants them
-closed (none needs a new acceptance criterion), the F-25 tests to the
-test-writer, and F-12 to whoever keeps `tasks.md`. If the human reads F-26 as
-blocking, the route is the gate 3 rejection rule: the architect, then the
-red test (the `environ` and `stderr` seams already allow it), the fix and
-round 6.
+Next role: the architect, then the executor or the human, under the gate 3
+rejection rule. For F-27, the architect decides with the human between two closures:
+- (a) Scope the exit-1 rule of AC15, AC14 and § Output to a write that raises while the command writes. The README then states what a real closed pipe gives (Python's own exit 120 and its one-line report, the run unchanged). This closure changes the documentation and the spec only.
+- (b) Make the failure surface inside the guarded write: flush stdout inside the one attempt, and keep Python's exit-time flush from failing again. A real-process check then needs a tier that § Validation does not name today, so it needs the human's approval.
 
-## Rounds 1 to 4 summary
+Then F-28, F-29 and F-12 go to the test-writer and to whoever keeps `tasks.md`, if the
+human wants them closed. After that comes audit round 7.
 
-- **Round 1** (`7603379`, REJECTED). 12 findings. F-01 and F-02 (CRITICAL, AC7,
-  AC15, State machine K) and F-03 (HIGH, AC14 and ADR 0006) blocked. The full
-  report is in git history at `7069f4c`.
-- **Round 2** (`91bd69d`, REJECTED). F-01 to F-11 were resolved. New: F-13 and
-  F-14 (MEDIUM, blocking), F-15 to F-17 (LOW). The full report is at `2f77b5e`.
-- **Round 3** (`287946f`, REJECTED). F-13 to F-17 were resolved. New: F-18
-  (HIGH, blocking: the cleanup could write without the ingest exclusion after a
-  lost connection), F-19 and F-20 (LOW), F-12 carried. The full report is at
-  `fe0fb28`.
-- **Round 4** (`10e126d`, REJECTED). F-18 and F-19 were resolved for the two
-  named calls. New: F-21 (MEDIUM, blocking: an interrupt elsewhere in the
-  recovery window still entered K on the lost repository), F-22 (LOW, the
-  unguarded final close), F-20 and F-12 still partly open. The full report is
-  at `25d1253`. Intent Revision 11, plan Revision 9 and tasks Revision 6
-  answered it, then the architect's sweep A2 (N-1 to N-11) gave intent
-  Revision 12, plan Revision 10 and tasks Revision 7, all approved by the human
-  on 2026-10-20. The rework landed in `3844101` (211 red tests) and `80c8aab`
-  (the fix and the README).
+## Rounds 1 to 5 summary
+
+- **Round 1** (`7603379`, REJECTED). 12 findings; F-01, F-02 (CRITICAL) and F-03
+  (HIGH) blocked. Full report in git history at `7069f4c`.
+- **Round 2** (`91bd69d`, REJECTED). F-01 to F-11 resolved; F-13, F-14 (MEDIUM)
+  blocked; F-15 to F-17 LOW. Full report at `2f77b5e`.
+- **Round 3** (`287946f`, REJECTED). F-13 to F-17 resolved; F-18 (HIGH) blocked;
+  F-19, F-20 LOW. Full report at `fe0fb28`.
+- **Round 4** (`10e126d`, REJECTED). F-18, F-19 resolved for the named calls; F-21
+  (MEDIUM) blocked; F-22 LOW. Full report at `25d1253`.
+- **Round 5** (`80c8aab`, APPROVED WITH RESERVATIONS). F-20 to F-22 resolved; N-1
+  to N-11 held; new, all LOW: F-23 (a refused write followed by an interrupt), F-24
+  (`SystemExit` against `KeyboardInterrupt`), F-25 (untested required paths), F-26
+  (step 1 interrupt or stream error escapes the command); F-12 carried. Full report at
+  `5574cd6`. The human chose to correct the reservations before gate 3: D-1 to D-5
+  (2026-10-21) gave intent Revision 13, plan Revision 11 and tasks Revision 8; the
+  rework landed in `22cd04c` (tests) and `c20827d` (fix).
 
 ## Resolution of the earlier findings
 
-Each closure condition was checked against the current code and against at
-least one mutant of this round that a test kills (scratch copy, full
-`tests/unit/ingest`, 1189 tests). The "E-" mutants re-create the round 1 to 4
-fixes on the current code.
+Each closure condition was checked against the current code and against at least one
+mutant of this round that a test kills (scratch copy, `tests/unit/ingest` and
+`tests/unit/test_cli.py`, 1350 tests). The `E-` mutants re-create the round 1 to 4
+fixes on the current code; the `N` mutants are this round's. The code of
+`ingest_use_case.py` changed since round 5 only in `run_ingest`'s propagating handler
+and `_close_while_propagating`; `ingest_command.py` only in `_invoke`'s step 7.
 
 | Id | Earlier severity | Status | Evidence (current code; mutant: failing tests) |
 |---|---|---|---|
-| F-01 | CRITICAL | Resolved (still) | Pending set before `store` (1505), cleared only when the record returned or the path concluded (1533, 1553, 1579, 1595). E-F01 (clear right after `store`): 4 failed |
-| F-02 | CRITICAL | Resolved (still) | K absorbs the three read-back errors (768-771). E-F02 (absorb `EvidenceNotFoundError` only): 4 failed |
-| F-03 | HIGH | Resolved (still) | `ingest_command.py:324-330`, source built before `_migrate` (332). E-F03 (exit 1 instead of 2): 16 failed |
-| F-04 | MEDIUM | Resolved (still) | `_print_running` (269-276) through `_end_after_escape` (279-287). E-F04 (no `<id> running`): 24 failed |
+| F-01 | CRITICAL | Resolved (still) | Pending set before `store` (1508), cleared only when the record returned or the path concluded (1536, 1556, 1582, 1598). E-F01 (clear right after `store`): 4 failed |
+| F-02 | CRITICAL | Resolved (still) | K absorbs the three read-back errors (768-771). E-F02: 4 failed |
+| F-03 | HIGH | Resolved (still) | `ingest_command.py:324-330`, source built before `_migrate`. E-F03 (exit 1): 16 failed |
+| F-04 | MEDIUM | Resolved (still) | `_print_running` (269-276) through `_end_after_escape`. E-F04: 24 failed |
 | F-05 | MEDIUM | Resolved (still) | K reads the run first (757-766). E-F05: 9 failed |
-| F-06 | MEDIUM | Resolved (still) | Chain store read errors -> `invalid resumption chain <id>` (1399-1409). E-F06: 10 failed |
-| F-07 | MEDIUM | Resolved (still) | Page lines (`_report_page` 423-427; 1490, 1521, 1551, 1568). E-F07: 8 failed |
-| F-08, F-09 | LOW | Resolved (still) | No `_finish` helper; `ingestion_catalogue.py` says 32 characters |
-| F-10 | LOW | Resolved (still) | 947-978. E-F10 (listing `OSError` escapes): 2 failed |
-| F-11 | LOW | Resolved (still) | `_append_on_normal_path` (581-606), `_close_failed` (510-554), `_finish_succeeded` (609-647), refused `start_run` (1443-1445). E-F11: 9 failed. See F-23 for the compound case with an interrupt |
-| F-12 | LOW | Partially resolved (carried) | The round 4 items are closed: the human's choice for the round 4 and round 5 correction is recorded (O10 round 4 step 3; § Working state A3), and the line 1530 label is corrected. New stale text at `80c8aab`: see F-12 below |
-| F-13 | MEDIUM | Resolved (still) | `_cleanup_step` (718-734). E-F13 (K writes no line): 49 failed |
-| F-14 | MEDIUM | Resolved (still) | One line per refused or lost call in every phase (`_reporting_failure`, `_read_database`, `_guarded`, `_recovery_step`). E-F14: 18 failed; E-F19 (no line in the window): 10 failed |
-| F-15 | LOW | Resolved (still) | Fixed messages naming the identity (1363-1368, 1394-1398, 1420-1424, 829-833). E-F15 (unreadable target -> `INVALID_TARGET`): 10 failed |
-| F-16 | LOW | Resolved (still) | (a) first opening handled (1243-1254); E-F16a: 2 failed. (b) `result_written` (261, 274); M9: 4 failed, M10: 4 failed |
-| F-17 | LOW | Resolved (still) | README § Ingesting lists every `running` case (inspection, rerun) |
-| F-18 | HIGH | Resolved (still) | The second repository becomes current only after `True` (303-305). M19 (current before the exclusion): 40 failed |
-| F-19 | LOW | Resolved (still) | `_recovery_step` names only the call of the window (193-214). E-F19: 10 failed |
-| F-20 | LOW | Resolved | `generic_fallback` (2 tests) pins the `NOT_STARTED` fallback (1677-1678). E-F20 (R11, re-raise there): 23 failed. The two accepted limitations stay accepted (§ Accepted limitations) |
-| F-21 | MEDIUM | Resolved | The explicit record: `_PersistenceSession._current` (232), `drop_current` as the first action of every loss handler (`safe_repeat` 326 and 332, `on_loss` 171-172 in `append_event` 358 and 377 and in the P-2 `read_run` 636); the outer handlers read `session.current` and never enter K with none (1661-1663, 1679-1681). Closes of C steps 1 and 3 follow the rule (`close` 266-277, `_reconnect` 284-314); the final close attempts what is left (1272-1321). Tests: `reconnect_close_interrupt` 40, `reconnect_loss_line_interrupt` 10, `reconnect_false_close_interrupt` 6. Mutants: M1 107, M20 107, M17 21, M18 8, M2 4, M4 4, M30 4 failed. README § Ingesting holds (lines 261-269). Every closure item of round 4 is met |
-| F-22 | LOW | Resolved | `_close_after_outcome` and `_close_while_propagating` (1290-1321). Tests: `final_close_error`, `final_close_interrupt`, `exit_code_final_close` (28 together). E-F22 (the interrupt escapes): 9 failed; M23 (`MemoryError` not suppressed): 7 failed |
+| F-06 | MEDIUM | Resolved (still) | 1402-1412. E-F06 (chain `OSError` escapes): 3 failed |
+| F-07 | MEDIUM | Resolved (still) | `_report_page` (423-427; 1524, 1571). E-F07: 8 failed |
+| F-08, F-09 | LOW | Resolved (still) | No `_finish` helper; catalogue text says 32 characters |
+| F-10 | LOW | Resolved (still) | 947-950. E-F10: 2 failed |
+| F-11 | LOW | Resolved (still) | `_close_failed`, `_append_on_normal_path`, `_finish_succeeded`; `database_refusal` 57 (rerun). The compound case is now decided (F-23) |
+| F-12 | LOW | Partially resolved (carried) | The five round 5 items are corrected in Revision 8 except § Checkpoint's "the F-21 README to-do of Revision 6 is open" (it was written in `80c8aab`). New stale text since: see F-12 below |
+| F-13 | MEDIUM | Resolved (still) | `_cleanup_step` (718-734). E-F13: 57 failed |
+| F-14 | MEDIUM | Resolved (still) | One line per refused or lost call in every phase; `pre_run_database_error` 59 (rerun) |
+| F-15 | LOW | Resolved (still) | Fixed messages naming the identity (1362-1412, 1423-1427) |
+| F-16 | LOW | Resolved (still) | (a) first opening (1243-1254): E-F16a 1 failed. (b) `result_written`: N26 4 failed |
+| F-17 | LOW | Resolved (still) | README § Ingesting lists every `running` case |
+| F-18 | HIGH | Resolved (still) | Second repository current only after `True` (303-305). E-F18 (M19): 48 failed |
+| F-19 | LOW | Resolved (still) | `_recovery_step` names only the call of the window (193-214) |
+| F-20 | LOW | Resolved (still) | `generic_fallback` 2 (rerun). E-F20: 23 failed. The two accepted limitations stay accepted (388-389, 598; code unchanged) |
+| F-21 | MEDIUM | Resolved (still) | The explicit record (`drop_current` 252-261, used at 326, 332, 358, 377, 540, 636). N41 (M1): 124 failed; N44 (M3): 8 failed |
+| F-22 | LOW | Resolved (still) | `_close_after_outcome` (1304-1324). E-F22: 10 failed |
+| F-23 | LOW (spec decision) | Resolved (decided and pinned) | D-2 option 1 kept the current behavior: AC6 (e) now says "'No further event' says how a refusal is answered, not what a later interruption does", plan § State machine K "After any other refusal" and the failure-path row of "Refused writes" agree. `refusal_then_interrupt` 42 (rerun). E-D2 (an interrupt in the refused line swallowed, K skipped): 28 failed |
+| F-24 | LOW (spec decision) | Resolved | D-1 option A implemented at every place it names (answer 1). N30 (M5): 8 failed; N34 (M14): 6; N32 (close's Ctrl+C replaces a propagating `SystemExit`): 6; N20/N21 (step 7 flag): 1 each; N22: 9; N23 (`_attempt` catches `SystemExit`): 4; N40: 22; N45: 6; N5: 139; N6 (identity lost in `main`): 15. Residual test gaps: F-28 |
+| F-25 | LOW (recommendation) | Resolved | `window_line_fault` 12, `close_while_propagating` 6, `p2_read_run_loss_line` 4, `interrupted_outcome_close` 1 (rerun). N36 (M16): 8 failed; N33 (M15): 5; N37 (M28): 4. Line 1315 covered (M13 stays equivalent) |
+| F-26 | LOW | Resolved | The handler of `main` (`cli.py:102-119`) and `_CliParser` (28-39). `main_parse_interrupt` 6, `main_wiring_interrupt` 3, `main_error_stream_fault` 27, `main_help_stream_fault` 31 (rerun). Killed: N1 13, N2 13, N3 8, N4 5, N7 42, N8 15, N9 30, N13 45, N14 12, N16 2, N17 169. Real process (X27): a Ctrl+C from `default_wiring()` exits 130 with stderr exactly `interrupted`, no traceback |
 
-The sweep A2 rules (plan Revision 10):
-
-| Rule | Status | Evidence |
-|---|---|---|
-| N-1 (second loss of `start_run`) | Holds | 1439-1442 and `safe_repeat` 331-334; `start_run_second_loss` 34 and `exit_code_start_run_second_loss` 14 (rerun); E-N1 (Ctrl+C keeps the run): 35 failed; experiment X17 |
-| N-2 (Ctrl+C during K after a `MemoryError` propagates) | Holds | `_cleanup_step` and K catch `Exception` only (730, 806); `unexpected_cleanup_interrupt` 18 + 4; E-N2 (K swallows it): 17 failed |
-| N-3 (two exceptions in the window) | Holds, with F-24 and F-25 | `_prevailing` (179-190) in `_recovery_step` and `_reconnect`; `recovery_double_fault` 15 + 2; M6: 6 failed; M5 and M16 survive |
-| N-4 (a refusal is never retried) | Holds | Pending cleared before the refusal's line (1533, 1579); `drop_current` after a refused `finish_run(failed)` (540); `refusal_not_retried` 37 + 2; M7 19, M8 8, M3 8 failed. The compound case with another write is F-23 |
-| N-5 (close errors scoped to the window) | Holds | `close` re-raises `MemoryError` only in the window (274-276); the final close suppresses every `Exception` (1283) |
-| N-6 (an interrupted line may be missing) | Holds | Tests use both `when="before"` and `"after"` |
-| N-7 (writing the result) | Holds | `_report`, `_attempt`, `_settled_code`, `_end_after_escape` (227-287); `result_line_stream_fault` 21, `handler_stream_fault` 8; M9, M10, M11, M12, M22, M24, M31 killed; M32 (stdout first) survives and is equivalent (the order is free) |
-| N-8 (130 for a Ctrl+C at C step 1 or on the loss line, P-2 case) | Holds | `reconnect_close_interrupt` includes the lost final `finish_run(succeeded)` |
-| N-9 (what propagates out of `run_ingest`) | Holds, with F-25 | 1266-1268, 1290-1298; experiments X8 to X10 |
-| N-10 (one-shot close fault) | Holds | `FlakyRepository.close` pops one `CloseFault` per call (`conftest.py:1226-1233`) |
-| N-11 (accounting) | Holds | O10 round 4 step 3 and § Working state A3 record the delegation of 2026-10-20 |
+The sweep A2 rules (plan Revision 10) still hold: N-1 (`start_run_second_loss` 34), N-2
+(`unexpected_cleanup_interrupt` 18; E-N2 25 failed), N-3 (`recovery_double_fault` 15,
+`window_line_fault` 12; N36 killed), N-4 (`refusal_not_retried` 37; N42 8, N43 19, N44
+8 failed), N-5 (`close` 266-277), N-6 (`when="before"`/`"after"` everywhere), N-7
+(`result_line_stream_fault`/`handler_stream_fault` 29; N25 10, N26 4, N27 9 failed; but
+see F-27 for a real process), N-8, N-9 (`close_while_propagating`; N33 killed), N-10
+(`CloseFault` one-shot), N-11 (accounting).
 
 ## Findings
 
 | Id | Severity | AC / constraint | Finding and evidence | Failure scenario | Closure condition | Status |
 |---|---|---|---|---|---|---|
-| F-23 | LOW (needs a spec decision; not blocking) | AC6 (e) ("when the refused write is itself a failure-path write ... no further event is added"); AC7 (a best-effort audit and close after Ctrl+C); plan § State machine P "Refused writes" and "A refusal is answered, never retried"; § State machine K; plan Revision 10 § Sweep A2 responses, last bullet ("identified for the audit") | A refused write followed by an interrupt in its progress line enters State machine K, which appends `run-interrupted` (or `unexpected-error`) and calls `finish_run(failed)`. This holds for a refused failure-path append (`page-failed` X1, `storage-failed` X3), a refused normal-path append (`page-completed` X4; the table answers it with `storage-failed`) and a refused final `finish_run(succeeded)` (X5). The cause is that only a refused `record_observation` (pending cleared, 1533, 1579) and a refused `finish_run(failed)` (`drop_current`, 540) change what K does. Verdict: consistent with the plan, not a defect against it. K's step 3 is another write, not a retry; the plan says of a refused record that K "still runs its steps 1, 3 and 4 ... (they are other writes)"; and AC7 asks for a best-effort audit and close after a Ctrl+C. But AC6 (e) and F-11 ("no event answers the refusal of a failure-path event") can be read as "nothing after the refusal except `finish_run(failed)`", and no rule decides between the readings | X1 (experiment): page 2 answers `500`, the `page-failed` append is refused, and the reporter raises `KeyboardInterrupt` on its line. Result: K reads the run, appends `run-interrupted` (page 2) and finishes `failed`; `INTERRUPTED`, `failed`; at the command tier exit 130, stdout `<A> failed`. The control without the Ctrl+C (X2) ends `RUN_FAILED`, `failed`, with no further event. With `MemoryError` instead: `unexpected-error` (page 2, `MemoryError`), `RUN_FAILED`, `failed`. X6: when the database refuses the run's appends persistently, K's append is refused too, K writes its line and stops, and the run stays `running` (exit 130, `<A> running`), where the same refusal without the Ctrl+C ends `failed` (exit 1) | The architect decides, with the human, between keeping the current behavior (K audits the interrupt after any refusal except `finish_run(failed)`, and AC6 (e) says so) and suppressing K's step 3 after a refused write (K then only closes the run, or does not run). If the rule changes, a Validation row and red tests (X1 to X6 are templates) precede the fix | Open (spec decision) |
-| F-24 | LOW (needs a spec decision; not blocking) | Plan § Public names (`run_ingest`: "`SystemExit`" propagates; "The final close", last bullet: "a `KeyboardInterrupt` from it propagates in its place"; "`SystemExit` raised by a `close()` propagates"); § State machine C ("`SystemExit` propagates, and the second repository is still closed" against "Two or more exceptions": "a `KeyboardInterrupt` among them gives the `KeyboardInterrupt` outcome"); AC15 ("Closing the database connection at the end of the invocation never changes how the run ended") | The spec does not decide `SystemExit` against `KeyboardInterrupt`. The executor's `_prevailing` (179-190) ranks `SystemExit` first, and it is used in `_recovery_step`, `_reconnect` and `_close_remaining`. `_close_while_propagating` (1290-1298) does not consult the propagating exception, so a `KeyboardInterrupt` from the final close replaces a propagating `SystemExit`; this follows the plan's literal sentence and is the opposite ranking. `_close_remaining` can hold at most one repository (C step 1 closes the lost repository before a second one is opened), so "a `SystemExit` from a final close is raised after the other repositories were attempted" is unreachable. No test raises `SystemExit` at any of these points: M5 (swap the ranking), M14 (swallow a `SystemExit` from the final close) and M15 (swallow the final close's interrupt while another exception propagates) survive all 1189 unit tests | X16 (experiment): in the window, the second exclusion raises `KeyboardInterrupt` and the second repository's `close()` raises `SystemExit(4)`. `SystemExit` escapes `run_ingest`; under the N-3 reading the outcome would be `INTERRUPTED`, exit 130, `<A> running`. X10: a `SystemExit` from the transport propagates, the final close raises `KeyboardInterrupt`, and `KeyboardInterrupt` escapes. X11 and X15: after an AC1 run confirmed `succeeded`, the final `close()` raises `SystemExit(3)`; the command's result line is never written (stdout empty, exit 3, the run `succeeded` in the store). X15 at the command tier for six raise points: `SystemExit(3)` always escapes `run_ingest_command`, stdout is empty even after `run <A> started`, every repository and the source are closed, nothing more is written, and the run stays as it was (`running` or `succeeded`). No adapter of the project raises `SystemExit`, so each case needs a defect elsewhere | The architect states the precedence of `SystemExit` against `KeyboardInterrupt` once, for the window, the final close while an exception propagates, and the final close after an outcome, and says whether AC15's final-close sentence covers `SystemExit`. Tests pin the chosen ranking (X10, X11 and X16 are templates) | Open (spec decision) |
-| F-25 | LOW (recommendation) | Plan § State machine C "Two or more exceptions" (N-3), § Public names "The final close", last bullet (N-9), § State machine C step 6 ("The record becomes *none* again"); harny-audit step 5 (a test that would fail if the behavior were removed) | Plan-required behavior that no test pins (coverage report and surviving mutants): (a) 212-213, the line of a window operation that raises in turn (N-3 decides; M16, raise the line's error instead of `_prevailing`, survives); (b) 1298, a `KeyboardInterrupt` from the final close while another exception propagates (N-9; M15 survives); (c) 636, the `on_loss` hook of the P-2 `read_run` (C step 6: the record is *none* after a further loss; M28, remove the hook, survives: after a refused P-2 repeat and a lost `read_run`, a Ctrl+C in that loss line would enter K on the lost second repository and K would write a `read_run` line, by reading); (d) 1313 and 1315, which depend on F-24 and on free wording (M13, rewrap an `INTERRUPTED` outcome, is equivalent under the plan) | X7 (experiment): the second exclusion raises `MemoryError` and its line raises `KeyboardInterrupt` -> `INTERRUPTED`, `running`, nothing written, all closed; `KeyboardInterrupt` then `MemoryError` -> `INTERRUPTED`; `RuntimeError` then `MemoryError` -> `RUN_FAILED`, `running`. X8: a `KeyboardInterrupt` during K after a `MemoryError` propagates, the final close raises `KeyboardInterrupt` before closing -> `KeyboardInterrupt` escapes (context chained, never printed), the repository stays open after its one attempt. X12: an `INTERRUPTED` outcome whose final close is interrupted is returned unchanged. Every experiment shows the planned behavior; the gap is regression protection | Unit tests that fail on M15, M16 and M28 (X7, X8 and a P-2 variant of `reconnect_loss_line_interrupt` are templates), and the 1313 and 1315 cases once F-24 is decided | Open (recommendation) |
-| F-26 | LOW (not blocking; see the verdict for the alternative reading) | Plan § Exit codes, 130 ("a `KeyboardInterrupt` that escapes `run_ingest` or interrupts steps 1 to 4"); § Order of an invocation step 1; AC15 ("nothing prints a traceback"); plan § Public names (`interfaces.cli`: `main` calls `run_ingest_command` and raises `SystemExit(code)`, with no handler) | In `run_ingest_command` (`ingest_command.py:371-377`), `request_from_arguments`, `_settings_from` and the write of the usage error sit outside the `except KeyboardInterrupt` and `except Exception` handlers, which start at line 378. A Ctrl+C there, or a stream error while the usage error is written, escapes the command. Through `main()` Python then prints a traceback; the process exits by the interpreter's own rule (130 through SIGINT on POSIX, 0xC000013A on Windows), not through `SystemExit(130)`. Nothing is built, requested or written. These lines are unchanged since round 1 and no earlier round raised them. The plan's own CLI design leaves the argument parsing of step 1 in `main()` unguarded, so the "steps 1 to 4" sentence cannot be literal for all of step 1 | X22 (experiment): an `environ` mapping whose read raises `KeyboardInterrupt` -> `KeyboardInterrupt` escapes `run_ingest_command`, with no collaborator built. With `environ={}` and a `stderr` that raises on the `POSTGRES_DB is not set` message: `KeyboardInterrupt` escapes, and an `OSError` escapes too | Either the command's two handlers also cover step 1 (a usage error whose message cannot be written still exits 2; a Ctrl+C exits 130 with stdout empty), with a test through the existing `environ` and `stderr` seams, or the architect scopes the 130 row and AC15 to the steps after argument parsing | Open |
-| F-12 | LOW (carried, partially resolved) | harny-audit step 4 (outcome state); plan § Rollout M4 (authorship) | `tasks.md` at `80c8aab` is stale: § Status (line 8) ends "the test-writer then writes the red tests of plan Revisions 9 and 10 together (the human stops after the red evidence, before A3)"; § Checkpoint (line 460) says "Next: the human reviews the round 5 diff and green evidence (nothing committed)"; the O8 Revision 6 to-do (line 302) says "Not yet written", but the README text was written in `80c8aab`; O10 round 4 step 1 (line 340) says the Revision 12/10/7 approval is "pending"; § Working state (line 403) calls the committed round 5 fix "uncommitted, awaiting the human's review before commit". The uncommitted PR #26 entry (not audited) does not change these lines | The next role reads that the fix is not committed and that the README is not written | § Status, § Checkpoint, O8, O10 and § Working state describe `80c8aab`, PR #26 and the round 5 audit | Open |
+| F-27 | MEDIUM (blocking; see the verdict for the two readings) | AC15 ("any other error that prevents writing the result (for example `OSError` or `MemoryError`) gives exit 1"; N-7, the human's decision of 2026-10-20); AC14 Revision 13 (D-5: "an `OSError` while their text is written exits 1"); AC21 (README § Ingesting, lines 290-295: "If the command cannot write its result (for example, a closed output stream) ... 1 for any other write failure"); plan § Output "Writing the result" (scoped to an exception "raised while it writes") | In a real process, stdout to a pipe or a file is block-buffered. `print(line, file=stdout)` in `_report` (`ingest_command.py:265`) and `argparse`'s write in `_CliParser._print_message` (`cli.py:39`) only fill the buffer and do not raise. The command returns its code and `main` raises `SystemExit(code)`. CPython then flushes stdout at finalization, the flush fails, and Python prints `Exception ignored on flushing sys.stdout:` and `OSError: [Errno 22] Invalid argument` on stderr. That report includes the error's text, not only its class name. Python then exits 120. The N-7 and D-5 machinery (`_attempt`, `_settled_code`, the handler of `main`) is never reached. stderr is line-buffered, so stderr failures do raise at write time and are handled as planned. The tests model a stream whose write raises (the approved seam), so they cannot see this. The behavior is the same at `80c8aab`. For `--version`, it is the same on `main` before F4, but AC14 now promises 1. Not raised in round 5 | X28 (experiment, real process, Windows): `cli.main` with `run_ingest` returning a confirmed `succeeded` outcome and a wiring that builds nothing. Control: exit 0, stdout `<A> succeeded`. With the parent closing the stdout pipe at once (3 runs): exit 120 every time, stderr `run <A> started`, `succeeded`, `Exception ignored on flushing sys.stdout:`, `OSError: [Errno 22] Invalid argument`. X27 (experiment): `ec-procurement-quality --version` and `--help` with stdout a closed pipe: exit 120 and the same `Exception ignored` report, 3 of 3 runs each, no `Traceback`. On Linux the same CPython path is expected to report `BrokenPipeError: [Errno 32] Broken pipe` and exit 120 (`unavailable`: not run on Linux) | Either (a) the architect scopes the exit-1 rule of AC15, AC14 and § Output to a write that raises, and README § Ingesting stops promising exit 1 for "a closed output stream" (it states what a real closed pipe gives, the run unchanged); or (b) the code makes the failure surface inside the one guarded attempt (for example, flush after the write) and prevents the exit-time flush from failing again, with a real-process check approved as a § Validation row. The human decides between them | Open (blocking) |
+| F-28 | LOW (recommendation) | Plan § Public names "The handler of `main`" ("what that one attempt raises: a `KeyboardInterrupt` makes the code 130; a `SystemExit` propagates in its place"); "`SystemExit`" ("of two `SystemExit`, the first one propagates"; "never writes a line because of it"; the table row "including from the write of an `interrupted` or `unexpected error` line by `main()`'s handler"; "During § State machine K"); harny-audit step 5 | Required behavior with no test that would fail if it were removed (surviving mutants): N10 (no `KeyboardInterrupt` branch on the handler line, `cli.py:89-90`), N11 (the handler line swallows a `SystemExit`), N12 (a Ctrl+C on the handler line keeps code 1); N31 (`_prevailing`: the later of two `SystemExit` wins in the window); N38 (`_recovery_step` writes a line for a `SystemExit`); N39 (K turns a `SystemExit` into an outcome). `cli.py:90` is the only uncovered line of `cli.py`. The § Validation F-26 row lists only `OSError` on the handler line, and the F-24 row has no two-`SystemExit` window case and no `SystemExit` during K, so this is a regression gap, not a missing row. Also, `main`'s docstring says the handler names "only its class" for a `KeyboardInterrupt`, but it writes `interrupted` | X26 (experiment, through `main`): `MemoryError` from `default_wiring`, then a Ctrl+C on `unexpected error: MemoryError` gives `SystemExit(130)`. Ctrl+C then a Ctrl+C on `interrupted` gives 130. `SystemExit(3)` on either handler line comes out as the same object, code 3. `OSError` on the line gives 1. stdout is empty in all of them. X29: in the window, the exclusion raises `SystemExit(3)` and the second close raises `SystemExit(4)`: `SystemExit(3)`, the same object, comes out. X30: an exclusion raising `SystemExit(3)` writes no line that names it. X31: a Ctrl+C at page 2, then K's `run-interrupted` append raises `SystemExit(3)`: that object propagates, and `<A>` stays `running` with no new event. The code is right in every case; only regression protection is missing | Unit tests that fail on N10, N11, N12, N31, N38 and N39 (X26 and X29 to X31 are templates; the existing `RaisingStream`, `Fault`, close fault and `Raised` suffice) | Open (recommendation) |
+| F-29 | LOW | Plan Revision 11 § Validation, required tokens ("No name that carries them contains ... `usage`, ... `output`") | `test_main_error_stream_fault_a_failing_write_of_a_usage_error_ends_through_the_handler` (18 items) and `test_main_error_stream_fault_with_working_streams_a_usage_error_still_exits_2` (3 items) contain `usage`. AC14's row `-k "usage or environment"` selects 87 tests (66 in round 5). Harmless, because they are AC14 tests, but it deviates from the approved naming rule | `uv run pytest tests/unit/ingest -q -k "usage or environment"` gives 87 passed (rerun) | Rename the two tests without `usage`, or the architect relaxes the rule | Open |
+| F-12 | LOW (carried, partially resolved) | harny-audit step 4 (outcome state); plan § Rollout | At `c20827d` these are stale. `tasks.md` § Status (line 8) ends "then the test-writer writes the red tests, the executor fixes without editing tests, and the audit round 6 follows" and names PR #26's head as `5574cd6`. O10 round 5 rework step 1 says "this file Revision 8 (pending)". § Working state Phase says "the audit round 5 responses Revision 13/11/8 are pending the human's approval", and "Updated: 2026-10-21" while it holds a 2026-10-22 entry. The "Round 5 green evidence, audit reservations" entry says "uncommitted, awaiting the human's review before commit", but it is `c20827d`; it was also committed in `c70a6bd`, before the tests and the fix it describes. § Finding responses F-23, F-24, F-26 say "the revision stays pending approval" and F-25 "pending approval". § Checkpoint says "the F-21 README to-do of Revision 6 is open" and "Next: the round 5 rework of O10 ... and the audit round 6". The plan's heading "Audit round 5 responses (2026-10-21; pending the human's approval)" and its sentence "Nothing is implemented before the human approves this revision" contradict its Approval line. The Approval lines and revision logs of the three files agree with each other | The next role reads that the specs await approval and that the fix is not committed | § Status, § Working state, § Checkpoint, O10 and § Finding responses describe `c20827d`, the CI of `c20827d` and this round; the plan heading drops "pending" | Open |
 
-## Answers to the round 5 questions
+## Answers to the round 6 questions
 
-**1. `SystemExit` precedence.** The spec does not decide it; it is an executor
-choice where the spec leaves two sentences in collision (F-24). Plan § State
-machine C says "`SystemExit` propagates", and its "Two or more exceptions" bullet
-says "a `KeyboardInterrupt` among them gives the `KeyboardInterrupt` outcome";
-neither names the pair. For the final close while an exception propagates, the
-plan does decide, and the opposite way: "a `KeyboardInterrupt` from it
-propagates in its place", even when the propagating exception is `SystemExit`
-(plan § Public names, "The final close"). The code follows that sentence (X10),
-so the executor's "`SystemExit` ranks above `KeyboardInterrupt`" holds in the
-window (X16) and inside `_close_remaining`, but not across the final close. "A
-`SystemExit` from a final close is raised only after the other repositories were
-attempted" is true but moot: at most one repository is ever left for the final
-close. Behavior of the command with `SystemExit` at every step (X15, command
-tier, `SystemExit(3)`): the first opening, page 2, the second exclusion, the
-close of the lost repository at C step 1, a pre-run `read_run`, and the final
-close after a confirmed `succeeded`. In every case `SystemExit(3)` escapes
-`run_ingest_command` (`main()` exits 3, Python prints nothing). stdout is empty,
-also after `run <A> started` and after a confirmed `succeeded`. stderr holds the
-lines written before. Every repository and the source are closed, nothing more is
-written, and the run keeps its stored state (`running`, or `succeeded` for the
-final-close case). This matches "`SystemExit` is not caught" (invocation step 6;
-§ Output, "Nothing escapes ... except `SystemExit`"); the final-close case is in
-tension with AC15's final-close sentence (F-24).
+**1. `SystemExit` identity and precedence (D-1).** It is never converted, lost,
+replaced or turned into a result line at any place the rule names. Code reading,
+tests and experiments agree:
+- Recovery window. `_recovery_step` (207-208) passes a `SystemExit` with no line. When a window operation's line raises, `_prevailing` (179-190) returns the `SystemExit`, the first of two. `_reconnect` keeps it across the close of the second repository (307-314). `raise ... from None` sets only `__cause__` and `__suppress_context__` on the same object. Tests: `system_exit_window` (a) to (e) with identity (`stop is exits.first`). X29 and X30 pin the first-of-two and no-line parts (F-28).
+- K. `_cleanup_step` and K catch `Exception` only (730, 806), and `_ingest_through` catches `KeyboardInterrupt` and `Exception` only, so a `SystemExit` raised in K propagates and K never returns an outcome for it. X31 (F-28: no permanent test; N39 survives).
+- Final close while propagating. `run_ingest` binds the propagating exception (1266-1268). `_close_while_propagating` (1290-1301) attempts each unclosed repository once (a snapshot tuple), drops what the close raises while a `SystemExit` propagates, and the bare `raise` re-raises the same object. While a `KeyboardInterrupt` propagates, a `SystemExit` or a `KeyboardInterrupt` from the close is raised in its place (the close's own object). Tests: `system_exit_final_close` (g), (h) and `close_while_propagating`. N32 6 and N33 5 failed.
+- Final close after an outcome. `_close_after_outcome` (1312-1316) raises the close's `SystemExit` and returns no outcome. Test (f). N34 6 failed.
+- Step 7, the source close. `_invoke` (347-358) sets `exiting` for a `SystemExit` from step 4, 5 or 6. In the `finally`, the close's `KeyboardInterrupt`, `Exception` or second `SystemExit` is dropped while exiting. When not exiting, an `Exception` is suppressed, and a `KeyboardInterrupt` or a `SystemExit` from the close propagates in place of the return or of a propagating `KeyboardInterrupt`, as the plan's step 7 says. Tests: `system_exit_command_end` (l) and (m). N20, N21 and N22 killed.
+- Writing the result. `_attempt` (227-237) catches `Exception` and `KeyboardInterrupt` only, so a `SystemExit` stops the remaining writes and escapes. Tests (i) to (k). N23 4 failed.
+- Step 1. The command's step 1 catches `ValueError` only (381-386). `main` catches `KeyboardInterrupt` and `Exception` only. Tests: `main_parse_interrupt`, `main_wiring_interrupt`, `main_error_stream_fault` and `main_help_stream_fault`, each with a `SystemExit` case checked by identity. N5 139 failed and N6 15 failed.
+- Command level, in every case: the exit code is the `SystemExit`'s own, and stdout is empty unless the result line was written before it (exactly `<A> succeeded` in (m)). No `interrupted` or `unexpected error` line is written after it, and no traceback. The stored run keeps its state (`succeeded` in `exit_code_system_exit_final_close`, `running` in (l)). The object is the same one, checked by identity in every new test.
+- Real process (X27): `SystemExit("synthetic text")` from `default_wiring` exits 1 with Python's own `synthetic text` line, as the plan's note on a non-integer code says.
 
-**2. Paths with no permanent test.** The coverage run gives
-`ingest_use_case.py` 655 statements, 8 missed: 212-213, 388-389, 598, 1298, 1313
-and 1315 (the same in CI on Linux). `ingest_command.py` and `cli.py` are at
-100 %.
+**2. The handler of `main` (D-3 B, D-4, D-5).**
+- Conforms to plan § Public names: one `try` around the whole body, exactly two handlers, one attempt of the handler's line (`_exit_after_writing`), `SystemExit` never caught, nothing on stdout, no second call of the command.
+- CLI-1 to CLI-3 with working streams:
+  - `tests/unit/test_cli.py`: 2 passed. Unchanged against `main` and against `2e6edcd` (empty diff).
+  - X27, real process: usage error 2 with the usage and the message, bare command 2 with the usage, `POSTGRES_DB is not set` 2, `--version` 0.
+  - The integration `cli_` tests: 17 passed.
+- Ctrl+C at every point gives 130 without a traceback:
+  - during parsing, through `request_from_arguments` and through `version` in `build_parser`;
+  - during wiring, through `default_wiring`;
+  - in the command's step 1 and during the usage write, by `argparse` and by the command;
+  - in the handler's own line, X26 only (F-28);
+  - between the command's return and `raise SystemExit(code)`, by construction (no injection point).
+- Other exceptions give 1. No second attempt: each test counts the faulted message as attempted once, and N7 (the handler's line written twice) is killed by 42 tests.
+- `argparse` is not patched: `test_main_help_stream_fault_argparse_itself_is_not_patched` checks identity, `__module__` and the code file.
+- The class structure is conformant. The plan allows "the existing `_IngestParser`, or a CLI parser class that `_IngestParser` extends". With the second option the subparser's class must be `_IngestParser`, which carries the `request_from_arguments` check, so "used for the `ingest` subparser" can only mean that the subparser is an instance of the one class that holds the adaptation. The override exists once, in `_CliParser`; `_IngestParser` adds no writing logic, and both parsers are `_CliParser` instances. Reading it as one class object would make the plan's second option impossible without running the ingest check on the main parser. No spec decision is needed. N3 (main parser plain) and N4 (subparser not extending `_CliParser`) are killed.
+- `AttributeError` suppression in `_print_message` is conformant. It reproduces `argparse`'s own rule (Python 3.13 `argparse.py:2630-2636` suppresses `AttributeError` and `OSError`), so a `None` stream still behaves as `argparse` does, and only `OSError` changes, as D-5 requires.
+- `file or sys.stderr` matches `argparse`'s `file = file or _sys.stderr`. N15 (`sys.stdout` there) survives and is equivalent: every caller in 3.13 passes a file (`print_usage` and `print_help` default to `sys.stdout` before the call, `exit` passes `sys.stderr`, the version action passes `sys.stdout`).
+- No 3.13 path writes without `_print_message`: the only `.write(` in `argparse.py` is at 2634. The writers are `print_usage`, `print_help`, `exit(message=...)`, `error`, `_VersionAction`, `_HelpAction` through `print_help`, and `_warning`. `format_help` and `format_usage` do not write.
+- `__context__`: the `SystemExit(130)` or `SystemExit(1)` that `main` raises inside its handlers carries the original exception as `__context__` (X26). A `SystemExit` from the handler's line keeps its identity, but Python sets its `__context__` to the handled exception. The interpreter prints nothing for an integer `SystemExit`, so neither shows: X27's stderr is exactly `interrupted`.
+- Real-process caveat: F-27. With a real closed stdout pipe, `--version` and `--help` exit 120, not 1.
 
-| Lines | What it does | Required by the spec | Experiment | Permanent test? |
-|---|---|---|---|---|
-| 212-213 | A window operation (second open or exclusion) raised something other than a `PersistenceError`, and its own progress line raised too; `_prevailing` decides | Yes: N-3 ("whatever the order of arrival") and the line rule of the window | X7: planned (`INTERRUPTED` when a Ctrl+C is among them, else the first exception's outcome; `running`; nothing written; all closed) | Yes, LOW (F-25; M16 survives) |
-| 388-389 | The re-check path of `append_event` lost again on the second repository | Accepted limitation (F-20, 2026-10-18) | X13: two loss lines, `RUN_FAILED`, `running`, all closed | No; still accepted. The code differs from round 4 only by the `on_loss` hook that C step 6 requires |
-| 598 | A normal-path append lost and the recovery not confirmed | Accepted limitation (F-20, 2026-10-18) | X14: `RUN_FAILED`, `running`, lines `append_audit_event page-completed` and `open_repository` | No; still accepted, code unchanged |
-| 1298 | A `KeyboardInterrupt` or `SystemExit` from the final close while another exception propagates | Yes: N-9 and "The final close", last bullet | X8, X10: the close's exception propagates in place of the other one | Yes, LOW (F-25; M15 survives) |
-| 1313 | A `SystemExit` from the final close after the outcome was determined | "`SystemExit` propagates" (§ Public names) | X11: `SystemExit` escapes, the confirmed outcome is lost | After F-24 is decided |
-| 1315 | An outcome already `INTERRUPTED` whose final close is interrupted is returned unchanged | Compliant: "a message that says the ingest was interrupted" (wording free) | X12: unchanged, `failed` kept | Optional (M13 is equivalent) |
+**3. Paths with no permanent test.** The coverage run gives 2775 passed and TOTAL 98 %
+(rerun, Windows; CI on Linux the same three files).
+- `ingest_use_case.py` misses 388-389 and 598 only. They are still the two F-20 limitations accepted on 2026-10-18: 388-389 is the re-check path of `append_event` lost again on the second repository (`raise _ConnectionUnconfirmed`), and 598 is a normal-path append whose recovery is not confirmed (`return _unconfirmed(...)`). The code is unchanged since round 5 and the lines did not shift.
+- `ingest_command.py` is at 100 %.
+- `cli.py` misses line 90 (`code = EXIT_INTERRUPTED`): a Ctrl+C that lands while `main`'s handler writes its own line.
+  - Required: plan § Public names, "The handler of `main`": "what that one attempt raises: a `KeyboardInterrupt` makes the code 130".
+  - Scenario X26: a `MemoryError` from `default_wiring` makes the handler write `unexpected error: MemoryError`, and a Ctrl+C lands in that write. The code gives `SystemExit(130)`, stdout empty, no traceback. Without lines 89-90 the Ctrl+C would escape `main` with a traceback (N10). With line 90 replaced by `pass` the code would be 1 (N12).
+  - Verdict: compliant, untested. Severity LOW (F-28). A permanent test should exist, cheaply, with the existing `RaisingStream` on `sys.stderr` aimed at `unexpected error` or `interrupted`. The same test can also pin the `SystemExit` row of the D-1 table for the handler's line (N11).
+- Other uncovered lines of the feature, all pre-existing and outside the changed code: `ingestion_catalogue.py:168` and `system_clock.py:11`, as in round 5. The rest are F1 to F3 lines.
 
-Other uncovered lines of the feature, all pre-existing and outside the recovery
-zone: `ingestion_catalogue.py:168` (a defensive branch an id matching the
-pattern cannot reach) and `system_clock.py:11` (`SystemClock.now`, checked by
-inspection against plan § Public names). The other missed lines are F1 to F3
-code that F4 did not change.
+**4. A refused failure-path append, then a Ctrl+C in its line (F-23, D-2 option 1).**
+- Code: `_close_failed` (523-534) suppresses the refusal only after `append_event` wrote its line inside `_reporting_failure`. A `KeyboardInterrupt` or a `MemoryError` from that line leaves `_close_failed`, which catches only `_ConnectionUnconfirmed` and `PersistenceError`. `_ingest_through` then hands it to K on the current repository. K reads the run, appends `run-interrupted` (or `unexpected-error`) for the page and calls `finish_run(FAILED)`. The refused event is never appended again.
+- Tests (rerun): `refusal_then_interrupt` 40 (page-failed, storage-failed, page-completed and the final `finish_run(succeeded)`, each with two refusal flavors, two interruptions and two moments, plus case (v) with K's own append refused, which leaves the run `running`) and `exit_code_refusal_then_interrupt` 2 (exit 130 with `<A> failed`, and with `<A> running`).
+- E-D2 kills the opposite behavior (28 failed).
+- The spec text is consistent:
+  - AC6 (e) keeps "no further event" for how a refusal is answered and adds that a later interruption is AC7's cleanup.
+  - The "Refused writes" table's failure-path row points to K's "After any other refusal".
+  - K's bullet lists the same four refusals.
+  - N-4 keeps a refused `finish_run(FAILED)` outside K.
+  - The intro sentence "never enters § State machine K" is about the refusal itself, not a later exception, so it does not contradict the row.
+  - No residual contradiction was found.
 
-**3. A refused failure-path append, then a Ctrl+C in its line.** Identified
-and reproduced (X1 to X6). Verdict: not a defect against the approved plan. The
-cleanup's `run-interrupted` is another write, not a retry, and plan § State
-machine P says of a refused record that K "still runs its steps 1, 3 and 4 ...
-(they are other writes)". It is still a question the spec should settle,
-because AC6 (e) and F-11 can be read to forbid any further event after a refused
-failure-path append. The same holds for a refused normal-path append and for a
-refused final `finish_run(succeeded)`. Severity LOW; it needs a spec decision
-(F-23). It was not fixed, as asked.
+**7. The environment-dependent `FileNotFoundError`.**
+- `test_storage_a_regular_file_at_observations_stops_the_run` passed in every run of this round: the full suite with the database (2775), the suite without it (2509), `tests/unit/ingest` (1348), the scratch baseline (1350), 57 mutant runs where it was not the target, and the test alone 5 times.
+- No other environment-dependent or intermittent failure was seen.
+- Recorded separately: the round 5 explanation (a second session sharing `--basetemp` deletes the first one's folder) still stands. No session of this round shared a `--basetemp`, and the reported failure did not recur.
 
-**5. The `FileNotFoundError` in
-`test_storage_a_regular_file_at_observations_stops_the_run`.** It is
-environment-dependent, not a defect, and it was reproduced.
-
-- The signature (X25, experiment): when the test's store folder vanishes before
-  the page 2 step, the step's `shutil.rmtree(blocker)` raises
-  `FileNotFoundError`. The run ends through K as `RUN_FAILED` with
-  `run_status` `failed`, which passes the first two assertions. Then
-  `blocker.read_bytes()` at `test_ingest_use_case.py:880` raises
-  `FileNotFoundError`, which is the reported failure.
-- The executor's exact hypothesis is refuted (X23, experiment). With the
-  default `pytest-of-<user>` base, pytest 9.1.1 never deletes the numbered
-  folder of a live session: each session holds a `.lock` that
-  `ensure_deletable` honors for three days. A 25-second loop of the test body
-  (1047 runs) passed while 12 other sessions that use `tmp_path` started and
-  ended.
-- A variant reproduces it (X24, experiment). With two sessions given the same
-  `--basetemp`, the second session removes that folder when it starts (pytest's
-  rule for a given base). The loop then failed with `FileNotFoundError` at line
-  880 on its 102nd run.
-- So the reported failure needs a second pytest session (or any other process)
-  deleting the first one's temporary folder. A shared `--basetemp`, which an
-  agent restricted to a scratch folder may use, fits. The test is not edited, it
-  passes alone, in the full suite and in CI, and it is not a finding.
-
-## Executor choices where the plan was silent
+## Executor and test-writer choices where the plan was silent
 
 | Choice | Assessment |
 |---|---|
-| `_prevailing` ranks `SystemExit` above `KeyboardInterrupt` | A defensible reading of "`SystemExit` propagates", but the spec leaves the pair open and the final close ranks them the other way, as the plan's sentence says (F-24) |
-| When a window operation's own line raises, `_prevailing` decides (212-213) | Compliant with N-3; untested (F-25) |
-| A refused `finish_run(failed)` reuses the explicit record (`drop_current`, 540); a later exception ends through `_recovery_ended` (`INTERRUPTED`, or `RUN_FAILED` with `unexpected error: <Class>`, `running`) | Compliant with N-4 (iv) and "the outcome is `INTERRUPTED` for a `KeyboardInterrupt` and `RUN_FAILED` otherwise, with `run_status=RUNNING`". M3: 8 failed |
-| The final-close interrupt message is `the ingest was interrupted while the repository was closed: <earlier message>`; an outcome already `INTERRUPTED` is returned unchanged | Compliant (wording free) |
-| `_settled_code` gives 1 for any non-interrupt write failure unless 130 was determined, including the exit 2 of `INVALID_TARGET` (X18: exit 1, stdout empty) | Compliant with the human's N-7 amendment ("any other exception ... that prevents writing the final result gives exit 1"; the final message is part of the result, § Output). Note: AC14's exit 2 then yields to the later, more specific decision |
-| `result_written` is set before the first write, also when the outcome names no run | Compliant: it only guards `_print_running`, which needs an announced run |
-| The handlers still attempt their stderr line after a stdout failure | Compliant ("The command may write a further stderr line about it"); M31 (skip it) is caught: 24 failed |
-| The explicit record is not set to *none* for a loss before the run exists | A compliant alternative: before `start_run` no new connection is opened and K is gated on `run_created`, so the outcome is the same |
-| `_PersistenceSession.close` removes the repository from `_unclosed` after closing it | When a Ctrl+C lands after the second opening returned and before it was registered (X21), `close` closes it and then raises `ValueError` from `remove`; `_prevailing` keeps the `KeyboardInterrupt`, so the outcome is right and the repository is closed. Benign, noted |
+| `_CliParser` for the main parser and `_IngestParser(_CliParser)` for the subparser | Conformant with D-5 option a (answer 2) |
+| `_print_message` keeps `suppress(AttributeError)` | Conformant: `argparse`'s own rule except `OSError` |
+| `_exit_after_writing` wraps one `print` in `suppress(Exception)` around an inner `except KeyboardInterrupt` | Conformant with "what that one attempt raises"; untested branch (F-28) |
+| `_print_running` sets `result_written` before printing | Harmless and defensive: only one handler runs per invocation (N24 equivalent) |
+| Step 7 uses an `exiting` flag set by `except SystemExit` around steps 3 to 6 | Conformant; a Ctrl+C between `except SystemExit:` and `exiting = True` is a bytecode gap (checklist) |
+| The `main` tests set `sys.stdout` and `sys.stderr` with `monkeypatch` to `io.StringIO` or `RaisingStream` instead of `capsys` | A compliant alternative to the plan's "stdout read with `capsys`": no new setup, and the seams table already says "no `capsys` in these cases" for stderr |
+| A local `Raised` helper in each test file records the exception objects | Test-only, no new double; it gives the identity checks D-1 needs |
 
 ## Accepted limitations
 
-Lines 388-389 (an append lost again after the re-check) and 598 (a normal-path
-append whose recovery is not confirmed) remain the two limitations the human
-accepted on 2026-10-18. The code at 598 is unchanged since round 4. The re-check
-path gained the `on_loss` hook that C step 6 requires, and its outcome is
-unchanged. Experiments X13 and X14 show the planned behavior. They stay
-accepted.
+Lines 388-389 and 598 of `ingest_use_case.py` remain the two limitations the human
+accepted on 2026-10-18. Their code is unchanged since round 5. They stay accepted.
 
-## Defect-hunting checklist (both modules against the state machines)
+## Defect-hunting checklist (both modules and `cli.py` against the state machines)
 
 | Area | Result |
 |---|---|
-| Opening and first exclusion | Hold (`repository_open_error` 19 with `single_result_line`; E-F16a killed) |
-| C, the window (step 1 close, loss line, open, exclusion, line of a window error, close after `False`) | Hold: K never runs without a current repository (M1, M20 107 failed each). X20: a Ctrl+C raised inside `open_repository()` after the connection was made leaks that connection; no caller can close an object it never received (inherent, noted) |
-| C, repeats, re-check, P-2, second loss, third connection | Hold (`connection_loss` 43, `connection_loss_final_finish` 12, integration 7; M26: 1 failed; E-P2: 4 failed). M28 survives (F-25) |
-| K on the current repository | Holds; N-2 propagation holds (E-N2) |
-| T, R, H, I | Hold (`pre_run_database_error` 59, `reconcile` 34, `chain` 140, `identity`) |
-| Refused writes | Hold, with F-23 for a refusal followed by an interrupt |
-| Order: local store -> PostgreSQL -> event -> finish | Holds |
-| Write-once evidence; no retries | Hold (`no_retry` 6; F1 store unchanged since `main`) |
-| Secrets, URLs, tracebacks, exception text (AC15) | Hold for run output; F-26 for step 1 |
-| Exactly one stdout line; writing the result | Hold (N-7 rows; M24: 141 failed) |
-| Final close | Holds (F-22 resolved); F-24 for `SystemExit` |
-| Asynchronous exceptions between bytecodes | A Ctrl+C can land between a `PersistenceConnectionError` and the first action of its handler, or between `run_ingest` returning and `_report` setting `result_written`; the plan's guarantees start at those first actions, and pure Python cannot close such gaps without masking signals. Noted, not a finding |
+| Opening and first exclusion | Hold (E-F16a killed) |
+| C, the window | Hold; `SystemExit` precedence holds (X29); no line for a `SystemExit` (X30) |
+| C, repeats, re-check, P-2, second loss | Hold (`connection_loss` 43, `p2_read_run_loss_line` 4; N37 killed) |
+| K on the current repository; "After any other refusal" | Hold (E-N2, E-D2 killed; X31) |
+| T, R, H, I | Hold (`pre_run_database_error` 59, `reconcile` 34, `chain` 197) |
+| Refused writes, never retried | Hold (N42, N43, N44 killed) |
+| Write-once evidence; no retries | Hold (`no_retry` 6; F1 store unchanged against `main`) |
+| Secrets, URLs, tracebacks, exception text | Hold in-process; a real closed stdout pipe makes Python print `OSError: [Errno 22] Invalid argument` at exit (F-27) |
+| Exactly one stdout line; writing the result | Hold in-process (N25, N26, N27 killed); real buffered stdout: F-27 |
+| Final close; step 7 | Hold (answer 1) |
+| `main` and the parsers | Hold (answer 2); the handler line is untested (F-28) |
+| `sys.stderr` is `None` (a GUI-subsystem launch) | `print(..., file=None)` writes to stdout, so the handler's line or a command line would go to stdout. Pre-existing for the command, not a realistic console-script case. Noted, not a finding |
+| Asynchronous exceptions between bytecodes | A Ctrl+C can land between `except SystemExit:` and `exiting = True` (`ingest_command.py:347-348`), between `main`'s `except` and the call of `_exit_after_writing`, and between that call's `print` and its `raise SystemExit(code)`. As in round 5, pure Python cannot close such gaps without masking signals. Noted, not a finding |
 
 ## AC results
 
 | AC | Status | Evidence |
 |---|---|---|
-| AC1 | PASS | `-k success` 9; `-k e2e_success` 2 (rerun) |
-| AC2 | PASS | `-k repeat` 13; `-k e2e_repeat` 2 (rerun) |
+| AC1 | PASS | `-k success` 9; integration `-k e2e_success` 2 (rerun) |
+| AC2 | PASS | `-k repeat` 22; `-k e2e_repeat` 2 (rerun) |
 | AC3 | PASS | `-k last_page` 41, `last_page_p3` 6, `e2e_last_page` 2 (rerun) |
 | AC4 | PASS | `-k failure_with_response` 16; `-k e2e_failure` 5 (rerun) |
 | AC5 | PASS | `-k failure_without_response` 6 (rerun) |
-| AC6 | PASS (note F-23) | `-k storage` 16, `database_refusal` 57, `read_back_record_failure` 4, `refusal_not_retried` 37 (rerun); (a) and (d) also on Linux in CI (reused) |
-| AC7 | PASS (notes F-23, F-24, F-26) | `-k "interrupt or exit_code"` 348; `interrupt_during_record or cleanup_read_back` 14; `interrupt_after_finish` 11; `cleanup_database_error or final_finish_read_run or output_database_error` 49; `reconnect_exclusion_interrupt or reconnect_open_interrupt` 93; the F-21 row 56; `final_close_error or final_close_interrupt` 20; `unexpected_cleanup_interrupt` 18; `recovery_double_fault` 15; `refusal_not_retried` 37 (rerun). F-21 is resolved |
-| AC8 | PASS | `-k connection_loss` 43 (unit), `test_ingest_connection_loss.py` 7 (integration), `connection_loss_final_finish` 12, integration `final_finish` 4, `start_run_unconfirmed` 12, `start_run_second_loss` 34, the F-21 row (rerun) |
+| AC6 | PASS | `-k storage` 24, `database_refusal` 57, `read_back_record_failure` 4, `refusal_not_retried` 37, `refusal_then_interrupt` 42 (rerun); (e) is consistent after D-2 (answer 4) |
+| AC7 | PASS (note F-28) | `-k "interrupt or exit_code"` 413; `interrupt_during_record or cleanup_read_back` 14; `interrupt_after_finish` 11; `cleanup_database_error or final_finish_read_run or output_database_error` 49; `reconnect_exclusion_interrupt or reconnect_open_interrupt` 93; the F-21 row 56; `final_close_error or final_close_interrupt` 20; `unexpected_cleanup_interrupt` 18; `recovery_double_fault` 15; the F-24 row 27; the F-25 row 23 (rerun) |
+| AC8 | PASS | `-k connection_loss` 43, `connection_loss_final_finish` 12, `start_run_unconfirmed` 12, `start_run_second_loss` 34; integration `test_ingest_connection_loss.py` 7, `final_finish` 4 (rerun) |
 | AC9 | PASS | `-k resume` 24; `-k e2e_resume` 5 (rerun) |
 | AC10 | PASS | `-k reconcile` 34; `-k e2e_reconcile` 6; `reconcile_os_error` 4 (rerun) |
-| AC11 | PASS | `-k closed_run` 3; `interrupt_after_finish` 11 (rerun) |
-| AC12 | PASS | `-k "execution_id or identity"` 67 (rerun) |
-| AC13 | PASS | `-k "scope or catalogue"` 111; `assert_follows_catalogue` across the new tests (rerun) |
-| AC14 | PASS (note F-26) | `-k "usage or environment"` 66; `source_configuration or order_of_invocation` 30 (rerun) |
-| AC15 | PASS (notes F-24, F-26) | `-k "output or logger"` 81; `output_escaping_exception` 12; progress group 24; `pre_run_database_error` 59; `repository_open_error or single_result_line` 19; `result_line_stream_fault` 21; `handler_stream_fault` 8; `generic_fallback` 2 (rerun) |
-| AC16 | PASS | integration `-k migrations` 11; hierarchy 3; lock and runner 23; `git diff 2e6edcd --numstat -- tests/integration/test_postgres_migrations.py` -> `3 0` (rerun) |
+| AC11 | PASS | `-k closed_run` 3; `interrupt_after_finish` 11; `interrupted_outcome_close` 1 (rerun) |
+| AC12 | PASS | `-k "execution_id or identity"` 94 (rerun) |
+| AC13 | PASS | `-k "scope or catalogue"` 124 (rerun) |
+| AC14 | PASS in-process (notes F-27, F-29) | `-k "usage or environment"` 87; `source_configuration or order_of_invocation` 30; the F-26 row 67; `tests/unit/test_cli.py` 2; integration `cli_` 17 (rerun). X27: a real process gives 2, 2, 2 and 0 with working streams, and 130 and 1 for a Ctrl+C and a `MemoryError` during wiring. A real closed stdout pipe on `--version` or `--help` gives 120, not 1 (F-27) |
+| AC15 | FAIL for a real buffered stdout (F-27); PASS in-process (note F-28) | `-k "output or logger"` 93; `output_escaping_exception` 12; progress group 24; `pre_run_database_error` 59; `repository_open_error or single_result_line` 19; `result_line_stream_fault or handler_stream_fault` 29; `generic_fallback` 2; the F-24 row 27; the F-26 row 67 (rerun). X28: a confirmed run with a closed stdout pipe exits 120 with Python's `Exception ignored ... OSError: [Errno 22] Invalid argument`, not 1 |
+| AC16 | PASS | integration `-k migrations` 11; `test_persistence_error_hierarchy.py` 3; lock and runner 23; `git diff 2e6edcd --numstat -- tests/integration/test_postgres_migrations.py` is `3 0` (rerun) |
 | AC17 | PASS | `-k no_retry` 6 (rerun) |
-| AC18 | PASS | `uv run pytest tests/unit -q -k layer` 16; the AC18 grep of `application/` (`SELECT `, `INSERT `, `UPDATE `, `DELETE `, `objects/`, `observations/`, `.json`, `advisory`, `pg_`, `psycopg`, `httpx`) finds nothing; `interfaces` imports neither `httpx` nor `psycopg`; `git diff main --stat -- pyproject.toml uv.lock` is empty, and against the baseline `2e6edcd` `pyproject.toml` shows only the two F-1 keys and three comment lines and `uv.lock` no diff; `mypy` 52 files clean (rerun) |
-| AC19 | PASS | `uv run --env-file .env pytest tests/unit/ingest tests/integration/ingest -q` -> 1273 passed; 0 files under the real `data/` before and after; 0 `ecpq_test_` databases (rerun) |
-| AC20 | PASS | 2616 passed (1307 baseline + 1309 F4); the AC20 `git diff --stat` list is empty against `main` and against `2e6edcd`; the only pre-F4 test file changed since `2e6edcd` is `test_postgres_migrations.py` (`3 0`); `git ls-files .env` is empty; `git diff main --check` and `git diff --check` are clean; ruff, format (120 files), mypy and the doctor (`31 ok, 0 skipped, 0 warned, 0 failed`) pass; `--version` -> `ec-procurement-quality 0.1.0` (rerun) |
-| AC21 | PASS | README § Ingesting read sentence by sentence against the code (lines 246-307). The recovery window (261-269), the refused `finish_run` (270-271), "answered once and not repeated" (284-285: true; the writes of F-23 are other writes), the final close (287-289; the parenthesis gives examples, and `running` is also kept), the output-failure paragraph (290-295) and the exit table (305, 307) match the code. AGENTS.md, `docs/architecture.md` and CHANGELOG are unchanged since round 4 and still match. No document claims a live run (rerun, inspection) |
+| AC18 | PASS | `-k layer` 16. The grep of `application/` for `SELECT `, `INSERT `, `UPDATE `, `DELETE `, `objects/`, `observations/`, `.json`, `advisory`, `pg_`, `psycopg` and `httpx` finds nothing. `interfaces` imports neither `httpx` nor `psycopg`. `git diff main --stat -- pyproject.toml uv.lock` is empty. Against `2e6edcd`, `pyproject.toml` shows only the two F-1 keys and three comment lines, and `uv.lock` has no diff. mypy: 52 files clean (rerun) |
+| AC19 | PASS | `uv run --env-file .env pytest tests/unit/ingest tests/integration/ingest -q` gives 1432 passed. No file under the real `data/` before or after. No `ecpq_test_` database left (count 0). The new tests use doubles and in-memory streams only (rerun) |
+| AC20 | PASS | 2775 passed. `tests/unit/test_cli.py` is unchanged against `main` and `2e6edcd`. The only pre-F4 test file changed since `2e6edcd` is `test_postgres_migrations.py` (`3 0`). `git diff main -U0 -- tests` removes 2 lines, the same as round 5 (an import widened, one docstring line); `22cd04c` is +1585/-0 and `c20827d` touches no test. `git ls-files .env` is empty; `git diff main --check` and `git diff --check` are clean. ruff, format (120 files), mypy and the doctor (`31 ok, 0 skipped, 0 warned, 0 failed`) pass; `--version` gives `ec-procurement-quality 0.1.0`. No migration added; `migrations/` holds `0001_initial_schema.sql` only (rerun) |
+| AC21 | FAIL (F-27) | README § Ingesting was read sentence by sentence against the code. Lines 246-289, 296-307 and the stale-session procedure match. Lines 290-295 ("for example, a closed output stream ... 1 for any other write failure") are false for a real closed stdout pipe (exit 120, X28). Plan Revision 11 required no README change for D-1 to D-5, and the README names no `SystemExit` case or usage-write failure; that omission is per the approved plan and not a finding. AGENTS.md, `docs/architecture.md` and CHANGELOG are unchanged since `main` (rerun, inspection) |
 | AC22 | PASS | listing 25 (rerun) |
 | AC23 | PASS | `test_postgres_runs_and_exclusion.py` 24 (rerun) |
-| AC24 | PASS | `-k chain` 140, `chain_last_page` 33, `e2e_chain_last_page` 3, `chain_unreadable_record` 12 (rerun) |
+| AC24 | PASS | `-k chain` 197, `chain_last_page` 33, `e2e_chain_last_page` 3, `chain_unreadable_record` 12 (rerun) |
 | AC25 | PASS | `-k "paths or environment"` 34; integration `-k root` 2 (rerun) |
 
-Plan decisions:
-
-| Item | Status | Evidence |
-|---|---|---|
-| P-1 | PASS | `ingest_command.py:290-310`; lock and runner 23 |
-| P-2 | PASS | `_finish_succeeded` (609-647); E-P2 killed |
-| P-3 | PASS | 1638-1653 |
-| P-4 | PASS | `_resume_plan` (1129-1229) |
-| P-5 | PASS | `_unconfirmed`, `_recovery_ended`, K, `_print_running` |
-| F-1 | PASS | `pyproject.toml` against `2e6edcd`: the two keys and three comment lines, additions only |
-| F-2, F-3 | PASS | `ingestion_catalogue.py`; 1513-1519 |
+Plan decisions P-1 to P-5, F-1 to F-3 and D-1 to D-5 were checked. P-1 to P-5 and F-1 to
+F-3 are unchanged since round 5 and still hold (as above). D-1 is implemented (answer 1).
+D-2 is kept and pinned (answer 4). D-3 is implemented (answer 2). For D-4, a usage
+error that cannot be written gives 1 (`main_error_stream_fault`, `OSError` and
+`MemoryError` cases). D-5 is implemented in-process (`main_help_stream_fault`). A real
+closed pipe gives 120 (F-27).
 
 ## Binding-constraint compliance
 
 | Constraint | Status | Evidence |
 |---|---|---|
 | Layer placement (ADR 0001, AC18) | PASS | Layer tests 16; grep clean; `interfaces` imports |
-| Public names and signatures | PASS (note F-24) | Pinned types and signatures unchanged; the propagation list (N-9) holds |
-| CLI arguments and configuration | PASS | `cli.py` unchanged; `ingest_command.py:109-170` unchanged; `test_cli.py` 2 |
-| Order of an invocation | PASS (note F-26) | Steps 1 to 7; step 1 inside the command is outside its handlers |
-| Exit codes | PASS (note F-26) | `_EXIT_CODES` (218-224), `_settled_code` (240-250) |
-| Output (AC15), "Writing the result" | PASS | N-7 rows; M9 to M12, M22, M24, M31 killed |
-| Audit details (closed catalogue) | PASS | `assert_follows_catalogue` across the paths |
-| State machine P, "Refused writes", "never retried" | PASS (note F-23) | N-4 row; M3, M7, M8 killed |
-| State machine C, "The explicit record", "Two or more exceptions" | PASS (notes F-24, F-25) | F-21 resolved; M1, M2, M4, M6, M17 to M20, M30 killed |
-| State machine K | PASS | Only on the current repository; N-2 holds |
-| State machines T, R, H, I | PASS | Unchanged since round 4; earlier-fix mutants killed |
+| Public names and signatures | PASS | Pinned types and signatures unchanged; propagation list (Revision 11) holds |
+| "`SystemExit`" (D-1) and its combination table | PASS (note F-28) | Answer 1 |
+| The handler of `main` (D-3, D-4) and the one local parser class (D-5) | PASS (notes F-27, F-28) | Answer 2 |
+| CLI arguments, configuration, CLI-1 to CLI-3 | PASS | `test_cli.py` unchanged, 2 passed; X27 |
+| Order of an invocation (with "Where step 1 runs") | PASS | Answer 2; the command's step 1 is unchanged |
+| Exit codes | PASS in-process; real buffered stdout gives 120 (F-27) | `_EXIT_CODES`, `_settled_code`, `main` |
+| Output, "Writing the result" | PASS as scoped by the plan ("raised while it writes"); F-27 for the wider AC15 sentence | N25, N26, N27 killed |
+| Audit details (closed catalogue) | PASS | `assert_follows_catalogue` in the new tests too |
+| State machine P, "Refused writes", "never retried" | PASS | N42, N43, N44, E-D2 killed |
+| State machine C, "The explicit record", "Two or more exceptions" | PASS (note F-28) | N36, N41, E-F18 killed; X29 |
+| State machine K (with "After any other refusal") | PASS (note F-28) | E-N2, E-D2 killed; X31 |
+| State machines T, R, H, I | PASS | Unchanged since round 5; E-F06, E-F10 killed |
 | F1 and F3 port extensions | PASS | Listing 25; runs and exclusion 24 |
-| No schema change | PASS | `migrations/` holds `0001_initial_schema.sql` only, no diff |
-| No dependency (AGENTS.md, PT-11) | PASS | `uv.lock` no diff; `pyproject.toml` only the F-1 keys |
-| ADR 0006 (configuration before the migrations) | PASS | E-F03 killed |
-| R-6 and N3 (no chain or `__context__` printed) | PASS | Only class names reach the reporter; the exceptions `_prevailing` raises are never printed |
-| R-7 (`httpcore` above `DEBUG`) | PASS | `_httpcore_above_debug` |
-| SA-13 and PS-13 (one source, at most two repositories, all closed) | PASS | `opens <= 2` and `all_closed` everywhere; X20 is an inherent leak inside the opener |
-| Q4 (one ingest active per database) | PASS | No write without the exclusion on any path found, including X1 to X21 |
-| Tests (guards, no real `data/raw/`, throwaway databases) | PASS | Guards pass; `data/` empty; 0 leftover databases |
-| `.env` never read by code or committed | PASS | `git ls-files .env` empty; no code reads `.env`; the auditor never read it (the database count script reads only the variables `uv run --env-file` loaded and prints only a count) |
+| No schema change; write-once evidence | PASS | `migrations/` unchanged; `infrastructure/` and `domain/` have no diff against `main` |
+| No dependency (AGENTS.md, PT-11) | PASS | `uv.lock` has no diff; `pyproject.toml` only the F-1 keys (against `2e6edcd`) |
+| ADR 0006 (configuration before migrations) | PASS | E-F03 killed |
+| R-6, N3 (no chain or `__context__` printed) | PASS in-process (X27: stderr `interrupted` only); F-27 for Python's exit-time report | |
+| R-7 (`httpcore` above `DEBUG`) | PASS | `_httpcore_above_debug` unchanged |
+| SA-13, PS-13 (one source, at most two repositories, all closed) | PASS | `opens <= 2` and `all_closed` in the new tests |
+| Q4 (one ingest per database) | PASS | No write without the exclusion on any path found |
+| Tests (no network, no real `data/raw/`, throwaway databases) | PASS | Guards pass; `data/` empty; 0 leftover databases; the no-database run skips 266 integration tests as designed |
+| `.env` never read by code or committed | PASS | `git ls-files .env` is empty. The auditor never read, printed or copied it: the database-count script reads only the variables `uv run --env-file` loaded and prints only a count |
 
 ## Test coverage
 
 | AC | Tests (file) | Status |
 |---|---|---|
-| AC1 | `success` in `tests/unit/ingest/test_ingest_use_case.py`; `e2e_success` in `tests/integration/ingest/test_ingest_end_to_end.py` | PASS |
-| AC2 | `repeat` (unit); `e2e_repeat` (integration) | PASS |
-| AC3 | `last_page`, `last_page_p3` (unit); `e2e_last_page` (integration) | PASS |
-| AC4 | `failure_with_response` (unit); `e2e_failure` (integration) | PASS |
-| AC5 | `failure_without_response` (unit) | PASS |
-| AC6 | `storage`, `database_refusal`, `read_back_record_failure`, `refusal_not_retried` (unit); `exit_code_refusal_not_retried` in `tests/unit/ingest/test_ingest_command.py` | PASS (F-23 compound case untested by design: no rule) |
-| AC7 | `interrupt`, `interrupt_during_record`, `cleanup_read_back`, `interrupt_after_finish`, `cleanup_database_error`, `reconnect_*`, `final_close_*`, `unexpected_cleanup_interrupt`, `recovery_double_fault`, `refusal_not_retried` (unit); `exit_code_*` (command) | PASS (F-25 regression gaps) |
-| AC8 | `connection_loss`, `connection_loss_final_finish`, `final_finish_read_run`, `reconnect_*`, `start_run_unconfirmed`, `start_run_second_loss` (unit and command); `tests/integration/ingest/test_ingest_connection_loss.py` | PASS |
-| AC9 | `resume`, `pre_run_database_error` (unit); `e2e_resume` (integration) | PASS |
-| AC10 | `reconcile`, `reconcile_os_error` (unit); `e2e_reconcile` (integration) | PASS |
-| AC11 | `closed_run`, `interrupt_after_finish` (unit) | PASS |
-| AC12 | `execution_id` (`test_ingestion_catalogue.py`), `identity` (unit) | PASS |
-| AC13 | `scope`, `catalogue`, `assert_follows_catalogue` | PASS |
-| AC14 | `usage`, `environment`, `source_configuration`, `order_of_invocation` (command); `cli_invalid_*` (integration) | PASS (F-26: no step 1 interrupt test) |
-| AC15 | `output`, `logger`, `output_escaping_exception`, `output_progress`, `output_database_error`, `single_result_line`, `result_line_stream_fault`, `handler_stream_fault`, `exit_code_final_close_*` (command); `progress_line`, `generic_fallback`, `final_close_*` (unit) | PASS (F-24, F-25) |
-| AC16 | `migrations` (integration); `tests/unit/test_persistence_error_hierarchy.py`; `tests/integration/test_postgres_migration_lock_error.py`; the PS-4 edit | PASS |
-| AC17 | `no_retry` (unit) | PASS |
-| AC18 | `tests/unit/ingest/test_ingest_layers.py`; `mypy` | PASS |
-| AC19 | the guards and proof tests of both `conftest.py` files; the session check of `data/raw/` | PASS |
-| AC20 | the 1307 existing tests, unedited except the PS-4 assertion | PASS |
-| AC21 | none (inspection) | PASS (inspection) |
-| AC22 | `tests/unit/test_local_disk_raw_evidence_store_listing.py` | PASS |
-| AC23 | `tests/integration/ingest/test_postgres_runs_and_exclusion.py` | PASS |
-| AC24 | `chain`, `chain_last_page`, `chain_unreadable_record` (unit); `chain_unreadable_record_message` (command); `e2e_chain_last_page` (integration) | PASS |
-| AC25 | `root` (integration); `paths`, `environment` (command) | PASS |
+| AC1 to AC5 | as in round 5 (`tests/unit/ingest/test_ingest_use_case.py`, `tests/integration/ingest/test_ingest_end_to_end.py`) | PASS |
+| AC6 | `storage`, `database_refusal`, `read_back_record_failure`, `refusal_not_retried`, `refusal_then_interrupt` (unit); `exit_code_refusal_not_retried`, `exit_code_refusal_then_interrupt` (`tests/unit/ingest/test_ingest_command.py`) | PASS |
+| AC7 | as in round 5, plus `system_exit_window`, `system_exit_final_close`, `window_line_fault`, `close_while_propagating`, `interrupted_outcome_close`, `refusal_then_interrupt` (unit) and `exit_code_system_exit_final_close`, `system_exit_command_end` (command) | PASS (F-28 regression gaps) |
+| AC8 | as in round 5, plus `system_exit_window`, `p2_read_run_loss_line` | PASS |
+| AC9 to AC13 | as in round 5 | PASS |
+| AC14 | `usage`, `environment`, `source_configuration`, `order_of_invocation`, `main_parse_interrupt`, `main_wiring_interrupt`, `main_error_stream_fault`, `main_help_stream_fault` (`tests/unit/ingest/test_ingest_command.py`); `tests/unit/test_cli.py`; integration `cli_` | PASS in-process; no real-process test (F-27) |
+| AC15 | as in round 5, plus the F-24 and F-26 rows | PASS in-process; F-27 untestable at the approved seam; F-28 |
+| AC16 to AC25 | as in round 5 | PASS (AC21 is inspection: FAIL, F-27) |
 
-Coverage from the broader command: TOTAL 98 % locally (2616 passed) and in CI.
-`ingest_use_case.py` is at 99 % (655 statements, 8 missed, all discussed in
-answer 2); `ingest_command.py` and `cli.py` are at 100 %.
+Coverage: TOTAL 98 % locally (2775 passed, Windows) and in CI (2775 passed, Linux).
+`ingest_use_case.py` misses 388-389 and 598 (accepted); `ingest_command.py` is at 100 %;
+`cli.py` misses 90 (F-28).
 
 ### Tier Results
 
 | Tier | Tests found | ACs verified | Setup matches § Validation | Ran | Status | Finding |
 |---|---|---|---|---|---|---|
-| unit | `tests/unit/ingest/` (1189 tests, +211 this round), `test_local_disk_raw_evidence_store_listing.py` (25), `test_persistence_error_hierarchy.py` (3) | AC1 to AC18, AC22, AC24, AC25, including the eight Revision 9 and Revision 10 rows and their 19 tokens | Yes: the new seams (`CloseFault` and `close_faults`, `RaisingReporter` with a count, `RaisingStream` in `test_ingest_command.py`, the refusal wrapper on every call) are the ones the seams table names; no dev dependency, config or script was added | rerun: every focused row passed (58 unit commands) | PASS | F-25 (recommendation) |
-| integration | `tests/integration/ingest/` (84), `test_postgres_migration_lock_error.py`, the PS-4 edit | AC1 to AC4, AC8 to AC10, AC16, AC19, AC23 to AC25 | Yes (PT-13 throwaway databases, host-only `getaddrinfo` guard, `data/raw/` session check); unchanged since round 4 | rerun with `--env-file .env`, all passed; CI reused | PASS | none |
+| unit | `tests/unit/ingest/` (1348 tests, +159 this round), `test_local_disk_raw_evidence_store_listing.py` (25), `test_persistence_error_hierarchy.py` (3), `tests/unit/test_cli.py` (2, unchanged) | AC1 to AC18, AC22, AC24, AC25, including the four Revision 11 rows and their fourteen tokens | Yes. No dev dependency, config or script was added. The new tests use the seams the plan names (`Fault`, close fault, raising reporter, `RaisingStream`, the source double, `monkeypatch` on `cli.request_from_arguments`, `cli.version`, `cli.default_wiring`, `cli.run_ingest_command`, `sys.stdout` and `sys.stderr`), plus a local `Raised` recorder. `io.StringIO` through `monkeypatch` stands in for `capsys` (a compliant alternative). Two names break the token rule (F-29) | rerun: every focused row passed (36 unit commands, plus the 13 AC tokens of the AC table) | PASS | F-28, F-29 |
+| integration | `tests/integration/ingest/` (84), `test_postgres_migration_lock_error.py`, the PS-4 edit | AC1 to AC4, AC8 to AC10, AC16, AC19, AC23 to AC25 | Yes; unchanged since round 5 | rerun with `--env-file .env` (10 focused commands, all passed); CI reused | PASS | none |
 | static | `uv run mypy .` | AC18 | Yes | rerun: 52 files clean | PASS | none |
 | command | ruff, format, mypy, doctor, `--version`, git checks | AC20 | Yes | rerun: all clean | PASS | none |
-| manual | documentation inspection | AC21 | n/a | rerun (inspection) | PASS | none |
+| manual | documentation inspection | AC21 | n/a | rerun (inspection) | FAIL | F-27 |
 
-No test exists at a tier that § Validation does not name, and no setup was
-added that the plan does not name.
+No test exists at a tier that § Validation does not name. No real-process test of the
+CLI exists, and § Validation names none; closing F-27 with option (b) needs one, with
+the human's approval.
 
-## Mutants (scratch copy, full `tests/unit/ingest`, 1189 tests)
+## Mutants (scratch copy, `tests/unit/ingest` and `tests/unit/test_cli.py`, 1350 tests)
 
-Each mutant replaced exact text in the scratch copy. The copy was restored and
-compared byte for byte with the pristine archive after each one (47 of 47
-identical).
+Each mutant replaced exact text in the scratch copy. After every mutant the copy was
+restored and compared byte for byte with the pristine archive: 57 of 57 identical.
 
 | Id | Mutant | Result |
 |---|---|---|
-| M1 | `drop_current` keeps the lost repository current | killed, 107 failed |
-| M2 | `safe_repeat` drops the record after the loss line | killed, 4 |
-| M3 | `_close_failed` without `drop_current` | killed, 8 |
-| M4 | `append_event` drops after the loss line | killed, 4 |
-| M5 | `_prevailing` ranks `KeyboardInterrupt` above `SystemExit` | **survived** (F-24) |
-| M6 | `_prevailing` ignores `KeyboardInterrupt` | killed, 6 |
-| M7 | no pending clear on a refused record (P step 4) | killed, 19 |
-| M8 | no pending clear on a refused record (read-back) | killed, 8 |
-| M9 | `_report` never sets `result_written` | killed, 4 |
-| M10 | `_print_running` ignores `result_written` | killed, 4 |
-| M11 | `_settled_code` keeps the code on a write error | killed, 10 |
-| M12 | `_settled_code` does not keep 130 | killed, 2 |
-| M13 | the final close rewraps an `INTERRUPTED` outcome | survived (equivalent: wording free) |
-| M14 | the final close swallows a `SystemExit` after the outcome | **survived** (F-24) |
-| M15 | the final close swallows its interrupt while another exception propagates | **survived** (F-25) |
-| M16 | a window line failure raises the line's error instead of `_prevailing` | **survived** (F-25) |
-| M17 | `close` suppresses `MemoryError` in the window | killed, 21 |
-| M18 | `_reconnect` does not close the second repository | killed, 8 |
-| M19 | the second repository is current before its exclusion | killed, 40 |
-| M20 | the handlers fall back to the dropped repository | killed, 107 |
-| M22 | `_attempt` lets `KeyboardInterrupt` escape | killed, 8 |
-| M23 | the final close does not suppress `MemoryError` | killed, 7 |
-| M24 | the result line is attempted twice | killed, 141 |
-| M26 | a third connection is allowed | killed, 1 |
-| M28 | the P-2 `read_run` without `on_loss` | **survived** (F-25) |
-| M30 | `_reporting_failure` runs `on_loss` after the line | killed, 4 |
-| M31 | the handlers skip their stderr line | killed, 24 |
-| M32 | `_report` writes stdout first | survived (equivalent: order free) |
-| E-F01 to E-F22 | the round 1 to 4 fixes reverted one at a time (F-01, F-02, F-03, F-04, F-05, F-06, F-07, F-10, F-11, F-13, F-14, F-15, F-16 a, F-19, F-20, F-22) | killed, 4, 4, 16, 24, 9, 10, 8, 2, 9, 49, 18, 10, 2, 10, 23, 9 |
-| E-N1, E-N2, E-P2 | the `start_run` window keeps the run; K swallows a Ctrl+C; a refused P-2 repeat answered with `storage-failed` | killed, 35, 17, 4 |
+| N1 | `_print_message` swallows `OSError` again | killed, 13 |
+| N2 | `_CliParser` without the override | killed, 13 |
+| N3 | main parser plain `argparse.ArgumentParser` | killed, 8 |
+| N4 | `_IngestParser` does not extend `_CliParser` | killed, 5 |
+| N5 | `main` catches `BaseException` (a `SystemExit` caught) | killed, 139 |
+| N6 | `main` re-creates the `SystemExit` (identity lost) | killed, 15 |
+| N7 | handler line written twice | killed, 42 |
+| N8 | Ctrl+C handler exits 0 | killed, 15 |
+| N9 | `Exception` handler exits 2 | killed, 30 |
+| N10 | no `KeyboardInterrupt` branch on the handler line (`cli.py:89-90`) | **survived** (F-28) |
+| N11 | the handler line swallows a `SystemExit` | **survived** (F-28) |
+| N12 | Ctrl+C on the handler line keeps code 1 (`cli.py:90`) | **survived** (F-28) |
+| N13 | handler line on stdout | killed, 45 |
+| N14 | handler line names more than the class | killed, 12 |
+| N15 | `_print_message` falls back to `sys.stdout` | survived (equivalent: no caller passes a falsy file) |
+| N16 | `build_parser()` outside the handler | killed, 2 |
+| N17 | `main` returns instead of raising the command's code | killed, 169 |
+| N20 | step 7 ignores the `exiting` flag | killed, 1 |
+| N21 | step 7 never sets `exiting` | killed, 1 |
+| N22 | step 7 swallows every close exception | killed, 9 |
+| N23 | `_attempt` catches `SystemExit` | killed, 4 |
+| N24 | `_print_running` does not set `result_written` | survived (equivalent: one handler per invocation) |
+| N25 | `_settled_code` keeps the code on a write error (M11) | killed, 10 |
+| N26 | `_report` does not set `result_written` (M9) | killed, 4 |
+| N27 | a Ctrl+C on a write does not give 130 | killed, 9 |
+| N30 | `_prevailing` ranks Ctrl+C above `SystemExit` (M5) | killed, 8 |
+| N31 | `_prevailing`: the later of two of a kind wins | **survived** (F-28; X29 shows the code is right) |
+| N32 | the close's Ctrl+C replaces a propagating `SystemExit` | killed, 6 |
+| N33 | the final close swallows its Ctrl+C while another propagates (M15) | killed, 5 |
+| N34 | the final close after an outcome swallows a `SystemExit` (M14) | killed, 6 |
+| N35 | `_close_remaining`: the last raised wins | survived (equivalent: at most one repository is left for the final close) |
+| N36 | a window line error replaces `_prevailing` (M16) | killed, 8 |
+| N37 | the P-2 `read_run` without `on_loss` (M28) | killed, 4 |
+| N38 | `_recovery_step` writes a line for a `SystemExit` | **survived** (F-28; X30) |
+| N39 | K turns a `SystemExit` into an outcome | **survived** (F-28; X31) |
+| N40 | `_ingest_through` handles `SystemExit` like a Ctrl+C | killed, 22 |
+| N41 | `drop_current` keeps the repository current (M1) | killed, 124 |
+| N42 | no pending clear on a refused read-back record | killed, 8 |
+| N43 | no pending clear on a refused record (M7) | killed, 19 |
+| N44 | `_close_failed` without `drop_current` (M3) | killed, 8 |
+| N45 | `run_ingest` passes a wrong propagating exception | killed, 6 |
+| N46 | `drop_current` without its `None` guard | survived (equivalent: never called with no current repository on a reachable path) |
+| E-F01 to E-F22, E-N2, E-D2 | the round 1 to 4 fixes reverted, and D-2 reversed (F-01, F-02, F-03, F-04, F-05, F-06, F-07, F-10, F-13, F-16 a, F-18, F-20, F-22, N-2, D-2) | killed, 4, 4, 16, 24, 9, 3, 8, 2, 57, 1, 48, 23, 10, 25, 28 |
 
-40 killed, 7 survived (M13 and M32 equivalent; M5, M14, M15, M16 and M28 are
-F-24 and F-25).
+47 killed, 10 survived. Four survivors are equivalent (N15, N24, N35, N46). Six are
+regression gaps with correct code (N10, N11, N12, N31, N38, N39: F-28).
 
-## Commands run (2026-10-20 and 2026-10-21, repository root, `80c8aab`)
+## Commands run (2026-10-22, repository root, `c20827d`)
 
 | Command | Result | Label |
 |---|---|---|
+| `docker compose ps` | postgres `Up (healthy)` | rerun |
 | `uv sync --locked` | ok, 25 packages | rerun |
-| `uv run pytest -q` (no `--env-file`) | 2350 passed, 266 skipped | rerun |
-| `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing -q` | 2616 passed, 0 skipped, TOTAL 98 %; `ingest_use_case.py` missing 212-213, 388-389, 598, 1298, 1313, 1315 | rerun |
-| `uv run ruff check .` | All checks passed | rerun |
-| `uv run ruff format --check .` | 120 files already formatted | rerun |
-| `uv run mypy .` | Success, 52 source files | rerun |
+| `uv run pytest -q` (no `--env-file`) | 2509 passed, 266 skipped | rerun |
+| `uv run --env-file .env pytest --cov=ec_procurement_quality --cov-report=term-missing -q` | 2775 passed, 0 skipped, TOTAL 98 %; `ingest_use_case.py` missing 388-389, 598; `cli.py` missing 90 | rerun |
+| `uv run ruff check .`; `uv run ruff format --check .`; `uv run mypy .` | All checks passed; 120 files already formatted; Success, 52 source files | rerun |
 | `uv run node .sdd/doctor/run-doctor.mjs` | 31 ok, 0 skipped, 0 warned, 0 failed | rerun |
 | `uv run ec-procurement-quality --version` | `ec-procurement-quality 0.1.0` | rerun |
-| Every focused row of § Validation (72 commands: 58 unit, 13 integration and the mixed AC19 row; counts in § AC results and § Resolution) | all passed | rerun |
-| `uv run --env-file .env pytest tests/unit/ingest tests/integration/ingest -q` | 1273 passed | rerun |
+| Every `pytest` command of plan § Validation (49 focused commands; the coverage and full-suite ones above) | all passed (counts in § AC results) | rerun |
+| The 13 unit and 5 integration AC tokens of § AC results | all passed | rerun |
+| `test_storage_a_regular_file_at_observations_stops_the_run` alone, 5 times | 5 passed | rerun |
 | AC18 grep of `application/`; `interfaces` imports | no match; no `httpx` or `psycopg` | rerun |
 | `git diff main --stat -- pyproject.toml uv.lock`; `git diff 2e6edcd -- pyproject.toml`; `git diff 2e6edcd --stat -- uv.lock` | empty; the two F-1 keys and three comment lines; empty | rerun |
-| AC20 `git diff --stat` list, against `main` and against `2e6edcd` | empty, empty | rerun |
+| `git diff main --stat` for `tests/unit/test_cli.py`, `specs/current`, `docs/adr`, `compose.yaml`, `.env.example`, `migrations`, `docs/glossary.md`, `docs/architecture.md`, `AGENTS.md`, `CHANGELOG.md`, `domain`, `infrastructure` | empty | rerun |
 | `git diff 2e6edcd --name-status -- tests` (modified pre-F4 files) | `M tests/integration/test_postgres_migrations.py` only, `3 0` | rerun |
-| `git diff main -U0 -- tests` (removed lines) | 2: an import line widened, one docstring line | rerun |
-| `git diff main --stat -- compose.yaml .env.example docs/glossary.md docs/adr specs/current src/ec_procurement_quality/infrastructure src/ec_procurement_quality/domain` | empty | rerun |
-| `git ls-files .env`; `git diff main --check`; `git diff --check` | empty; clean; clean | rerun |
-| Leftover `ecpq_test_` databases (count only, scratch script through `uv run --env-file .env`) | 0 | rerun |
-| Files under the real `data/` | 0 before and after the suites | rerun |
-| `gh run view 39544303927` (`Tests`, head `80c8aab`) | success; 2616 passed, TOTAL 98 %, the same 8 missed lines (Linux) | reused |
-| `gh run view 39544303846` (`harny feedback`, head `80c8aab`) | success; `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` | reused |
-| `gh pr view 26` | open, head `80c8aab`, `mergeStateStatus` CLEAN, auto-merge off | rerun |
-| Experiments X1 to X25 (scratch tests over the repository's doubles and `Rig`) | quoted in § Findings and § Answers | experiment |
-| 47 mutants (M1 to M32, E-F01 to E-P2) | 40 killed, 7 survived | experiment |
+| `git diff main -U0 -- tests` removed lines; per-commit file lists of `main..HEAD` | 2 (as in round 5); `22cd04c` tests only (+1585/-0), `c20827d` src only | rerun |
+| `git ls-files .env`; `git diff main --check`; `git diff --check`; `git status --short` | empty; clean; clean; clean | rerun |
+| Leftover `ecpq_test_` databases (count only) | 0 | rerun |
+| Files under the real `data/` | 0 | rerun |
+| `gh pr checks 26`; `gh pr view 26` | `feedback` pass, `tests` pass; open, head `c20827d`, `CLEAN`, auto-merge off | rerun |
+| `gh run view 39782097174` (`Tests`, head `c20827d`) | success; 2775 passed, TOTAL 98 %, `ingest_use_case.py` 388-389, 598, `cli.py` 90 (Linux) | reused |
+| `gh run view 39782097285` (`harny feedback`, head `c20827d`) | success; `harny-feedback: 2 of 2 command(s) ran, 0 skipped.` | reused |
+| X26 (handler line, through `main`), X27 (real process: `main` paths and closed pipes), X28 (real process: confirmed result, closed stdout pipe), X29 to X31 (repository doubles) | quoted in § Findings and § Answers | experiment |
+| 57 mutants (N1 to N46, E-F01 to E-D2) | 47 killed, 10 survived | experiment |
 
 ## Conventions and feedback
 
-- harny-standards, checked against `AGENTS.md` (the project's conventions
-  document):
-  - the layer boundaries hold;
+- harny-standards, checked against `AGENTS.md` (the project's conventions document):
+  - layer boundaries hold;
   - raw responses are never overwritten;
   - no SERCOP contract is invented, and only synthetic `.invalid` data is used;
-  - no dependency, infrastructure, framework or service was added;
-  - no secrets are in source, tests or docs (the doctor's gitleaks and CI
-    secret-scan checks pass; `docs/learning/day-20-prompt.md`, new on this
-    branch, holds no secret or data);
-  - verification was run and reported (`tasks.md` § Working state, round 5
-    green evidence).
+  - no dependency, infrastructure, framework or service was added; the `argparse` subclass is the standard library;
+  - no secret is in source, tests or docs (doctor gitleaks and the CI secret scan pass);
+  - verification was run and reported (`tasks.md`, round 5 red and green evidence).
 
   No violation was found. The stale record of `tasks.md` is F-12.
-- harny-feedback: `.github/workflows/harny-feedback.yml` exists and its run at
-  `80c8aab` is green with 2 of 2 commands run (not 0). The per-turn hooks are
-  configured in `.claude/settings.json` (PostToolUse accumulate, Stop,
-  SubagentStop), and `.sdd/feedback/.turns/` is live for this session. Whether
-  they fired and were heeded during the executor's turns is `unavailable`: turn
-  files are not kept after a turn. Lint and type-check were not re-run as
-  feedback evidence; they were run only as the AC20 commands.
+- harny-feedback:
+  - `.github/workflows/harny-feedback.yml` exists, and its run at `c20827d` is green with 2 of 2 commands run (not 0).
+  - The per-turn hooks are configured in `.claude/settings.json` (PostToolUse, Stop, SubagentStop), and `.sdd/feedback/.turns/` is live.
+  - Whether they fired and were heeded during the executor's turns is `unavailable`: turn files are not kept.
+  - Lint and type-check were run only as the AC20 commands, not as feedback evidence.
 
 ## Reservations carried forward
 
-- Persistence U1: the real commit-in-flight case is still untested against
-  PostgreSQL (CHANGELOG Known limitations).
-- Persistence N5: the reconciliation reads run in separate snapshots; safe under
-  the exclusion; no path writes without it.
-- Raw-evidence N2: handled for `store`, the read-back and the cleanup.
-- Source-access R-6, R-7 and R-11 and raw-evidence N3: hold.
-- The two F-20 limitations accepted on 2026-10-18 (lines 388-389 and 598).
-- Source-access U1: open until the human's live run. No document claims that a
-  live run happened.
-- Proposed for the human at gate 3: F-23, F-24, F-25, F-26 and F-12, all LOW.
+- Persistence U1: the real commit-in-flight case is still untested against PostgreSQL.
+- Persistence N5: the reconciliation reads run in separate snapshots; safe under the
+  exclusion.
+- Raw-evidence N2, source-access R-6, R-7, R-11 and raw-evidence N3: hold (F-27 adds a
+  Python exit-time report outside F4's code).
+- The two F-20 limitations accepted on 2026-10-18 (388-389, 598).
+- Source-access U1: open until the human's live run. No document claims that a live run
+  happened.
 
 ## What could not be verified
 
-- Behavior against the real SERCOP source and the real `data/raw/`: out of
-  scope, and it must not be run.
-- A real Ctrl+C delivered to a live `psycopg` call, and a Ctrl+C landing between
-  two bytecodes (for example between a `PersistenceConnectionError` and the first
-  action of its handler, or between `run_ingest` returning and `_report`).
-  Faults were injected at the same call boundaries with the repository's
-  doubles; the bytecode gaps are noted in the checklist.
-- `pg_terminate_backend` of a real stale session that holds the exclusion (the
-  README procedure was not exercised).
+- Behavior against the real SERCOP source, the real `data/raw/` and a real `ingest`
+  run: out of scope, and it must not be run. F-27 was shown with `run_ingest` replaced
+  in a real process.
+- F-27 on Linux: the CPython exit-time flush path is platform-independent, but no Linux
+  process was run (`unavailable`). On Linux the report is expected to be
+  `BrokenPipeError: [Errno 32] Broken pipe`.
+- A real Ctrl+C (a console signal) delivered at the bytecode gaps listed in the
+  checklist; faults were injected at the call boundaries.
+- `pg_terminate_backend` of a real stale session that holds the exclusion.
 - That the per-turn feedback hook fired during the executor's rework.
-- The environment of the review that first saw the `FileNotFoundError`; the
-  shared `--basetemp` reproduction fits it, but the original command was not
-  available.
 
 ## Audit log
 
@@ -526,6 +477,7 @@ F-24 and F-25).
 |---|---|---|---|
 | 1 | 2026-10-18 | REJECTED | At `7603379`. F-01 and F-02 (CRITICAL) and F-03 (HIGH) block; F-04 to F-07 MEDIUM, F-08 to F-12 LOW |
 | 2 | 2026-10-18 | REJECTED | At `91bd69d`. F-01 to F-11 resolved. New: F-13 (MEDIUM, blocking), F-14 (MEDIUM, blocking until decided), F-15 to F-17 LOW |
-| 3 | 2026-10-18 | REJECTED | At `287946f`. F-13 to F-17 resolved. New: F-18 (HIGH, blocking: K could write without the exclusion after a lost connection); F-19 and F-20 LOW; F-12 carried |
-| 4 | 2026-10-18 | REJECTED | At `10e126d`. F-18 and F-19 resolved for the two named calls; F-01 to F-17 still resolved. New: F-21 (MEDIUM, blocking: an interrupt elsewhere in the recovery window still entered K on the lost repository); F-22 LOW; F-12 and F-20 LOW, partly open |
-| 5 | 2026-10-21 | APPROVED WITH RESERVATIONS | At `80c8aab` (PR #26). F-20, F-21 and F-22 resolved; F-01 to F-19 still resolved; N-1 to N-11 hold; 2616 tests pass locally and in CI; 40 of 47 mutants killed. New, all LOW: F-23 (a refused write followed by an interrupt in its line; spec decision), F-24 (`SystemExit` against `KeyboardInterrupt`; spec decision), F-25 (untested required paths; recommendation), F-26 (step 1 interrupt or stream error escapes the command). F-12 LOW carried. The `FileNotFoundError` of the AC6 (a) test is environment-dependent (a second session sharing `--basetemp`), not a defect. Next: the human at gate 3 |
+| 3 | 2026-10-18 | REJECTED | At `287946f`. F-13 to F-17 resolved. New: F-18 (HIGH, blocking); F-19 and F-20 LOW; F-12 carried |
+| 4 | 2026-10-18 | REJECTED | At `10e126d`. F-18 and F-19 resolved for the two named calls. New: F-21 (MEDIUM, blocking); F-22 LOW; F-12 and F-20 LOW, partly open |
+| 5 | 2026-10-21 | APPROVED WITH RESERVATIONS | At `80c8aab` (PR #26). F-20 to F-22 resolved; N-1 to N-11 hold; 2616 tests pass; 40 of 47 mutants killed. New, all LOW: F-23, F-24, F-25, F-26; F-12 carried |
+| 6 | 2026-10-22 | REJECTED | At `c20827d` (PR #26; CI green: 2775 passed, feedback 2 of 2). F-23 to F-26 resolved (D-1 to D-5 implemented and pinned); F-01 to F-22 still resolved; 47 of 57 mutants killed. New: F-27 (MEDIUM, blocking: a real closed stdout pipe gives Python's exit 120 and its exit-time `OSError` report, not exit 1 as AC15, AC14 and the README say; present since `80c8aab`), F-28 (LOW, untested D-1 and D-3 paths), F-29 (LOW, test names against the token rule); F-12 LOW carried. The `FileNotFoundError` did not recur. Next: the architect and the human decide F-27's closure |
