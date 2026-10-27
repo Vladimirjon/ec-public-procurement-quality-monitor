@@ -1,7 +1,8 @@
 """Command-line entry point for ``ec-procurement-quality``.
 
 Only the standard library is used by this module. The commands are
-``--version`` and ``ingest``.
+``--version`` and ``ingest``. Every write goes through ``output_streams``, and
+``main`` flushes both streams once more as its last step.
 """
 
 import argparse
@@ -10,7 +11,7 @@ import sys
 from collections.abc import Iterable
 from contextlib import suppress
 from importlib.metadata import version
-from typing import Any, NoReturn
+from typing import Any
 
 from ec_procurement_quality.infrastructure.sercop_source import DEFAULT_BASE_URL
 from ec_procurement_quality.interfaces.ingest_command import (
@@ -19,6 +20,11 @@ from ec_procurement_quality.interfaces.ingest_command import (
     default_wiring,
     request_from_arguments,
     run_ingest_command,
+)
+from ec_procurement_quality.interfaces.output_streams import (
+    flush_for_exit,
+    write_line,
+    write_text,
 )
 
 PROGRAM_NAME = "ec-procurement-quality"
@@ -30,13 +36,14 @@ class _CliParser(argparse.ArgumentParser):
 
     ``argparse`` suppresses an ``OSError`` from its own writes (``--version``,
     ``--help``, the usage and the error message). Here it reaches the handler of
-    ``main``. Only the writing hook changes; ``argparse`` itself is not patched.
+    ``main``, and the message is flushed in the same attempt. Only the writing hook
+    changes; ``argparse`` itself is not patched.
     """
 
     def _print_message(self, message: str, file: Any = None) -> None:
         if message:
             with suppress(AttributeError):
-                (file or sys.stderr).write(message)
+                write_text(file or sys.stderr, message)
 
 
 class _IngestParser(_CliParser):
@@ -77,18 +84,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _exit_after_writing(text: str, code: int) -> NoReturn:
-    """Make one attempt to write ``text`` on stderr, then exit with ``code``.
+def _code_after_writing(text: str, code: int) -> int:
+    """Make one attempt to write ``text`` on stderr; return the code to exit with.
 
     A ``KeyboardInterrupt`` while it is written makes the code 130 and a
     ``SystemExit`` propagates in its place. Any other exception is ignored.
     """
     with suppress(Exception):
         try:
-            print(text, file=sys.stderr)
+            write_line(sys.stderr, text)
         except KeyboardInterrupt:
             code = EXIT_INTERRUPTED
-    raise SystemExit(code)
+    return code
+
+
+def _code_of(argv: list[str] | None) -> int:
+    """Run ``argv`` and return the code ``main`` itself exits with.
+
+    A ``SystemExit`` raised inside (``argparse``'s, or the one of a defect) is never
+    caught here.
+    """
+    try:
+        parser = build_parser()
+        arguments = parser.parse_args(argv)
+        if arguments.command == "ingest":
+            return run_ingest_command(
+                arguments,
+                environ=os.environ,
+                wiring=default_wiring(),
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+        parser.print_usage(sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return _code_after_writing("interrupted", EXIT_INTERRUPTED)
+    except Exception as error:  # noqa: BLE001 -- only the class name is reported.
+        return _code_after_writing(
+            f"unexpected error: {type(error).__name__}", EXIT_FAILED
+        )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -98,22 +132,18 @@ def main(argv: list[str] | None = None) -> None:
     ``SystemExit`` (code 0, 2 and the command's exit code). Anything else that is
     raised ends the same way, naming only its class on stderr: 130 for a
     ``KeyboardInterrupt``, 1 otherwise. A ``SystemExit`` is never converted.
+
+    The last step, by any path, flushes stdout and then stderr (no text is written):
+    a failure there changes nothing, a ``KeyboardInterrupt`` makes the code 130 when
+    ``main`` exits with its own code, and a ``SystemExit`` there replaces that code.
+    A ``SystemExit`` that is already propagating is the first one and always wins.
     """
     try:
-        parser = build_parser()
-        arguments = parser.parse_args(argv)
-        if arguments.command == "ingest":
-            code = run_ingest_command(
-                arguments,
-                environ=os.environ,
-                wiring=default_wiring(),
-                stdout=sys.stdout,
-                stderr=sys.stderr,
-            )
-            raise SystemExit(code)
-        parser.print_usage(sys.stderr)
-        raise SystemExit(2)
-    except KeyboardInterrupt:
-        _exit_after_writing("interrupted", EXIT_INTERRUPTED)
-    except Exception as error:  # noqa: BLE001 -- only the class name is reported.
-        _exit_after_writing(f"unexpected error: {type(error).__name__}", EXIT_FAILED)
+        code = _code_of(argv)
+    except SystemExit:
+        flush_for_exit(sys.stdout, sys.stderr)
+        raise
+    raised = flush_for_exit(sys.stdout, sys.stderr)
+    if isinstance(raised, SystemExit):
+        raise raised
+    raise SystemExit(EXIT_INTERRUPTED if raised is not None else code)

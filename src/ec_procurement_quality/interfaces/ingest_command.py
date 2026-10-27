@@ -56,6 +56,7 @@ from ec_procurement_quality.infrastructure.system_clock import (
     RandomExecutionIdSource,
     SystemClock,
 )
+from ec_procurement_quality.interfaces.output_streams import write_line
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -200,10 +201,10 @@ class _StderrReporter:
 
     def run_started(self, execution_id: str) -> None:
         self.execution_id = execution_id
-        print(f"run {execution_id} started", file=self._stderr)
+        write_line(self._stderr, f"run {execution_id} started")
 
     def progress(self, message: str) -> None:
-        print(message, file=self._stderr)
+        write_line(self._stderr, message)
 
 
 # `interfaces` may not import `httpx`, and `SercopSource` lets the library's own
@@ -259,10 +260,10 @@ def _report(
     the run confirmed: a failure of either write changes only the exit code.
     """
     reporter.result_written = True
-    failures = [_attempt(lambda: print(outcome.message, file=stderr))]
+    failures = [_attempt(lambda: write_line(stderr, outcome.message))]
     if outcome.execution_id is not None and outcome.run_status is not None:
         line = f"{outcome.execution_id} {outcome.run_status.value}"
-        failures.append(_attempt(lambda: print(line, file=stdout)))
+        failures.append(_attempt(lambda: write_line(stdout, line)))
     return _settled_code(_EXIT_CODES[outcome.end], failures)
 
 
@@ -273,7 +274,7 @@ def _print_running(reporter: _StderrReporter, stdout: TextIO) -> None:
     """
     if reporter.execution_id is not None and not reporter.result_written:
         reporter.result_written = True
-        print(f"{reporter.execution_id} running", file=stdout)
+        write_line(stdout, f"{reporter.execution_id} running")
 
 
 def _end_after_escape(
@@ -282,7 +283,7 @@ def _end_after_escape(
     """The handlers of an exception that escaped `run_ingest`: the line, then `text`."""
     failures = [
         _attempt(lambda: _print_running(reporter, stdout)),
-        _attempt(lambda: print(text, file=stderr)),
+        _attempt(lambda: write_line(stderr, text)),
     ]
     return _settled_code(code, failures)
 
@@ -297,16 +298,16 @@ def _migrate(
     try:
         applied = wiring.migrate(settings, directory)
     except MigrationLockError as error:
-        print(str(error), file=stderr)
+        write_line(stderr, str(error))
         return EXIT_FAILED
     except MigrationError as error:
-        print(str(error), file=stderr)
+        write_line(stderr, str(error))
         return EXIT_USAGE
     except PersistenceError as error:
-        print(str(error), file=stderr)
+        write_line(stderr, str(error))
         return EXIT_FAILED
     for name in applied:
-        print(f"applied migration {name}", file=stderr)
+        write_line(stderr, f"applied migration {name}")
     return None
 
 
@@ -326,7 +327,7 @@ def _invoke(
     except MemoryError:
         raise
     except Exception as error:  # noqa: BLE001 -- see `_SOURCE_CONFIGURATION_MESSAGE`.
-        print(f"{_SOURCE_CONFIGURATION_MESSAGE}: {type(error).__name__}", file=stderr)
+        write_line(stderr, f"{_SOURCE_CONFIGURATION_MESSAGE}: {type(error).__name__}")
         return EXIT_USAGE
     exiting = False
     try:
@@ -382,7 +383,7 @@ def run_ingest_command(
         request = request_from_arguments(arguments, base_url=wiring.base_url)
         settings = _settings_from(environ)
     except ValueError as error:
-        print(f"error: {error}", file=stderr)
+        write_line(stderr, f"error: {error}")
         return EXIT_USAGE
     try:
         # Resolved once; nothing later reads the current directory.

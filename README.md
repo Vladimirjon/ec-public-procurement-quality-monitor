@@ -293,6 +293,11 @@ Output and exit codes:
   is 130 if Ctrl+C landed while writing or was already the code, and 1 for any
   other write failure, so a run can stay `succeeded` in PostgreSQL while the
   command exits 1. Nothing is written to PostgreSQL because of it.
+  Normally a closed or failing output stream ends with exit code 1 (or 130), never
+  with Python's own 120 or its `Exception ignored` report. In the one residual
+  case, where redirecting the failed stream to the null device itself fails,
+  Python's finalization may still print that report and replace the exit code by
+  120; this changes nothing in PostgreSQL, and the output is not attempted again.
 - stderr carries the progress and the errors, each as a fixed message that never
   includes a URL, a header, a body or a setting. It names each database
   operation that was refused or lost, with the run concerned (and the sequence
