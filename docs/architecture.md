@@ -110,8 +110,8 @@ reliability, or operational requirements demonstrate a need. See
   and the ingestion defines a closed catalogue of event types with the detail
   each one carries, and the exact content of a run's scope (source, base URL,
   buyer, year and page range). They are specified in the ingest command's intent
-  (question Q6 and criterion AC13) and execution plan (§ Audit details). The
-  quality-rule contracts stay open.)
+  (question Q6 and criterion AC13) and execution plan (§ Audit details), kept
+  in `specs/archived/ingest-command/`. The quality-rule contracts stay open.)
 - Which raw-storage compression and retention policies are supported by
   observed usage and legal or operational requirements? (The paths and
   metadata fields of the local store are answered by

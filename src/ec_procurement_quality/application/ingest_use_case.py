@@ -123,18 +123,6 @@ class _CleanupStopped(Exception):
     """A database operation of the interruption cleanup failed; it was reported."""
 
 
-class _RecoveryEnded(Exception):
-    """Something other than a database error ended the opening of the second connection.
-
-    It carries what was raised (a `KeyboardInterrupt` or another exception) while
-    no repository was current: the run is not touched and its line was written.
-    """
-
-    def __init__(self, error: BaseException) -> None:
-        super().__init__(type(error).__name__)
-        self.error = error
-
-
 def _report_failure(
     reporter: IngestReporter,
     operation: str,
@@ -171,15 +159,35 @@ def _reporting_failure(
     *,
     detail: str | None = None,
     sequence: int | None = None,
+    on_loss: Callable[[], None] | None = None,
 ) -> Iterator[None]:
-    """Write the one line of a database operation that raises, then let it pass."""
+    """Write the one line of a database operation that raises, then let it pass.
+
+    `on_loss` runs first when the connection was lost, before the line is written.
+    """
     try:
         yield
     except PersistenceError as error:
+        if on_loss is not None and isinstance(error, PersistenceConnectionError):
+            on_loss()
         _report_failure(
             reporter, operation, execution_id, error, detail=detail, sequence=sequence
         )
         raise
+
+
+def _prevailing(first: BaseException, second: BaseException) -> BaseException:
+    """The exception that decides when two arrive in the window of State machine C.
+
+    A `SystemExit` propagates, a `KeyboardInterrupt` comes next, and any other
+    exception decides over `_ConnectionUnconfirmed`, which only says that the
+    recovery was not confirmed (plan Revision 10, sweep finding N-3).
+    """
+    for kind in (SystemExit, KeyboardInterrupt):
+        for error in (first, second):
+            if isinstance(error, kind):
+                return error
+    return second if isinstance(first, _ConnectionUnconfirmed) else first
 
 
 @contextmanager
@@ -187,8 +195,9 @@ def _recovery_step(reporter: IngestReporter, operation: str) -> Iterator[None]:
     """One database operation of State machine C steps 2 and 3, before any is current.
 
     Whatever it raises is reported once, under its own name, and ends the step:
-    a `PersistenceError` as an unconfirmed recovery, anything else as
-    `_RecoveryEnded`. `SystemExit` passes without a line.
+    a `PersistenceError` as an unconfirmed recovery, anything else as itself.
+    `SystemExit` passes without a line. When the line raises too, `_prevailing`
+    decides.
     """
     try:
         yield
@@ -198,18 +207,31 @@ def _recovery_step(reporter: IngestReporter, operation: str) -> Iterator[None]:
     except SystemExit:
         raise
     except BaseException as error:
-        _report_failure(reporter, operation, None, error)
-        raise _RecoveryEnded(error) from error
+        try:
+            _report_failure(reporter, operation, None, error)
+        except BaseException as line_error:  # noqa: BLE001 -- see `_prevailing`.
+            raise _prevailing(error, line_error) from None
+        raise
 
 
 class _PersistenceSession:
+    """The repositories of one call, and the record of which one is current.
+
+    The current repository is the one that holds the ingest exclusion (State
+    machine C, "The explicit record"): the first one until a connection is lost,
+    none until the second one holds the exclusion, then the second one. A lost
+    repository, and a second one that does not hold it, are kept only to be closed.
+    """
+
     def __init__(
         self,
         repository: ClosableIngestionRepository,
         open_repository: RepositoryOpener,
         reporter: IngestReporter,
     ) -> None:
-        self.repository = repository
+        self._current: ClosableIngestionRepository | None = repository
+        self._dropped: ClosableIngestionRepository | None = None
+        self._unclosed = [repository]
         self._open_repository = open_repository
         self._reporter = reporter
         self._reconnected = False
@@ -218,35 +240,78 @@ class _PersistenceSession:
     def reconnected(self) -> bool:
         return self._reconnected
 
+    @property
+    def current(self) -> ClosableIngestionRepository | None:
+        return self._current
+
+    @property
+    def repository(self) -> ClosableIngestionRepository:
+        assert self._current is not None
+        return self._current
+
+    def drop_current(self) -> None:
+        """No repository is current from here on.
+
+        It is the first action of the handler of a lost connection, before its
+        line is written, and also what a refused `finish_run(FAILED)` does: nothing
+        more is written to the run.
+        """
+        if self._current is not None:
+            self._dropped = self._current
+            self._current = None
+
+    def unclosed(self) -> tuple[ClosableIngestionRepository, ...]:
+        return tuple(self._unclosed)
+
+    def close(self, repository: ClosableIngestionRepository) -> None:
+        """Close `repository`; an `Exception` other than `MemoryError` counts as closed.
+
+        A `MemoryError`, a `KeyboardInterrupt` or a `SystemExit` propagates and
+        leaves the repository to be attempted once more by the final close.
+        """
+        try:
+            repository.close()
+        except Exception as error:
+            if isinstance(error, MemoryError):
+                raise
+        self._unclosed.remove(repository)
+
     def _report_loss(self, operation: str, execution_id: str) -> None:
         self._reporter.progress(
             f"connection lost during {operation}: run {execution_id}"
         )
 
     def _reconnect(self) -> ClosableIngestionRepository:
-        with suppress(Exception):
-            self.repository.close()
+        dropped = self._dropped
+        assert dropped is not None
+        self.close(dropped)
         if self._reconnected:
             raise _ConnectionUnconfirmed
         self._reconnected = True
         # No repository is current until the second one holds the exclusion
-        # (State machine C, "The current repository"): `self.repository` stays the
-        # lost one, which nothing may use, and the second is closed on any failure.
+        # (State machine C, "The current repository"): whatever ends the window
+        # propagates after the second repository, if one was obtained, was closed.
         second: ClosableIngestionRepository | None = None
+        failure: BaseException
         try:
             with _recovery_step(self._reporter, "open_repository"):
                 second = self._open_repository()
+                self._unclosed.append(second)
+            assert second is not None
             with _recovery_step(self._reporter, "try_acquire_ingest_exclusion"):
                 acquired = second.try_acquire_ingest_exclusion()
-            if not acquired:
-                raise _ConnectionUnconfirmed
-        except BaseException:
-            if second is not None:
-                with suppress(Exception):
-                    second.close()
-            raise
-        self.repository = second
-        return second
+            if acquired:
+                self._current = second
+                return second
+            failure = _ConnectionUnconfirmed()
+        except BaseException as error:  # noqa: BLE001 -- see `_prevailing`.
+            failure = error
+        if second is not None:
+            try:
+                self.close(second)
+            except BaseException as error:  # noqa: BLE001 -- see `_prevailing`.
+                failure = _prevailing(failure, error)
+        raise failure
 
     def safe_repeat(
         self,
@@ -258,11 +323,13 @@ class _PersistenceSession:
         try:
             return operation(self.repository), False
         except PersistenceConnectionError:
+            self.drop_current()
             self._report_loss(name, execution_id)
             repository = self._reconnect()
             try:
                 return operation(repository), True
             except PersistenceConnectionError as error:
+                self.drop_current()
                 self._report_loss(name, execution_id)
                 raise _ConnectionUnconfirmed from error
 
@@ -288,6 +355,7 @@ class _PersistenceSession:
                 execution_id,
                 detail=event_type.value,
                 sequence=sequence,
+                on_loss=self.drop_current,
             ):
                 repository.append_audit_event(
                     execution_id=execution_id,
@@ -303,7 +371,10 @@ class _PersistenceSession:
             repository = self._reconnect()
             try:
                 with _reporting_failure(
-                    self._reporter, "list_audit_events", execution_id
+                    self._reporter,
+                    "list_audit_events",
+                    execution_id,
+                    on_loss=self.drop_current,
                 ):
                     events = repository.list_audit_events(execution_id)
                 already_stored = any(
@@ -317,9 +388,6 @@ class _PersistenceSession:
             except PersistenceConnectionError as error:
                 raise _ConnectionUnconfirmed from error
             return True
-
-    def close(self) -> None:
-        self.repository.close()
 
 
 def _outcome(
@@ -419,20 +487,12 @@ def _unconfirmed(execution_id: str) -> IngestOutcome:
     )
 
 
-def _recovery_ended(
-    error: BaseException, execution_id: str | None, *, run_created: bool
-) -> IngestOutcome:
-    """The outcome when the second connection could not be made current.
+def _recovery_ended(error: BaseException, execution_id: str) -> IngestOutcome:
+    """The outcome when an exception lands while no repository is current.
 
-    State machine K is not entered: the run is left `running`, untouched. While
-    `start_run` is still the pending operation no run is known.
+    State machine K is not entered: the run is left `running`, untouched.
     """
-    interrupted = isinstance(error, KeyboardInterrupt)
-    if not run_created or execution_id is None:
-        if interrupted:
-            return _outcome(IngestEnd.INTERRUPTED, "the ingest was interrupted")
-        return _outcome(IngestEnd.NOT_STARTED, type(error).__name__)
-    if interrupted:
+    if isinstance(error, KeyboardInterrupt):
         return _outcome(
             IngestEnd.INTERRUPTED,
             "the ingest was interrupted",
@@ -475,6 +535,9 @@ def _close_failed(
     except _ConnectionUnconfirmed:
         return _unconfirmed(execution_id)
     except PersistenceError as error:
+        # A refusal is answered, never retried: nothing more is written to the run,
+        # so an exception that lands in the line below does not enter State machine K.
+        session.drop_current()
         _report_failure(
             reporter,
             "finish_run",
@@ -569,7 +632,9 @@ def _finish_succeeded(
             )
         # State machine C, P-2: the stored run decides what the refused repeat means.
         try:
-            with _reporting_failure(reporter, "read_run", execution_id):
+            with _reporting_failure(
+                reporter, "read_run", execution_id, on_loss=session.drop_current
+            ):
                 stored = session.repository.read_run(execution_id)
         except PersistenceError:
             return _unconfirmed(execution_id)
@@ -1188,7 +1253,88 @@ def run_ingest(
             f"the repository could not be opened: {type(error).__name__}",
         )
     session = _PersistenceSession(repository, open_repository, reporter)
+    try:
+        outcome = _ingest_through(
+            request,
+            source=source,
+            store=store,
+            session=session,
+            clock=clock,
+            execution_ids=execution_ids,
+            reporter=reporter,
+        )
+    except BaseException as propagating:
+        _close_while_propagating(session, propagating)
+        raise
+    return _close_after_outcome(outcome, session)
 
+
+def _close_remaining(session: _PersistenceSession) -> BaseException | None:
+    """The final close: every repository not closed yet is attempted, each once.
+
+    An `Exception` from a `close()`, `MemoryError` included, is suppressed. What
+    else a `close()` raises is returned once the other repositories were attempted:
+    a `KeyboardInterrupt`, or a `SystemExit`, which prevails.
+    """
+    raised: BaseException | None = None
+    for repository in session.unclosed():
+        try:
+            # Closing never changes how the run ended.
+            with suppress(Exception):
+                session.close(repository)
+        except BaseException as error:  # noqa: BLE001 -- returned, not raised here.
+            raised = error if raised is None else _prevailing(raised, error)
+    return raised
+
+
+def _close_while_propagating(
+    session: _PersistenceSession, propagating: BaseException
+) -> None:
+    """The final close while `propagating` leaves `run_ingest`.
+
+    An `Exception` from it is suppressed and the propagating exception goes on; a
+    `KeyboardInterrupt` or a `SystemExit` from it propagates in its place, unless a
+    `SystemExit` already propagates: then it goes on whatever the close raises.
+    """
+    raised = _close_remaining(session)
+    if raised is not None and not isinstance(propagating, SystemExit):
+        raise raised
+
+
+def _close_after_outcome(
+    outcome: IngestOutcome, session: _PersistenceSession
+) -> IngestOutcome:
+    """The final close once the outcome is determined: it never changes how the run ended.
+
+    A `KeyboardInterrupt` during it keeps the run and its confirmed status and
+    records the interrupt; nothing is read from or written to the run.
+    """
+    raised = _close_remaining(session)
+    if raised is None:
+        return outcome
+    if not isinstance(raised, KeyboardInterrupt):
+        raise raised
+    if outcome.end is IngestEnd.INTERRUPTED:
+        return outcome
+    return _outcome(
+        IngestEnd.INTERRUPTED,
+        f"the ingest was interrupted while the repository was closed: {outcome.message}",
+        execution_id=outcome.execution_id,
+        run_status=outcome.run_status,
+    )
+
+
+def _ingest_through(
+    request: IngestRequest | ResumeRequest,
+    *,
+    source: ProcurementSource,
+    store: RawEvidenceStore,
+    session: _PersistenceSession,
+    clock: Clock,
+    execution_ids: ExecutionIdSource,
+    reporter: IngestReporter,
+) -> IngestOutcome:
+    """The run itself, on the repositories of `session`; it closes none of them."""
     execution_id: str | None = None
     run_created = False
     page = request.scope.first_page if isinstance(request, IngestRequest) else 1
@@ -1385,6 +1531,9 @@ def run_ingest(
                     except _ConnectionUnconfirmed:
                         return _unconfirmed(execution_id)
                     except PersistenceError as error:
+                        # The refusal ends the pending period before its line is
+                        # written: nothing records this observation again.
+                        pending_sequence = None
                         _report_failure(
                             reporter,
                             "record_observation",
@@ -1392,7 +1541,6 @@ def run_ingest(
                             error,
                             sequence=next_sequence,
                         )
-                        pending_sequence = None
                         return _fail_postgresql(
                             session,
                             clock,
@@ -1431,6 +1579,7 @@ def run_ingest(
             except _ConnectionUnconfirmed:
                 return _unconfirmed(execution_id)
             except PersistenceError as error:
+                pending_sequence = None
                 _report_failure(
                     reporter,
                     "record_observation",
@@ -1438,7 +1587,6 @@ def run_ingest(
                     error,
                     sequence=observation.sequence,
                 )
-                pending_sequence = None
                 return _fail_postgresql(
                     session,
                     clock,
@@ -1508,13 +1656,16 @@ def run_ingest(
                 )
 
         return _finish_succeeded(session, clock, reporter, execution_id, page=page)
-    except _RecoveryEnded as ended:
-        return _recovery_ended(ended.error, execution_id, run_created=run_created)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as interrupt:
         if not run_created or execution_id is None:
             return _outcome(IngestEnd.INTERRUPTED, "the ingest was interrupted")
+        # With no current repository State machine K is not entered (State machine
+        # C, "The explicit record"), whatever raised and wherever it landed.
+        current = session.current
+        if current is None:
+            return _recovery_ended(interrupt, execution_id)
         return _cleanup_after_exception(
-            repository=session.repository,
+            repository=current,
             clock=clock,
             store=store,
             reporter=reporter,
@@ -1528,8 +1679,11 @@ def run_ingest(
     except Exception as error:  # noqa: BLE001 -- State machine K audits defects.
         if not run_created or execution_id is None:
             return _outcome(IngestEnd.NOT_STARTED, type(error).__name__)
+        current = session.current
+        if current is None:
+            return _recovery_ended(error, execution_id)
         return _cleanup_after_exception(
-            repository=session.repository,
+            repository=current,
             clock=clock,
             store=store,
             reporter=reporter,
@@ -1540,5 +1694,3 @@ def run_ingest(
             end=IngestEnd.RUN_FAILED,
             message=f"unexpected error: {type(error).__name__}",
         )
-    finally:
-        session.close()

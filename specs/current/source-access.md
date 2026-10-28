@@ -1,6 +1,6 @@
 # Source Access Specification
 
-> Last synced: 2026-10-12. Owned artifacts: `src/ec_procurement_quality/domain/source_response.py`, `src/ec_procurement_quality/application/procurement_source.py`, `src/ec_procurement_quality/infrastructure/sercop_source.py`, `tests/unit/test_source_response.py`, `tests/unit/test_sercop_source.py`, `tests/fixtures/sercop/`. Shared with `project-toolchain`: the `httpx` entry in `pyproject.toml` and `uv.lock`, and `test_layer_only_infrastructure_imports_httpx` in `tests/unit/test_layers.py`.
+> Last synced: 2026-10-28. Owned artifacts: `src/ec_procurement_quality/domain/source_response.py`, `src/ec_procurement_quality/application/procurement_source.py`, `src/ec_procurement_quality/infrastructure/sercop_source.py`, `tests/unit/test_source_response.py`, `tests/unit/test_sercop_source.py`, `tests/fixtures/sercop/`. Shared with `project-toolchain`: the `httpx` entry in `pyproject.toml` and `uv.lock`, and `test_layer_only_infrastructure_imports_httpx` in `tests/unit/test_layers.py`.
 
 ## Purpose
 
@@ -10,9 +10,10 @@ and gets the response back exactly as received, or a typed error that still
 carries whatever valid response arrived, so that F4 can store every response
 through `RawEvidenceStore.store` (`raw-evidence`, ADR 0005) without changes. It
 is its own capability because it is the only code that talks to the source.
-It is a library only: no CLI command, ingestion or use case calls it yet, and
-it is verified with fixtures and a simulated transport, never the network. The
-binding decision for the HTTP client is ADR 0006.
+Since F4 the `ingest` command calls it for the buyer-name search (no command
+fetches `api/record` yet); it is verified with fixtures and a simulated
+transport, never the network, and no run against the real portal has been made
+yet (U1). The binding decision for the HTTP client is ADR 0006.
 
 ## Requirements
 
@@ -340,9 +341,9 @@ is stated for that use.
 |---|---|---|---|
 | N-21 | Known limitation, accepted by the human on 2026-10-12 and deferred (not for PR #16): no test pins `_send`'s drop of a later `httpx.HTTPError` once the status and headers were captured. No code inside `httpx` 0.28.1 reaches that drop, but caller code can, for example a transport that returns a test-local `httpx.Response` subclass whose `has_redirect_location` raises `httpx.RemoteProtocolError` (a `history` setter that raises reaches it too). Expected, confirmed by the auditor's probe: a `200` returns the `SearchPage` or `RecordResponse` of SA-1, and a `404` raises `SourceStatusError` with the complete response. A change that re-raised there (mutant m17) passes all 961 tests. Reproducer for a later test: `httpx.MockTransport` returning that subclass, built with `stream=`, under the network guard | LOW | sercop-source-adapter · audit.md § Round 4 addendum, second addendum (N-21, N-22); execution-plan.md § Risks |
 | R-6 | `httpx` does not map `ResponseStream.close()`, so a rare `OSError` from `socket.close()` propagates unchanged (accepted risk since Revision 3). It is not raised by the adapter, pacing still counts the attempt, and its `__context__` can hold protocol text, so F4 must not log the chain of an exception that is not a `SourceError` | LOW | sercop-source-adapter · audit.md § Reservations (round 4); execution-plan.md § Risks |
-| R-7 | With the real transport, `httpcore`'s `DEBUG` trace writes response header values (accepted risk since Revision 1). The adapter configures no logging, SA-8's log requirement assumes that logger is above `DEBUG` (its default), and F4 must keep it there | LOW (impact Med) | sercop-source-adapter · audit.md § Reservations (round 4); intent.md § AC8 Revision 4 |
-| R-11 | One instance shared between threads, or called from inside its own call, mixes the evidence of two calls with no error. Resolved as a documented rule with no mechanism (SA-13), accepted by the human with Revision 5 | LOW (impact High) | sercop-source-adapter · audit.md § Round 4, rechecked; execution-plan.md § Risks |
-| U1 | Behavior against the real SERCOP portal is unverified: tests use fixtures and simulated transports only. The adapter's request headers (`User-Agent`, `Accept`, `Accept-Encoding: identity`) differ from the observed `curl` requests, and the source may answer differently. Every response is preserved and typed, so a different answer fails loudly. First compared with the observations at the first live run (human, F4) | MED | sercop-source-adapter · execution-plan.md § Risks; intent.md § Constraints |
+| R-7 | With the real transport, `httpcore`'s `DEBUG` trace writes response header values (accepted risk since Revision 1). The adapter configures no logging, SA-8's log requirement assumes that logger is above `DEBUG` (its default), and F4 must keep it there. Handled by F4: the command keeps the `httpcore` logger above `DEBUG` for every run (audit round 8 PASS); carried as an accepted risk and restated by the human on 2026-10-28 | LOW (impact Med) | sercop-source-adapter · audit.md § Reservations (round 4); intent.md § AC8 Revision 4 |
+| R-11 | One instance shared between threads, or called from inside its own call, mixes the evidence of two calls with no error. Resolved as a documented rule with no mechanism (SA-13), accepted by the human with Revision 5. Handled by F4: one `SercopSource` serves an invocation, from one thread (audit round 8 PASS); restated by the human on 2026-10-28 | LOW (impact High) | sercop-source-adapter · audit.md § Round 4, rechecked; execution-plan.md § Risks |
+| U1 | Behavior against the real SERCOP portal is unverified: tests use fixtures and simulated transports only. The adapter's request headers (`User-Agent`, `Accept`, `Accept-Encoding: identity`) differ from the observed `curl` requests, and the source may answer differently. Every response is preserved and typed, so a different answer fails loudly. First compared with the observations at the first live run (human, F4); that run has not been made, and the human restated this reservation on 2026-10-28 | MED | sercop-source-adapter · execution-plan.md § Risks; intent.md § Constraints |
 
 F4 consumer rules (`execution-plan.md` § Consumers): catch `SourceError` only
 and never retry `ValueError` or `RuntimeError`; store `result.response` or
@@ -361,6 +362,7 @@ complete (ADR 0005).
 | Feature | Shipped | What it established |
 |---|---|---|
 | sercop-source-adapter (F2) | 2026-10-12 | The raw response and the source errors in `domain`, the `ProcurementSource` port with `SearchPage` and `RecordResponse` in `application`, and the `httpx` adapter `SercopSource` in `infrastructure`, with one request per call, the typed outcomes, pacing, timeouts, base URL and input checks, the closed set of outcomes and the no-leak output invariant (SA-1 to SA-13) |
+| ingest-command (F4) | 2026-10-28 | No requirement changed. The `ingest` command is the first caller: it stores the response of each result or error before deciding what to do, makes no retry, keeps the `httpcore` logger above `DEBUG`, uses one instance per invocation and reports a malformed proxy or certificate setting as configuration; R-7 and R-11 are handled, U1 stays open until the first live run |
 
 ## Related ADRs
 

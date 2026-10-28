@@ -54,6 +54,27 @@ The audit round 3 of 2026-10-18 added, at the end of the file (plan Revision 8):
 - `exit_code_start_run_unconfirmed` (AC8, AC15, F-20): a lost `start_run` whose
   recovery fails prints `<id> running`, exit 1, and no `run <id> started` line.
 
+The audit round 5 rework of 2026-10-20 added, at the end of the file (plan
+Revisions 9 and 10): `exit_code_reconnect_close_interrupt` (F-21),
+`exit_code_final_close_error` and `exit_code_final_close_interrupt` (F-22),
+`exit_code_start_run_second_loss`, `exit_code_unexpected_cleanup_interrupt`,
+`exit_code_recovery_double_fault` and `exit_code_refusal_not_retried` (sweep A2), and
+`result_line_stream_fault` and `handler_stream_fault` (sweep N-7: a stream that fails
+while the command writes its result, through the `RaisingStream` double).
+
+The audit round 6 rework of 2026-10-23 added, at the end of the file (outcome O10,
+plan Revision 12; the section comment there lists the tokens): `flush_stream_fault`
+(AC14, AC15, F-27: every output is flushed in its one attempt), `neutralize_fault`
+(AC14, AC15, F-27, decision D-10: the neutralizing of a failed stream fails),
+`main_handler_line_fault` and `exit_code_cleanup_system_exit` (AC7, AC14, AC15, F-28),
+and the rename of two tests without `usage` (AC14, F-29).
+
+The audit round 7 rework of 2026-10-27 added, at the end of the file (outcome O10,
+plan Revision 13; the section comment there lists the tokens): `absent_stderr_command`,
+`absent_stderr_main`, `absent_stdout_command`, `absent_stdout_main`,
+`absent_streams_main` and `absent_stream_helpers` (AC14, AC15, F-31, decisions D-11
+and D-12: a missing stream, that is `None`, is disabled output).
+
 Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 `SYNTHETIC BUYER S.A.`, the year 2025, and the markers `synthetic-password-marker`,
 `synthetic-body-marker` and `synthetic-header-marker`.
@@ -61,15 +82,20 @@ Data is synthetic: the source is `https://source.invalid/PLATAFORMA`, the buyer
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import logging
+import os
 import re
+import sys
+import typing
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from importlib.metadata import version as installed_version
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 import pytest
@@ -101,7 +127,7 @@ from ec_procurement_quality.domain.raw_evidence import (
 from ec_procurement_quality.infrastructure.postgres_migrations import apply_migrations
 from ec_procurement_quality.infrastructure.postgres_settings import PostgresSettings
 from ec_procurement_quality.infrastructure.sercop_source import SercopSource
-from ec_procurement_quality.interfaces import cli, ingest_command
+from ec_procurement_quality.interfaces import cli, ingest_command, output_streams
 from ec_procurement_quality.interfaces.ingest_command import (
     IngestWiring,
     default_wiring,
@@ -2734,3 +2760,3407 @@ def test_exit_code_start_run_unconfirmed_prints_running_without_a_started_line(
     assert lab.source.calls == []
     assert lab.opener.opens == 2
     assert lab.opener.all_closed
+
+
+# === Audit round 5 rework (2026-10-20), plan Revisions 9 and 10 ================
+#
+# Written red against the Revision 12/10/7 specs (approved on 2026-10-20), before the
+# round 5 fix. Command-tier tokens: `exit_code_reconnect_close_interrupt` (F-21, E12),
+# `exit_code_final_close_error` and `exit_code_final_close_interrupt` (F-22),
+# `exit_code_start_run_second_loss` (N-1), `exit_code_unexpected_cleanup_interrupt`
+# (N-2), `exit_code_recovery_double_fault` (N-3), `exit_code_refusal_not_retried`
+# (N-4), and, for N-7, `result_line_stream_fault` and `handler_stream_fault`.
+#
+# The close fault of a repository is `lab.opener.close_faults` (conftest). The raising
+# stream is `RaisingStream` below, passed to `run_ingest_command` as `stdout` or
+# `stderr` through `invoke_through` (the existing injectable `TextIO` parameters: no
+# new product seam). Progress lines also go to the injected stderr, so a fault is
+# aimed by the text of the write.
+
+
+class RaisingStream(io.StringIO):
+    """A text stream that raises once, on a chosen write (plan Revision 10, seams).
+
+    `trigger` is asked about the text of every write. The `nth` write it accepts
+    raises `error()`, after the text was stored (`keep`) or before. It raises once:
+    the writes that follow succeed, so the lines written after the failure can be
+    seen. `writes` keeps every text it was asked to write, and `fired` tells whether
+    it raised. `print` writes the text and the line end in two calls.
+    """
+
+    def __init__(
+        self,
+        error: Callable[[], BaseException],
+        trigger: Callable[[str], bool],
+        *,
+        nth: int = 1,
+        keep: bool = True,
+    ) -> None:
+        super().__init__()
+        self._error = error
+        self._trigger = trigger
+        self._nth = nth
+        self._keep = keep
+        self._matched = 0
+        self.writes: list[str] = []
+        self.fired = False
+
+    def write(self, text: str) -> int:
+        self.writes.append(text)
+        if not self.fired and self._trigger(text):
+            self._matched += 1
+            if self._matched == self._nth:
+                self.fired = True
+                if self._keep:
+                    super().write(text)
+                raise self._error()
+        return super().write(text)
+
+
+class Phase:
+    """Tells a trigger whether `run_ingest` has already returned or raised."""
+
+    def __init__(self) -> None:
+        self.over = False
+
+
+def watched(
+    phase: Phase, inner: Callable[..., IngestOutcome]
+) -> Callable[..., IngestOutcome]:
+    """`inner`, which sets `phase.over` when it returns or raises."""
+
+    def run_ingest_watched(*args: object, **kwargs: object) -> IngestOutcome:
+        try:
+            return inner(*args, **kwargs)
+        finally:
+            phase.over = True
+
+    return run_ingest_watched
+
+
+def watch_run_ingest(monkeypatch: pytest.MonkeyPatch) -> Phase:
+    """Replace `run_ingest` of the command by itself, watched."""
+    phase = Phase()
+    original: Callable[..., IngestOutcome] = ingest_command.run_ingest
+    monkeypatch.setattr(ingest_command, "run_ingest", watched(phase, original))
+    return phase
+
+
+def after_run_ingest(phase: Phase) -> Callable[[str], bool]:
+    """The first text write once `run_ingest` is over: the command's own final text."""
+    return lambda text: phase.over and text != "\n"
+
+
+def invoke_through(rig: Rig, out: io.StringIO, err: io.StringIO) -> int:
+    """`run_ingest_command` with the streams given; whatever escapes fails the test."""
+    arguments = cli.build_parser().parse_args(["ingest", *SCOPE_ARGS])
+    try:
+        return run_ingest_command(
+            arguments,
+            environ=dict(GOOD_ENVIRON),
+            wiring=rig.wiring(),
+            stdout=out,
+            stderr=err,
+        )
+    except (Exception, KeyboardInterrupt) as error:
+        raise AssertionError(
+            f"the command let {type(error).__name__} escape"
+        ) from error
+
+
+CLOSE_MOMENTS = pytest.mark.parametrize("when", ["before", "after"])
+
+
+# === exit_code_reconnect_close_interrupt (F-21, E12) ===========================
+
+
+@CLOSE_MOMENTS
+@pytest.mark.parametrize(
+    ("make_error", "code"),
+    [
+        pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c"),
+        pytest.param(lambda: MemoryError(), 1, id="memory-error"),
+    ],
+)
+def test_exit_code_reconnect_close_interrupt_prints_running_and_runs_no_cleanup(
+    rig: Rig,
+    make_error: Callable[[], BaseException],
+    code: int,
+    when: Literal["before", "after"],
+) -> None:
+    """E12: the lost repository's `close()` raises after a loss at page 2.
+
+    `<A> running`, 130 for Ctrl+C and 1 for `MemoryError`; no stderr line names a
+    read of the run, `RuntimeError` or `run-interrupted`; no traceback.
+    """
+    lab = rig.lab
+    lose_the_second_observation(lab, other_session=False)
+    lab.opener.close_faults[1] = [lab.faults.close_raises(make_error, when=when)]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert_the_run_stays_running(result, lab, code)
+    for word in (*CLEANUP_WORDS, "RuntimeError"):
+        assert stderr_lines(result, word) == [], result.err
+    assert lab.opener.opens == 1
+
+
+# === exit_code_final_close_error, exit_code_final_close_interrupt (F-22) =======
+
+
+def test_exit_code_final_close_interrupt_a_succeeded_run_exits_130_and_prints_succeeded(
+    rig: Rig,
+) -> None:
+    """F-22: Ctrl+C while the final repository closes, after the AC1 run.
+
+    Exit 130, stdout exactly one line `<A> succeeded`, stderr says interrupted.
+    """
+    lab = rig.lab
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(lambda: KeyboardInterrupt(), when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} succeeded\n"
+    assert "interrupted" in result.err
+    assert "Traceback" not in result.err
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "page-completed",
+    ]
+
+
+def test_exit_code_final_close_interrupt_a_failed_run_exits_130_and_prints_failed(
+    rig: Rig,
+) -> None:
+    """F-22: the same after the AC4 run (page 2 answers 500) -> exactly `<A> failed`."""
+    lab = rig.lab
+    lab.source.script(2, lab.status_failure(2, 500))
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(lambda: KeyboardInterrupt(), when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} failed\n"
+    assert "interrupted" in result.err
+    assert "Traceback" not in result.err
+    assert lab.event_types(run_id) == ["run-started", "page-completed", "page-failed"]
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(lambda: OSError("synthetic close failure"), id="os-error"),
+        pytest.param(lambda: MemoryError(), id="memory-error"),
+    ],
+)
+def test_exit_code_final_close_error_changes_nothing_exit_0_and_succeeded(
+    rig: Rig, make_error: Callable[[], BaseException]
+) -> None:
+    """F-22: an error from the final close is suppressed: exit 0, `<A> succeeded`.
+
+    No stderr line names the error or says `unexpected error`.
+    """
+    lab = rig.lab
+    lab.opener.close_faults[1] = [lab.faults.close_raises(make_error, when="after")]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 0
+    assert result.out == f"{run_id} succeeded\n"
+    for text in ("OSError", "MemoryError", "unexpected error", "Traceback"):
+        assert text not in result.err, result.err
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+
+
+# === exit_code_start_run_second_loss (N-1) =====================================
+
+
+def lose_start_run_on_both(
+    lab: Lab, first: Literal["before", "after"], second: Literal["before", "after"]
+) -> None:
+    """`start_run` is lost on the first repository and again on the second."""
+    for open_index, when in ((1, first), (2, second)):
+        lab.opener.faults[open_index] = [
+            lab.faults.lost_before_commit("start_run")
+            if when == "before"
+            else lab.faults.lost_after_commit("start_run")
+        ]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), [("before", "before"), ("before", "after"), ("after", "after")]
+)
+def test_exit_code_start_run_second_loss_prints_running_without_a_started_line(
+    rig: Rig, first: Literal["before", "after"], second: Literal["before", "after"]
+) -> None:
+    """N-1: the repeat of `start_run` is lost too -> exit 1, stdout `<id> running`.
+
+    The run was never announced, so there is no `run <id> started` line; two lines
+    name the lost `start_run`; nothing reads the run.
+    """
+    lab = rig.lab
+    lose_start_run_on_both(lab, first, second)
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert result.code == 1
+    assert result.out == f"{FIRST_DRAWN_ID} running\n"
+    assert f"run {FIRST_DRAWN_ID} started" not in result.err
+    assert stderr_lines(result, "started") == []
+    assert stderr_lines(result, "read_run") == []
+    assert len(stderr_lines(result, "start_run", FIRST_DRAWN_ID)) == 2, result.err
+    assert_safe_stderr(result)
+    assert lab.source.calls == []
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+@CLOSE_MOMENTS
+@pytest.mark.parametrize(
+    ("make_error", "code"),
+    [
+        pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c"),
+        pytest.param(lambda: MemoryError(), 1, id="memory-error"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("first", "second"), [("before", "before"), ("after", "after")]
+)
+def test_exit_code_start_run_second_loss_an_error_on_the_second_line_prints_nothing(
+    command_rig: Rig,
+    first: Literal["before", "after"],
+    second: Literal["before", "after"],
+    make_error: Callable[[], BaseException],
+    code: int,
+    when: Literal["before", "after"],
+) -> None:
+    """N-1: the stderr stream raises on the second write that names `start_run`.
+
+    Ctrl+C gives 130 and `MemoryError` 1; no run was confirmed, so stdout is empty;
+    no stderr line names `read_run`; nothing escapes, so no traceback.
+    """
+    lab = command_rig.lab
+    lose_start_run_on_both(lab, first, second)
+    out = io.StringIO()
+    err = RaisingStream(
+        make_error, lambda text: "start_run" in text, nth=2, keep=when == "after"
+    )
+
+    result = invoke_through(command_rig, out, err)
+
+    assert err.fired
+    assert result == code
+    assert out.getvalue() == ""
+    assert "read_run" not in err.getvalue()
+    assert "started" not in err.getvalue()
+    assert "Traceback" not in err.getvalue()
+    assert lab.source.calls == []
+    assert lab.opener.opens == 2
+    assert lab.opener.all_closed
+
+
+# === exit_code_unexpected_cleanup_interrupt (N-2) ==============================
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(lambda: MemoryError(BODY_MARKER), id="memory-error"),
+        pytest.param(lambda: SyntheticDefect(BODY_MARKER), id="synthetic-defect"),
+    ],
+)
+def test_exit_code_unexpected_cleanup_interrupt_exits_130_and_prints_running(
+    rig: Rig, make_error: Callable[[], BaseException]
+) -> None:
+    """N-2: an unexpected exception at page 2, then Ctrl+C on the `unexpected-error` append.
+
+    Exit 130, stdout exactly one line `<A> running`, stderr says interrupted and holds
+    no marker and no traceback.
+    """
+    lab = rig.lab
+    lab.source.script(2, make_error())
+    lab.opener.faults[1] = [
+        lab.faults.interrupts("append_audit_event", detail="unexpected-error")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert result.code == 130
+    assert result.out == f"{run_id} running\n"
+    assert "interrupted" in result.err
+    assert BODY_MARKER not in result.err
+    assert "Traceback" not in result.err
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert lab.event_types(run_id) == ["run-started", "page-completed"]
+    assert lab.opener.all_closed
+
+
+# === exit_code_recovery_double_fault (N-3) =====================================
+
+
+def test_exit_code_recovery_double_fault_a_ctrl_c_among_two_exceptions_exits_130(
+    rig: Rig,
+) -> None:
+    """N-3, case (a): the second exclusion raises `MemoryError`, its close Ctrl+C.
+
+    Exit 130, stdout exactly `<A> running`, one stderr line holds
+    `try_acquire_ingest_exclusion`, none holds `read_run`, `RuntimeError` or
+    `run-interrupted`, no traceback.
+    """
+    lab = rig.lab
+    lose_the_second_observation(lab, other_session=False)
+    lab.opener.faults[2] = [
+        lab.faults.raises("try_acquire_ingest_exclusion", lambda: MemoryError())
+    ]
+    lab.opener.close_faults[2] = [
+        lab.faults.close_raises(lambda: KeyboardInterrupt(), when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    assert_the_run_stays_running(result, lab, 130)
+    assert len(stderr_lines(result, "try_acquire_ingest_exclusion")) == 1, result.err
+    for word in (*CLEANUP_WORDS, "RuntimeError"):
+        assert stderr_lines(result, word) == [], result.err
+    assert lab.opener.opens == 2
+
+
+# === exit_code_refusal_not_retried (N-4) =======================================
+
+
+def refuse_every_call(lab: Lab, operation: str, *, detail: str | None = None) -> None:
+    """The first repository refuses each of the next calls of `operation`."""
+    lab.opener.faults.setdefault(1, []).extend(
+        lab.faults.refuses(
+            operation,
+            lambda: PersistenceIntegrityError("synthetic refusal"),
+            detail=detail,
+        )
+        for _ in range(3)
+    )
+
+
+def test_exit_code_refusal_not_retried_a_refused_observation_exits_130_and_prints_failed(
+    command_rig: Rig,
+) -> None:
+    """N-4 case (i): Ctrl+C on the line of a refused `record_observation` of sequence 2.
+
+    The cleanup does not record it again, so it closes the run `failed`: exit 130,
+    stdout exactly `<A> failed`, no traceback.
+    """
+    lab = command_rig.lab
+    refuse_every_call(lab, "record_observation", detail="2")
+    out = io.StringIO()
+    err = RaisingStream(
+        lambda: KeyboardInterrupt(), lambda text: "record_observation" in text
+    )
+
+    result = invoke_through(command_rig, out, err)
+
+    run_id = the_run(lab)
+    assert err.fired
+    assert result == 130
+    assert out.getvalue() == f"{run_id} failed\n"
+    assert "Traceback" not in err.getvalue()
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+
+
+def test_exit_code_refusal_not_retried_a_refused_failing_finish_exits_130_and_prints_running(
+    command_rig: Rig,
+) -> None:
+    """N-4 case (iv): Ctrl+C on the line of a refused `finish_run(FAILED)` (AC4 path).
+
+    Nothing more is written to the run: exit 130, stdout exactly `<A> running`.
+    """
+    lab = command_rig.lab
+    lab.source.script(2, lab.status_failure(2, 500))
+    refuse_every_call(lab, "finish_run", detail="failed")
+    out = io.StringIO()
+    err = RaisingStream(lambda: KeyboardInterrupt(), lambda text: "finish_run" in text)
+
+    result = invoke_through(command_rig, out, err)
+
+    run_id = the_run(lab)
+    assert err.fired
+    assert result == 130
+    assert out.getvalue() == f"{run_id} running\n"
+    assert "Traceback" not in err.getvalue()
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+
+
+# === result_line_stream_fault (AC15; sweep N-7) ================================
+#
+# Plan Revision 10, § Output, "Writing the result", with the human's amendment: an
+# exception while the command writes its result keeps the confirmed status, never
+# writes a second result line, never touches PostgreSQL and never escapes. A Ctrl+C
+# gives 130, any other exception 1 (130 kept when already determined).
+
+STREAM_ERRORS = [
+    pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c"),
+    pytest.param(lambda: OSError("synthetic stream failure"), 1, id="os-error"),
+    pytest.param(lambda: MemoryError(), 1, id="memory-error"),
+]
+STORING = pytest.mark.parametrize(
+    "keep", [True, False], ids=["after-storing", "before-storing"]
+)
+
+
+def assert_the_stored_run_is_as_confirmed(lab: Lab, status: str) -> None:
+    """The run keeps its status and nothing was written after the outcome."""
+    run_id = the_run(lab)
+    assert run_id == FIRST_DRAWN_ID
+    assert lab.database.runs[run_id].status is RunStatus(status)
+    labels = lab.journal.labels(run_id)
+    assert labels[-1] == f"finish_run:{status}"
+    assert [label for label in labels if label.startswith("finish_run")] == [labels[-1]]
+
+
+@STORING
+@pytest.mark.parametrize(("make_error", "code"), STREAM_ERRORS)
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_result_line_stream_fault_a_failing_final_message_keeps_the_confirmed_status(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    make_error: Callable[[], BaseException],
+    code: int,
+    keep: bool,
+) -> None:
+    """N-7 (a): stderr raises on the final outcome message, after the run returned.
+
+    The result line is still written once, with the confirmed status: never
+    `<A> running`. 130 for Ctrl+C, 1 for any other error; the stored run is as
+    confirmed and nothing was written to it after the outcome.
+    """
+    lab = command_rig.lab
+    if status == "failed":
+        lab.source.script(2, lab.status_failure(2, 500))
+    phase = watch_run_ingest(monkeypatch)
+    out = io.StringIO()
+    err = RaisingStream(make_error, after_run_ingest(phase), keep=keep)
+
+    result = invoke_through(command_rig, out, err)
+
+    assert err.fired
+    assert result == code
+    assert out.getvalue() == f"{FIRST_DRAWN_ID} {status}\n"
+    assert_the_stored_run_is_as_confirmed(lab, status)
+    assert lab.opener.all_closed
+
+
+STDOUT_MODES = [
+    pytest.param("text-after", id="text-after-storing"),
+    pytest.param("text-before", id="text-before-storing"),
+    pytest.param("line-end", id="line-end"),
+]
+
+
+@pytest.mark.parametrize("mode", STDOUT_MODES)
+@pytest.mark.parametrize(("make_error", "code"), STREAM_ERRORS)
+def test_result_line_stream_fault_a_failing_result_line_is_attempted_once(
+    command_rig: Rig,
+    make_error: Callable[[], BaseException],
+    code: int,
+    mode: str,
+) -> None:
+    """N-7 (b): stdout raises while the result line `<A> succeeded` is written.
+
+    On the text (after storing it, and before) or on the line end that follows it.
+    130 for Ctrl+C, 1 for any other error. stdout holds that one attempt only: the
+    line with or without its line end, or nothing; never a second line or `running`.
+    The stored run is still `succeeded`.
+    """
+    lab = command_rig.lab
+    line = f"{FIRST_DRAWN_ID} succeeded"
+    out = RaisingStream(
+        make_error,
+        (lambda text: text.endswith("\n"))
+        if mode == "line-end"
+        else (lambda text: line in text),
+        keep=mode != "text-before",
+    )
+    err = io.StringIO()
+
+    result = invoke_through(command_rig, out, err)
+
+    assert out.fired
+    assert result == code
+    assert out.getvalue() in {"", line, f"{line}\n"}, out.getvalue()
+    assert [text for text in out.writes if "running" in text] == []
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert lab.opener.all_closed
+
+
+# === handler_stream_fault (AC15; sweep N-7) ====================================
+#
+# The command's own handlers for an exception that escaped `run_ingest` after the run
+# was announced. `run_ingest` is replaced by a function that announces `<A>` and then
+# raises, as in `output_escaping_exception`. A stream that fails inside a handler
+# never lets an exception escape, never writes `<A> running` twice, and the exit code
+# is 130 for a Ctrl+C, or when it was already determined, and 1 otherwise.
+
+HANDLER_FAULTS = [
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        "stderr",
+        lambda: KeyboardInterrupt(),
+        130,
+        id="ctrl-c-then-stderr-ctrl-c",
+    ),
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        "stderr",
+        lambda: OSError("synthetic stream failure"),
+        130,
+        id="ctrl-c-then-stderr-os-error",
+    ),
+    pytest.param(
+        lambda: SyntheticDefect(BODY_MARKER),
+        "stderr",
+        lambda: KeyboardInterrupt(),
+        130,
+        id="defect-then-stderr-ctrl-c",
+    ),
+    pytest.param(
+        lambda: SyntheticDefect(BODY_MARKER),
+        "stderr",
+        lambda: OSError("synthetic stream failure"),
+        1,
+        id="defect-then-stderr-os-error",
+    ),
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        "stdout",
+        lambda: KeyboardInterrupt(),
+        130,
+        id="ctrl-c-then-stdout-ctrl-c",
+    ),
+    pytest.param(
+        lambda: SyntheticDefect(BODY_MARKER),
+        "stdout",
+        lambda: KeyboardInterrupt(),
+        130,
+        id="defect-then-stdout-ctrl-c",
+    ),
+    pytest.param(
+        lambda: KeyboardInterrupt(),
+        "stdout",
+        lambda: OSError("synthetic stream failure"),
+        130,
+        id="ctrl-c-then-stdout-os-error",
+    ),
+    pytest.param(
+        lambda: SyntheticDefect(BODY_MARKER),
+        "stdout",
+        lambda: OSError("synthetic stream failure"),
+        1,
+        id="defect-then-stdout-os-error",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("make_escape", "broken", "make_error", "code"), HANDLER_FAULTS
+)
+def test_handler_stream_fault_a_failing_stream_in_a_handler_never_escapes(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    make_escape: Callable[[], BaseException],
+    broken: str,
+    make_error: Callable[[], BaseException],
+    code: int,
+) -> None:
+    """N-7 (c): `run_ingest` announces `<A>` and raises; a stream fails in the handler.
+
+    `run_ingest_command` returns the code (130 for a Ctrl+C or when already determined,
+    1 otherwise), so nothing escapes and no traceback can be printed. A failing stderr
+    leaves stdout exactly `<A> running`; a failing stdout holds that one attempt at
+    most. `<A> running` is never written twice.
+    """
+    lab = command_rig.lab
+    phase = Phase()
+    monkeypatch.setattr(
+        ingest_command, "run_ingest", watched(phase, escaping(lab.A, make_escape))
+    )
+    running = f"{lab.A} running"
+    out = io.StringIO()
+    err = io.StringIO()
+    if broken == "stderr":
+        failing_err = RaisingStream(make_error, after_run_ingest(phase))
+        err = failing_err
+        fired = failing_err
+    else:
+        failing_out = RaisingStream(make_error, lambda text: running in text)
+        out = failing_out
+        fired = failing_out
+
+    result = invoke_through(command_rig, out, err)
+
+    assert fired.fired
+    assert result == code
+    if broken == "stderr":
+        assert out.getvalue() == f"{running}\n"
+    else:
+        assert out.getvalue() in {"", running, f"{running}\n"}, out.getvalue()
+        assert len([text for text in fired.writes if "running" in text]) == 1
+    assert "Traceback" not in err.getvalue()
+    assert BODY_MARKER not in err.getvalue()
+
+
+# === Audit round 5 rework, step 2 (2026-10-21), plan Revision 11 ================
+#
+# Written against the Revision 13/11/8 specs (approved on 2026-10-21), before the
+# rework of the command and of `main`. Command-tier tokens, by finding:
+#
+# - F-24 (decision D-1, option A: a `SystemExit` always wins and is preserved):
+#   `exit_code_system_exit_final_close` and `system_exit_command_end`;
+# - F-23 (decision D-2, option 1: the current behavior): `exit_code_refusal_then_interrupt`;
+# - F-26 (decisions D-3 option B, D-4 option 1, D-5 option a: the handler of `main` and
+#   the one local parser class): `main_parse_interrupt`, `main_wiring_interrupt`,
+#   `main_error_stream_fault` and `main_help_stream_fault`. They go through
+#   `main([...])`, with `cli.default_wiring`, `cli.run_ingest_command`,
+#   `cli.request_from_arguments` and `cli.version` replaced through `monkeypatch`,
+#   and `sys.stdout` and `sys.stderr` replaced by an `io.StringIO` or by the
+#   `RaisingStream` of the sweep (no `capsys` there: the test reads the stored text).
+#
+# No new double and no product seam: the use-case tokens of F-24, F-25 and F-23 are
+# in `test_ingest_use_case.py`.
+
+
+class Raised:
+    """A maker of exceptions that remembers each one it made (see the use-case tests)."""
+
+    def __init__(self, make: Callable[[], BaseException]) -> None:
+        self._make = make
+        self.made: list[BaseException] = []
+
+    def __call__(self) -> BaseException:
+        error = self._make()
+        self.made.append(error)
+        return error
+
+    @property
+    def first(self) -> BaseException:
+        assert self.made, "the fault never raised"
+        return self.made[0]
+
+
+def interrupt_error() -> BaseException:
+    return KeyboardInterrupt()
+
+
+def memory_error() -> BaseException:
+    return MemoryError()
+
+
+def os_error() -> BaseException:
+    return OSError("synthetic stream failure")
+
+
+def invoke_exiting(rig: Rig, out: io.StringIO, err: io.StringIO) -> SystemExit:
+    """`run_ingest_command` with the streams given, which must end through `SystemExit`.
+
+    Return that very object. Any other exception that escapes (a `KeyboardInterrupt`
+    included, which would end the whole pytest session) fails the test by name.
+    """
+    arguments = cli.build_parser().parse_args(["ingest", *SCOPE_ARGS])
+    try:
+        with pytest.raises(SystemExit) as stop:
+            run_ingest_command(
+                arguments,
+                environ=dict(GOOD_ENVIRON),
+                wiring=rig.wiring(),
+                stdout=out,
+                stderr=err,
+            )
+    except (Exception, KeyboardInterrupt) as error:
+        raise AssertionError(
+            f"the command let {type(error).__name__} escape in place of the SystemExit"
+        ) from error
+    return stop.value
+
+
+def close_the_source_with(rig: Rig, make_error: Callable[[], BaseException]) -> None:
+    """The source is the lab's, and its `close()` raises `make_error()`."""
+
+    def failing_close() -> None:
+        raise make_error()
+
+    rig.source_builder = lambda now: (rig.lab.source, failing_close)
+
+
+# === exit_code_system_exit_final_close (AC7, AC15; F-24, decision D-1) ==========
+
+
+def assert_a_system_exit_left_quietly(result: Result) -> None:
+    """Code 3, stdout empty, and no line of the command on stderr, no traceback."""
+    assert result.code == 3
+    assert result.out == ""
+    for text in ("interrupted", "unexpected error", "Traceback"):
+        assert text not in result.err, text
+
+
+def test_exit_code_system_exit_final_close_after_the_ac1_run_leaves_with_its_code(
+    rig: Rig,
+) -> None:
+    """D-1: the AC1 invocation, the repository's final close raises `SystemExit(3)`.
+
+    The command lets it escape (`Rig` reads code 3): stdout is empty, there is no
+    outcome message, no `interrupted` and no `unexpected error`, no traceback; the
+    source was closed once and `<A>` is stored `succeeded`.
+    """
+    lab = rig.lab
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(lambda: SystemExit(3), when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert_a_system_exit_left_quietly(result)
+    assert "succeeded" not in result.err.splitlines()
+    assert [source.closes for source in rig.sources] == [1]
+    assert lab.database.runs[run_id].status is RunStatus.SUCCEEDED
+
+
+def test_exit_code_system_exit_final_close_wins_over_a_ctrl_c_from_the_close(
+    rig: Rig,
+) -> None:
+    """D-1: `SystemExit(3)` at page 2, then Ctrl+C from the final close -> code 3.
+
+    Stdout is empty (no `<A> running`) and stderr does not say `interrupted`.
+    """
+    lab = rig.lab
+    lab.source.script(2, SystemExit(3))
+    lab.opener.close_faults[1] = [
+        lab.faults.close_raises(interrupt_error, when="after")
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert_a_system_exit_left_quietly(result)
+    assert [source.closes for source in rig.sources] == [1]
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert lab.event_types(run_id) == ["run-started", "page-completed"]
+
+
+# === system_exit_command_end (AC15; F-24, decision D-1, M5, M14, M15) ===========
+#
+# Plan § Output, "Writing the result" and "`SystemExit`": a `SystemExit` raised while
+# the command writes its result, or at step 7, is preserved and propagated: no further
+# write, stdout holds at most the one line already attempted and never `running` for a
+# confirmed run, and the exit code is its own.
+
+
+def assert_the_one_line_attempted(out: io.StringIO, line: str) -> None:
+    """Stdout holds at most `line`, once, with or without its line end; never `running`."""
+    assert out.getvalue() in {"", line, f"{line}\n"}, out.getvalue()
+    assert "running" not in out.getvalue()
+
+
+@pytest.mark.parametrize("where", ["final-message", "result-line"])
+def test_system_exit_command_end_a_system_exit_while_the_result_is_written(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """(i): after the AC1 run, `SystemExit(3)` on the final message, then on the line.
+
+    Code 3; stdout holds that one line at most (the order of the two writes is free)
+    and never `running`; `<A>` stays `succeeded`; the source is closed once.
+    """
+    lab = command_rig.lab
+    line = f"{FIRST_DRAWN_ID} succeeded"
+    exits = Raised(lambda: SystemExit(3))
+    out = io.StringIO()
+    err = io.StringIO()
+    raising: RaisingStream
+    if where == "final-message":
+        phase = watch_run_ingest(monkeypatch)
+        raising = err = RaisingStream(exits, after_run_ingest(phase))
+    else:
+        raising = out = RaisingStream(exits, lambda text: line in text)
+
+    stop = invoke_exiting(command_rig, out, err)
+
+    assert raising.fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert_the_one_line_attempted(out, line)
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert [source.closes for source in command_rig.sources] == [1]
+
+
+def test_system_exit_command_end_a_system_exit_on_the_line_after_an_error_on_stderr(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(j): stderr raises `OSError` on the final message, stdout `SystemExit(3)` on the line."""
+    lab = command_rig.lab
+    line = f"{FIRST_DRAWN_ID} succeeded"
+    exits = Raised(lambda: SystemExit(3))
+    phase = watch_run_ingest(monkeypatch)
+    err = RaisingStream(os_error, after_run_ingest(phase))
+    out = RaisingStream(exits, lambda text: line in text)
+
+    stop = invoke_exiting(command_rig, out, err)
+
+    assert err.fired
+    assert out.fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert_the_one_line_attempted(out, line)
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert [source.closes for source in command_rig.sources] == [1]
+
+
+def test_system_exit_command_end_a_system_exit_on_the_interrupted_line(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(k): `run_ingest` announces `<A>` and raises Ctrl+C; stderr raises `SystemExit(3)`.
+
+    The write that fails is the `interrupted` line of the handler: code 3, and stdout
+    holds `<A> running` at most once.
+    """
+    lab = command_rig.lab
+    monkeypatch.setattr(ingest_command, "run_ingest", escaping(lab.A, interrupt_error))
+    exits = Raised(lambda: SystemExit(3))
+    out = io.StringIO()
+    err = RaisingStream(exits, lambda text: "interrupted" in text)
+
+    stop = invoke_exiting(command_rig, out, err)
+
+    assert err.fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert out.getvalue() in {"", f"{lab.A} running", f"{lab.A} running\n"}
+    assert [source.closes for source in command_rig.sources] == [1]
+
+
+def test_system_exit_command_end_a_system_exit_wins_over_a_ctrl_c_from_the_source_close(
+    command_rig: Rig,
+) -> None:
+    """(l): `SystemExit(3)` at page 2, then the source's `close()` raises Ctrl+C.
+
+    Code 3, stdout empty (no `<A> running`), no `interrupted` on stderr.
+    """
+    lab = command_rig.lab
+    first = SystemExit(3)
+    lab.source.script(2, first)
+    close_the_source_with(command_rig, interrupt_error)
+    out = io.StringIO()
+    err = io.StringIO()
+
+    stop = invoke_exiting(command_rig, out, err)
+
+    assert stop is first
+    assert stop.code == 3
+    assert out.getvalue() == ""
+    assert "interrupted" not in err.getvalue()
+    assert [source.closes for source in command_rig.sources] == [1]
+    assert lab.database.runs[the_run(lab)].status is RunStatus.RUNNING
+
+
+def test_system_exit_command_end_a_system_exit_from_the_source_close_keeps_the_line(
+    command_rig: Rig,
+) -> None:
+    """(m): after the AC1 run the source's `close()` raises `SystemExit(3)` -> code 3.
+
+    The result line was written before step 7: stdout is exactly `<A> succeeded`.
+    """
+    lab = command_rig.lab
+    exits = Raised(lambda: SystemExit(3))
+    close_the_source_with(command_rig, exits)
+    out = io.StringIO()
+    err = io.StringIO()
+
+    stop = invoke_exiting(command_rig, out, err)
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert out.getvalue() == f"{FIRST_DRAWN_ID} succeeded\n"
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert [source.closes for source in command_rig.sources] == [1]
+
+
+# === exit_code_refusal_then_interrupt (AC6 e, AC7, AC15; F-23, decision D-2) ====
+
+
+def test_exit_code_refusal_then_interrupt_a_refused_failure_event_exits_130_and_prints_failed(
+    command_rig: Rig,
+) -> None:
+    """Case (i): the `page-failed` append is refused and Ctrl+C lands on its line.
+
+    The cleanup audits the interruption and closes the run `failed`: exit 130, stdout
+    exactly `<A> failed`, no traceback.
+    """
+    lab = command_rig.lab
+    lab.source.script(2, lab.status_failure(2, 500))
+    refuse_every_call(lab, "append_audit_event", detail="page-failed")
+    out = io.StringIO()
+    err = RaisingStream(
+        interrupt_error,
+        lambda text: "append_audit_event" in text and "page-failed" in text,
+    )
+
+    result = invoke_through(command_rig, out, err)
+
+    run_id = the_run(lab)
+    assert err.fired
+    assert result == 130
+    assert out.getvalue() == f"{run_id} failed\n"
+    assert "Traceback" not in err.getvalue()
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.event_types(run_id) == [
+        "run-started",
+        "page-completed",
+        "run-interrupted",
+    ]
+
+
+def test_exit_code_refusal_then_interrupt_a_refused_cleanup_append_exits_130_and_prints_running(
+    command_rig: Rig,
+) -> None:
+    """Case (v): the cleanup's own `run-interrupted` append is refused too.
+
+    K stops there and the run stays `running`: exit 130, stdout exactly `<A> running`.
+    """
+    lab = command_rig.lab
+    lab.source.script(2, lab.status_failure(2, 500))
+    refuse_every_call(lab, "append_audit_event", detail="page-failed")
+    refuse_every_call(lab, "append_audit_event", detail="run-interrupted")
+    out = io.StringIO()
+    err = RaisingStream(
+        interrupt_error,
+        lambda text: "append_audit_event" in text and "page-failed" in text,
+    )
+
+    result = invoke_through(command_rig, out, err)
+
+    run_id = the_run(lab)
+    assert err.fired
+    assert result == 130
+    assert out.getvalue() == f"{run_id} running\n"
+    assert "Traceback" not in err.getvalue()
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert lab.event_types(run_id) == ["run-started", "page-completed"]
+
+
+# === The handler of `main` (AC14, AC15; F-26, D-3 option B, D-4 option 1, D-5 a) =
+#
+# Plan § Public names, `interfaces.cli`, "The handler of `main`": one `try` around the
+# whole body of `main` with two handlers. A Ctrl+C -> one attempt to write
+# `interrupted` on stderr, then `SystemExit(130)`; any other exception (a `MemoryError`,
+# or an `OSError` from the write of a usage error) -> one attempt to write
+# `unexpected error: <class>`, then `SystemExit(1)`; what that attempt raises: Ctrl+C
+# makes it 130, `SystemExit` replaces it, anything else is suppressed. A `SystemExit`
+# is never caught. D-5 option a: one local parser class lets the `OSError` that
+# `argparse` suppresses reach the handler.
+
+
+@dataclass
+class MainCalls:
+    """How many times `main` called what the test replaced."""
+
+    default_wiring: int = 0
+    run_ingest_command: int = 0
+
+
+def watch_main(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    wiring: Callable[[], IngestWiring] | None = None,
+    run_command: bool = False,
+) -> MainCalls:
+    """Replace `cli.default_wiring` and `cli.run_ingest_command` by recorders.
+
+    `default_wiring` fails the test when no `wiring` is given. `run_ingest_command` is
+    a recorder that returns 0, or, with `run_command`, the real command, called once.
+    """
+    calls = MainCalls()
+    real_command = cli.run_ingest_command
+
+    def watched_wiring() -> IngestWiring:
+        calls.default_wiring += 1
+        if wiring is None:
+            raise AssertionError("main must not build the wiring here")
+        return wiring()
+
+    def watched_command(*args: typing.Any, **kwargs: typing.Any) -> int:
+        calls.run_ingest_command += 1
+        if run_command:
+            return real_command(*args, **kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "default_wiring", watched_wiring)
+    monkeypatch.setattr(cli, "run_ingest_command", watched_command)
+    return calls
+
+
+def capture_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    out: io.StringIO | None = None,
+    err: io.StringIO | None = None,
+) -> tuple[io.StringIO, io.StringIO]:
+    """`sys.stdout` and `sys.stderr` are the streams given (or new `io.StringIO`)."""
+    out = io.StringIO() if out is None else out
+    err = io.StringIO() if err is None else err
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    return out, err
+
+
+def run_main(argv: Sequence[str]) -> SystemExit:
+    """`main(argv)`, which must end through `SystemExit`: return that very object.
+
+    Any other exception that escapes (a `KeyboardInterrupt` included, which would end
+    the whole pytest session) fails the test by name.
+    """
+    try:
+        with pytest.raises(SystemExit) as stop:
+            cli.main(list(argv))
+    except (Exception, KeyboardInterrupt) as error:
+        raise AssertionError(
+            f"main let {type(error).__name__} escape in place of the SystemExit"
+        ) from error
+    return stop.value
+
+
+def raising(make_error: Callable[[], BaseException]) -> Callable[..., typing.NoReturn]:
+    """A function that raises `make_error()` whatever it is called with."""
+
+    def raise_it(*args: object, **kwargs: object) -> typing.NoReturn:
+        raise make_error()
+
+    return raise_it
+
+
+# === main_parse_interrupt (AC14, AC15; F-26, D-3 option B) ======================
+
+PARSE_TRIGGERS = ["request-from-arguments", "version"]
+
+
+def arm_parse_trigger(
+    monkeypatch: pytest.MonkeyPatch,
+    trigger: str,
+    make_error: Callable[[], BaseException],
+) -> list[str]:
+    """Make `main` raise `make_error()` while it parses; return the arguments.
+
+    `request-from-arguments`: the ingest arguments of AC1, with the function that
+    `_IngestParser` calls inside `parse_args` replaced. `version`: `--version`, with
+    the `version` that `build_parser` calls replaced.
+    """
+    if trigger == "version":
+        monkeypatch.setattr(cli, "version", raising(make_error))
+        return ["--version"]
+    assert trigger == "request-from-arguments"
+    monkeypatch.setattr(cli, "request_from_arguments", raising(make_error))
+    return ["ingest", *SCOPE_ARGS]
+
+
+@pytest.mark.parametrize("trigger", PARSE_TRIGGERS)
+def test_main_parse_interrupt_a_ctrl_c_exits_130_and_says_interrupted(
+    monkeypatch: pytest.MonkeyPatch, trigger: str
+) -> None:
+    """D-3: Ctrl+C while `main` parses -> code 130, stdout empty, `interrupted` once.
+
+    No traceback; the wiring is not built and the command is not run.
+    """
+    calls = watch_main(monkeypatch)
+    out, err = capture_streams(monkeypatch)
+    argv = arm_parse_trigger(monkeypatch, trigger, interrupt_error)
+
+    stop = run_main(argv)
+
+    assert stop.code == 130
+    assert out.getvalue() == ""
+    assert err.getvalue().count("interrupted") == 1, err.getvalue()
+    for text in ("Traceback", "KeyboardInterrupt"):
+        assert text not in err.getvalue()
+    assert calls == MainCalls()
+
+
+@pytest.mark.parametrize("trigger", PARSE_TRIGGERS)
+def test_main_parse_interrupt_a_memory_error_exits_1_naming_only_the_class(
+    monkeypatch: pytest.MonkeyPatch, trigger: str
+) -> None:
+    """D-3, D-4: a `MemoryError` while `main` parses -> code 1, `unexpected error: MemoryError`.
+
+    Once on stderr, nothing else of the error; stdout empty; nothing is built or run.
+    """
+    calls = watch_main(monkeypatch)
+    out, err = capture_streams(monkeypatch)
+    argv = arm_parse_trigger(monkeypatch, trigger, memory_error)
+
+    stop = run_main(argv)
+
+    assert stop.code == 1
+    assert out.getvalue() == ""
+    assert err.getvalue().count("unexpected error: MemoryError") == 1, err.getvalue()
+    assert err.getvalue().count("MemoryError") == 1
+    assert "Traceback" not in err.getvalue()
+    assert calls == MainCalls()
+
+
+@pytest.mark.parametrize("trigger", PARSE_TRIGGERS)
+def test_main_parse_interrupt_a_system_exit_is_preserved(
+    monkeypatch: pytest.MonkeyPatch, trigger: str
+) -> None:
+    """D-1: `SystemExit(3)` while `main` parses leaves `main` as that same object."""
+    calls = watch_main(monkeypatch)
+    out, err = capture_streams(monkeypatch)
+    exits = Raised(lambda: SystemExit(3))
+    argv = arm_parse_trigger(monkeypatch, trigger, exits)
+
+    stop = run_main(argv)
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert out.getvalue() == ""
+    for text in ("interrupted", "unexpected error", "Traceback"):
+        assert text not in err.getvalue(), text
+    assert calls == MainCalls()
+
+
+# === main_wiring_interrupt (AC14, AC15; F-26, D-3 option B) =====================
+
+
+@pytest.mark.parametrize(
+    ("make_error", "code", "handler_line"),
+    [
+        pytest.param(interrupt_error, 130, "interrupted", id="ctrl-c"),
+        pytest.param(
+            memory_error, 1, "unexpected error: MemoryError", id="memory-error"
+        ),
+    ],
+)
+def test_main_wiring_interrupt_an_exception_while_the_wiring_is_built_ends_through_the_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    make_error: Callable[[], BaseException],
+    code: int,
+    handler_line: str,
+) -> None:
+    """D-3: `default_wiring()` raises Ctrl+C or `MemoryError` -> code 130 or 1.
+
+    Stdout is empty and the handler's line is on stderr once; the command is not run;
+    nothing is built; no traceback.
+    """
+    calls = watch_main(monkeypatch, wiring=raising(make_error))
+    out, err = capture_streams(monkeypatch)
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert stop.code == code
+    assert out.getvalue() == ""
+    assert err.getvalue().count(handler_line) == 1, err.getvalue()
+    assert "Traceback" not in err.getvalue()
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=0)
+
+
+def test_main_wiring_interrupt_a_system_exit_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-1: `SystemExit(3)` from `default_wiring()` leaves `main` as that same object."""
+    exits = Raised(lambda: SystemExit(3))
+    calls = watch_main(monkeypatch, wiring=raising(exits))
+    out, err = capture_streams(monkeypatch)
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert out.getvalue() == ""
+    for text in ("interrupted", "unexpected error", "Traceback"):
+        assert text not in err.getvalue(), text
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=0)
+
+
+# === main_error_stream_fault (AC14, AC15; F-26, D-3, D-4, D-5 option a) =========
+#
+# `sys.stderr` is the `RaisingStream` of the sweep. (a) `main(["ingest", "--last-page",
+# "2"])`: `_IngestParser` calls `parser.error`, whose `print_usage` writes the usage.
+# (b) `main([])`: the bare command's `print_usage`. (c) The ingest arguments of AC1
+# with `POSTGRES_DB` unset: `run_ingest_command` writes `error: POSTGRES_DB is not set`.
+
+ERROR_STREAM_CASES = ["a", "b", "c"]
+ERROR_STREAM_MARKERS = {
+    "a": "usage:",
+    "b": "usage:",
+    "c": "POSTGRES_DB is not set",
+}
+
+
+def arm_error_stream_case(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, case: str
+) -> tuple[MainCalls, list[str]]:
+    """Set what `main` sees in one case of F-26; return the recorders and the arguments."""
+    if case == "c":
+        for name in POSTGRES_VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("POSTGRES_USER", GOOD_ENVIRON["POSTGRES_USER"])
+        monkeypatch.setenv("POSTGRES_PASSWORD", GOOD_ENVIRON["POSTGRES_PASSWORD"])
+        rig.forbid("make_source", "migrate", "make_store", "make_repository")
+        calls = watch_main(monkeypatch, wiring=rig.wiring, run_command=True)
+        return calls, ["ingest", *SCOPE_ARGS]
+    calls = watch_main(monkeypatch)
+    if case == "a":
+        return calls, ["ingest", "--last-page", "2"]
+    assert case == "b"
+    return calls, []
+
+
+def assert_nothing_was_built_by_main(rig: Rig, calls: MainCalls, case: str) -> None:
+    """Nothing was built; the command ran only in (c), once, and built nothing."""
+    assert rig.calls == []
+    assert calls.run_ingest_command == (1 if case == "c" else 0)
+    assert calls.default_wiring == (1 if case == "c" else 0)
+
+
+@pytest.mark.parametrize("case", ERROR_STREAM_CASES)
+def test_main_error_stream_fault_with_working_streams_a_parse_error_still_exits_2(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Control: with working streams the same three calls give 2, as today."""
+    calls, argv = arm_error_stream_case(command_rig, monkeypatch, case)
+    out, err = capture_streams(monkeypatch)
+
+    stop = run_main(argv)
+
+    assert stop.code == 2
+    assert out.getvalue() == ""
+    assert ERROR_STREAM_MARKERS[case] in err.getvalue()
+    assert_nothing_was_built_by_main(command_rig, calls, case)
+
+
+@pytest.mark.parametrize("keep", [True, False], ids=["after-storing", "before-storing"])
+@pytest.mark.parametrize(
+    ("make_error", "code", "handler_line"),
+    [
+        pytest.param(interrupt_error, 130, "interrupted", id="ctrl-c"),
+        pytest.param(
+            memory_error, 1, "unexpected error: MemoryError", id="memory-error"
+        ),
+        pytest.param(os_error, 1, "unexpected error: OSError", id="os-error"),
+    ],
+)
+@pytest.mark.parametrize("case", ERROR_STREAM_CASES)
+def test_main_error_stream_fault_a_failing_write_of_a_parse_error_ends_through_the_handler(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    make_error: Callable[[], BaseException],
+    code: int,
+    handler_line: str,
+    keep: bool,
+) -> None:
+    """D-3, D-4, D-5: the write of a usage error fails -> 130 for Ctrl+C, else 1.
+
+    The faulted message is attempted once and never written again; the handler's line
+    is on the same stream once; stdout is empty; no traceback; nothing is built, and
+    the command ran only in (c). An `OSError` in (a) and (b) is one `argparse` would
+    suppress, so it reaches the handler only through the one local parser class.
+    """
+    marker = ERROR_STREAM_MARKERS[case]
+    calls, argv = arm_error_stream_case(command_rig, monkeypatch, case)
+    err = RaisingStream(make_error, lambda text: marker in text, keep=keep)
+    out, _ = capture_streams(monkeypatch, err=err)
+
+    stop = run_main(argv)
+
+    assert err.fired
+    assert stop.code == code
+    assert out.getvalue() == ""
+    assert len([text for text in err.writes if marker in text]) == 1, err.writes
+    assert err.getvalue().count(marker) <= 1
+    assert err.getvalue().count(handler_line) == 1, err.getvalue()
+    assert "Traceback" not in err.getvalue()
+    assert_nothing_was_built_by_main(command_rig, calls, case)
+
+
+@pytest.mark.parametrize("keep", [True, False], ids=["after-storing", "before-storing"])
+@pytest.mark.parametrize("case", ERROR_STREAM_CASES)
+def test_main_error_stream_fault_a_system_exit_from_the_write_is_preserved(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch, case: str, keep: bool
+) -> None:
+    """D-1: `SystemExit(3)` from the write of a usage error leaves `main` as that object.
+
+    No handler line (`interrupted`, `unexpected error`) is written for it.
+    """
+    marker = ERROR_STREAM_MARKERS[case]
+    calls, argv = arm_error_stream_case(command_rig, monkeypatch, case)
+    exits = Raised(lambda: SystemExit(3))
+    err = RaisingStream(exits, lambda text: marker in text, keep=keep)
+    out, _ = capture_streams(monkeypatch, err=err)
+
+    stop = run_main(argv)
+
+    assert err.fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert out.getvalue() == ""
+    assert len([text for text in err.writes if marker in text]) == 1, err.writes
+    for text in ("interrupted", "unexpected error", "Traceback"):
+        assert text not in err.getvalue(), text
+    assert_nothing_was_built_by_main(command_rig, calls, case)
+
+
+# === main_help_stream_fault (AC14, AC15; F-26, D-3, D-5 option a) ===============
+#
+# `--version`, `--help` and `ingest --help` write on stdout through `argparse`'s own
+# `_print_message`, which suppresses an `OSError`. The main parser and the `ingest`
+# subparser are both of the one local parser class, so the `OSError` reaches the
+# handler of `main`. `argparse` itself is not patched.
+
+HELP_CASES = [
+    pytest.param(
+        ["--version"], lambda text: "ec-procurement-quality" in text, id="version"
+    ),
+    pytest.param(["--help"], lambda text: "usage:" in text, id="help"),
+    pytest.param(["ingest", "--help"], lambda text: "usage:" in text, id="ingest-help"),
+]
+STANDARD_PRINT_MESSAGE = argparse.ArgumentParser._print_message
+
+
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_main_help_stream_fault_with_working_streams_the_text_goes_to_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+) -> None:
+    """Control (CLI-1): exit 0 and the text as today on stdout; stderr is empty."""
+    calls = watch_main(monkeypatch)
+    out, err = capture_streams(monkeypatch)
+
+    stop = run_main(argv)
+
+    assert stop.code == 0
+    assert trigger(out.getvalue())
+    if argv == ["--version"]:
+        assert (
+            out.getvalue()
+            == f"ec-procurement-quality {installed_version('ec-procurement-quality')}\n"
+        )
+    else:
+        assert out.getvalue().startswith("usage:")
+    assert err.getvalue() == ""
+    assert calls == MainCalls()
+
+
+@pytest.mark.parametrize("keep", [True, False], ids=["after-storing", "before-storing"])
+@pytest.mark.parametrize(
+    ("make_error", "code", "handler_line"),
+    [
+        pytest.param(os_error, 1, "unexpected error: OSError", id="os-error"),
+        pytest.param(interrupt_error, 130, "interrupted", id="ctrl-c"),
+        pytest.param(
+            memory_error, 1, "unexpected error: MemoryError", id="memory-error"
+        ),
+    ],
+)
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_main_help_stream_fault_a_failing_stdout_ends_through_the_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+    make_error: Callable[[], BaseException],
+    code: int,
+    handler_line: str,
+    keep: bool,
+) -> None:
+    """D-3, D-5: the write of the help or version text fails -> 1 (130 for Ctrl+C).
+
+    The text is attempted once on stdout and never again; stderr holds exactly the
+    handler's line, once; no traceback; nothing is built and the command is not run.
+    """
+    calls = watch_main(monkeypatch)
+    out = RaisingStream(make_error, trigger, keep=keep)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(argv)
+
+    assert out.fired
+    assert stop.code == code
+    assert len([text for text in out.writes if trigger(text)]) == 1, out.writes
+    assert err.getvalue().splitlines() == [handler_line]
+    assert calls == MainCalls()
+
+
+@pytest.mark.parametrize("keep", [True, False], ids=["after-storing", "before-storing"])
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_main_help_stream_fault_a_system_exit_from_stdout_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+    keep: bool,
+) -> None:
+    """D-1: `SystemExit(3)` from the write of the text leaves `main` as that object.
+
+    No handler line is written for it.
+    """
+    calls = watch_main(monkeypatch)
+    exits = Raised(lambda: SystemExit(3))
+    out = RaisingStream(exits, trigger, keep=keep)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(argv)
+
+    assert out.fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert len([text for text in out.writes if trigger(text)]) == 1, out.writes
+    assert err.getvalue() == ""
+    assert calls == MainCalls()
+
+
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_main_help_stream_fault_a_failing_stderr_in_the_handler_attempts_nothing_more(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+) -> None:
+    """Stdout and the handler's own line both fail with `OSError` -> code 1, no traceback.
+
+    Each is attempted once: the handler's line is not written again anywhere.
+    """
+    calls = watch_main(monkeypatch)
+    out = RaisingStream(os_error, trigger)
+    err = RaisingStream(os_error, lambda text: "unexpected error" in text)
+    capture_streams(monkeypatch, out=out, err=err)
+
+    stop = run_main(argv)
+
+    assert out.fired
+    assert err.fired
+    assert stop.code == 1
+    assert len([text for text in out.writes if trigger(text)]) == 1, out.writes
+    assert len([text for text in err.writes if "unexpected error" in text]) == 1
+    assert "Traceback" not in out.getvalue() + err.getvalue()
+    assert calls == MainCalls()
+
+
+def test_main_help_stream_fault_argparse_itself_is_not_patched() -> None:
+    """`argparse.ArgumentParser._print_message` is the standard library's own function.
+
+    The product adapts one local parser class; it never patches `argparse`.
+    """
+    cli.build_parser()
+
+    method = argparse.ArgumentParser._print_message
+    assert method is STANDARD_PRINT_MESSAGE
+    assert method.__module__ == "argparse"
+    assert (
+        Path(method.__code__.co_filename).resolve() == Path(argparse.__file__).resolve()
+    )
+
+
+# === Audit round 6 rework (2026-10-23), plan Revision 12 ========================
+#
+# Feature ingest-command (F4), outcome O10, rework of round 6. Written red against the
+# Revision 14/12/9 specs (approved on 2026-10-23), before the protected write, the
+# neutralizing of a failed stream and the last flush of `main` exist. Tokens, by
+# finding:
+#
+# - F-27, in process (option (b)): `flush_stream_fault`. Every output is written and
+#   flushed in its one attempt, so a failure that a buffered stream shows only at the
+#   flush gives the planned exit code. The stream is the `RaisingStream` of the sweep
+#   extended with a fault on the n-th `flush()` after a matching write
+#   (`FlushFaultStream`: its write faults are unchanged). The real closed pipe is the
+#   process tier (`tests/process/`), not this file.
+# - F-27, decision D-10: `neutralize_fault`. The neutralizing of a failed stream
+#   (`os.open` of the null device, `os.dup2`) fails, succeeds, or has no descriptor to
+#   act on. The descriptor is one the test opened on a file in `tmp_path` (never 0, 1
+#   or 2) and `os.open` and `os.dup2` are replaced by recorders that never touch a
+#   standard descriptor.
+# - F-28 (D-1, D-3, D-4): `main_handler_line_fault` (a Ctrl+C or a `SystemExit` while
+#   `main`'s handler writes its own line) and `exit_code_cleanup_system_exit` (State
+#   machine K never turns a `SystemExit` into an outcome); the use-case tokens
+#   `system_exit_first_wins`, `window_system_exit_line` and `cleanup_system_exit` are in
+#   `test_ingest_use_case.py`. They protect behavior that already holds.
+# - F-29: the two renamed tests of `main_error_stream_fault` (no `usage` in a name).
+
+
+_KEPT_ALIVE: list[object] = []
+
+
+class FlushFaultStream(RaisingStream):
+    """A `RaisingStream` whose `flush()` raises after a matching write (Revision 12).
+
+    `after` is asked about the text of every write; once a write whose text it accepts
+    was stored the stream is armed, and its `flush()` calls are counted from 1. The
+    armed call number `flush_nth + i` raises `flush_errors[i]()`; every other call
+    succeeds. Its write faults are the base class's and none is set: it never raises
+    from `write`. `fileno()` returns `descriptor` when one is given, else the
+    `io.UnsupportedOperation` of an `io.StringIO`. `flush_faults` keeps the exceptions
+    it raised, `flushes` counts every `flush()` call.
+    """
+
+    def __init__(
+        self,
+        flush_errors: Sequence[Callable[[], BaseException]],
+        after: Callable[[str], bool],
+        *,
+        flush_nth: int = 1,
+        descriptor: int | None = None,
+    ) -> None:
+        super().__init__(
+            lambda: AssertionError("a FlushFaultStream has no write fault"),
+            lambda text: False,
+        )
+        self._flush_errors = list(flush_errors)
+        self._after = after
+        self._flush_nth = flush_nth
+        self._descriptor = descriptor
+        self._armed = False
+        self._armed_flushes = 0
+        self.flushes = 0
+        self.flush_faults: list[BaseException] = []
+        if descriptor is not None:
+            # A stream with a descriptor must not share an identity with a later test's.
+            _KEPT_ALIVE.append(self)
+
+    def write(self, text: str) -> int:
+        count = super().write(text)
+        if self._after(text):
+            self._armed = True
+        return count
+
+    def flush(self) -> None:
+        self.flushes += 1
+        super().flush()
+        if not self._armed:
+            return
+        self._armed_flushes += 1
+        index = self._armed_flushes - self._flush_nth
+        if 0 <= index < len(self._flush_errors):
+            error = self._flush_errors[index]()
+            self.flush_faults.append(error)
+            raise error
+
+    def fileno(self) -> int:
+        if self._descriptor is None:
+            return super().fileno()
+        return self._descriptor
+
+    @property
+    def flush_fired(self) -> bool:
+        return bool(self.flush_faults)
+
+
+class Redirections:
+    """What the product asked of `os.open` (the null device) and of `os.dup2`."""
+
+    def __init__(self) -> None:
+        self.null_device_opens: list[str] = []
+        self.copies: list[tuple[int, int]] = []
+
+
+def record_redirections(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    open_error: Callable[[], BaseException] | None = None,
+    copy_error: Callable[[], BaseException] | None = None,
+) -> Redirections:
+    """Replace `os.open` and `os.dup2` by recorders that touch no standard descriptor.
+
+    `os.dup2` records the call and does nothing (it raises `copy_error()` when given),
+    so no descriptor, standard or not, is ever redirected by the product. Pytest's own
+    capture also uses `os.dup2` to restore the standard descriptors between the phases
+    of a test, so a call made from a `_pytest` module is passed on to the real one and
+    is not recorded. `os.open` delegates to the real one for every path, and for the
+    null device it records the call first and raises `open_error()` when given. A test
+    checks the targets afterwards: an assertion raised inside the recorder could be
+    absorbed by the product.
+    """
+    redirections = Redirections()
+    real_open = os.open
+    real_dup2 = os.dup2
+
+    def recording_open(
+        path: typing.Any, flags: int, *args: typing.Any, **kwargs: typing.Any
+    ) -> int:
+        if os.fspath(path) == os.devnull:
+            redirections.null_device_opens.append(os.devnull)
+            if open_error is not None:
+                raise open_error()
+        return real_open(path, flags, *args, **kwargs)
+
+    def recording_dup2(
+        source: int, target: int, *args: typing.Any, **kwargs: typing.Any
+    ) -> int:
+        if sys._getframe(1).f_globals.get("__name__", "").startswith("_pytest"):
+            return real_dup2(source, target, *args, **kwargs)
+        redirections.copies.append((source, target))
+        if copy_error is not None:
+            raise copy_error()
+        return target
+
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "dup2", recording_dup2)
+    return redirections
+
+
+@pytest.fixture
+def owned_descriptor(tmp_path: Path, request: pytest.FixtureRequest) -> int:
+    """A descriptor this test opened on a file in `tmp_path`: never 0, 1 or 2.
+
+    It stays open until the end of the session, so that no later test is given the
+    same number (a record kept by the product per stream cannot then meet it twice).
+    """
+    descriptor = os.open(
+        tmp_path / "owned-stream.bin",
+        os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0),
+    )
+    assert descriptor > 2
+    request.config.add_cleanup(lambda: _close_quietly(descriptor))
+    return descriptor
+
+
+def _close_quietly(descriptor: int) -> None:
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def version_text() -> str:
+    return f"ec-procurement-quality {installed_version('ec-procurement-quality')}\n"
+
+
+def is_version_text(text: str) -> bool:
+    return text == version_text()
+
+
+SYNTHETIC_RESULT_LINE = "synthetic result line\n"
+SYNTHETIC_MESSAGE_LINE = "synthetic message line\n"
+
+
+def arm_command_that_writes_without_flushing(
+    monkeypatch: pytest.MonkeyPatch, rig: Rig, *, code: int = 0
+) -> None:
+    """`main(["ingest", ...])` runs a command that writes one line on each stream.
+
+    The command does not flush: the only flush that follows its writes is the last
+    flush of `main`. It returns `code`, so `main` ends with its own `SystemExit`.
+    """
+
+    def command(
+        arguments: argparse.Namespace,
+        *,
+        environ: Mapping[str, str],
+        wiring: IngestWiring,
+        stdout: typing.TextIO,
+        stderr: typing.TextIO,
+    ) -> int:
+        stdout.write(SYNTHETIC_RESULT_LINE)
+        stderr.write(SYNTHETIC_MESSAGE_LINE)
+        return code
+
+    monkeypatch.setattr(cli, "default_wiring", rig.wiring)
+    monkeypatch.setattr(cli, "run_ingest_command", command)
+
+
+# === flush_stream_fault (AC14, AC15; F-27, in process) =========================
+#
+# Plan Revision 12, § Public names, "Protected writes and the last flush": every output
+# is written and flushed inside its one attempt, so a flush that fails is handled where
+# a write that fails is today. In a real process a `print` only fills a buffer, so
+# these tests aim the fault at `flush()`, after the text was stored. In process no
+# stream has a descriptor, so nothing is redirected: the `os.dup2` recorder stays empty.
+
+FLUSH_ERRORS = [
+    pytest.param(lambda: OSError("synthetic stream failure"), 1, id="os-error"),
+    pytest.param(lambda: BrokenPipeError("synthetic broken pipe"), 1, id="broken-pipe"),
+    pytest.param(
+        lambda: ValueError("I/O operation on closed file."), 1, id="closed-file"
+    ),
+    pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c"),
+]
+
+
+@pytest.mark.parametrize(("make_error", "code"), FLUSH_ERRORS)
+def test_flush_stream_fault_a_failing_flush_after_a_succeeded_result_line(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    make_error: Callable[[], BaseException],
+    code: int,
+) -> None:
+    """(a) AC14, AC15: stdout's flush raises after `<A> succeeded` was stored.
+
+    1 (130 for Ctrl+C); stdout holds `<A> succeeded` once, never `running` or a second
+    line; stderr holds the outcome message; `<A>` stays `succeeded` with nothing
+    written after the outcome; nothing is redirected.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    line = f"{FIRST_DRAWN_ID} succeeded"
+    out = FlushFaultStream([make_error], lambda text: line in text)
+    err = io.StringIO()
+
+    result = invoke_through(command_rig, out, err)
+
+    assert result == code
+    assert out.flush_fired
+    assert out.getvalue() == f"{line}\n"
+    assert [text for text in out.writes if "running" in text] == []
+    assert "succeeded" in err.getvalue().splitlines()
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert lab.opener.all_closed
+    assert redirections.copies == []
+
+
+def test_flush_stream_fault_a_system_exit_in_the_flush_after_a_result_line(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(a) D-1: `SystemExit(3)` from stdout's flush leaves the command as that object.
+
+    The result line was stored once; the stored run is as confirmed.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    line = f"{FIRST_DRAWN_ID} succeeded"
+    exits = Raised(lambda: SystemExit(3))
+    out = FlushFaultStream([exits], lambda text: line in text)
+    err = io.StringIO()
+
+    stop = invoke_exiting(command_rig, out, err)
+
+    assert out.flush_fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert out.getvalue() == f"{line}\n"
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert redirections.copies == []
+
+
+@pytest.mark.parametrize(
+    ("ending", "code"),
+    [
+        pytest.param("failed-page", 1, id="failed-run"),
+        pytest.param("ctrl-c", 130, id="ended-by-ctrl-c"),
+    ],
+)
+def test_flush_stream_fault_a_failing_flush_after_a_failed_result_line(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch, ending: str, code: int
+) -> None:
+    """(b) AC14, AC15: stdout's flush raises after `<A> failed` was stored.
+
+    A failed run (page 2 answers 500) gives 1; a run ended by Ctrl+C at page 2 gives
+    130, already determined. Stdout holds `<A> failed` once; the stored run is
+    `failed` with nothing written after the outcome.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    if ending == "failed-page":
+        lab.source.script(2, lab.status_failure(2, 500))
+    else:
+        lab.source.script(2, KeyboardInterrupt())
+    line = f"{FIRST_DRAWN_ID} failed"
+    out = FlushFaultStream([os_error], lambda text: line in text)
+    err = io.StringIO()
+
+    result = invoke_through(command_rig, out, err)
+
+    assert result == code
+    assert out.flush_fired
+    assert out.getvalue() == f"{line}\n"
+    assert_the_stored_run_is_as_confirmed(lab, "failed")
+    assert lab.opener.all_closed
+    assert redirections.copies == []
+
+
+def test_flush_stream_fault_a_failing_flush_of_the_final_message_keeps_the_result_line(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(c) AC14, AC15: stderr's flush raises after the final message was stored.
+
+    1; stdout is exactly `<A> succeeded`; the stored run is as confirmed.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    phase = watch_run_ingest(monkeypatch)
+    out = io.StringIO()
+    err = FlushFaultStream([os_error], after_run_ingest(phase))
+
+    result = invoke_through(command_rig, out, err)
+
+    assert result == 1
+    assert err.flush_fired
+    assert out.getvalue() == f"{FIRST_DRAWN_ID} succeeded\n"
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert lab.opener.all_closed
+    assert redirections.copies == []
+
+
+@pytest.mark.parametrize(
+    ("make_escape", "code"),
+    [
+        pytest.param(lambda: KeyboardInterrupt(), 130, id="ctrl-c-escape"),
+        pytest.param(lambda: SyntheticDefect(BODY_MARKER), 1, id="defect-escape"),
+    ],
+)
+def test_flush_stream_fault_a_failing_flush_of_the_running_line(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    make_escape: Callable[[], BaseException],
+    code: int,
+) -> None:
+    """(d) AC15: `run_ingest` announces `<A>` and raises; stdout's flush raises.
+
+    130 for the Ctrl+C and 1 for the defect; `<A> running` is stored once and never
+    written again; no traceback.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    monkeypatch.setattr(ingest_command, "run_ingest", escaping(lab.A, make_escape))
+    running = f"{lab.A} running"
+    out = FlushFaultStream([os_error], lambda text: running in text)
+    err = io.StringIO()
+
+    result = invoke_through(command_rig, out, err)
+
+    assert result == code
+    assert out.flush_fired
+    assert out.getvalue() == f"{running}\n"
+    assert len([text for text in out.writes if "running" in text]) == 1
+    assert "Traceback" not in err.getvalue()
+    assert redirections.copies == []
+
+
+@pytest.mark.parametrize(
+    ("make_error", "handler_line"),
+    [
+        pytest.param(os_error, "unexpected error: OSError", id="os-error"),
+        pytest.param(
+            lambda: BrokenPipeError("synthetic broken pipe"),
+            "unexpected error: BrokenPipeError",
+            id="broken-pipe",
+        ),
+        pytest.param(
+            lambda: ValueError("I/O operation on closed file."),
+            "unexpected error: ValueError",
+            id="closed-file",
+        ),
+    ],
+)
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_flush_stream_fault_a_failing_flush_of_the_help_or_version_text(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+    make_error: Callable[[], BaseException],
+    handler_line: str,
+) -> None:
+    """(e) AC14: `--version`, `--help` and `ingest --help`; stdout's flush raises.
+
+    `SystemExit` with code 1; stderr is exactly the handler's one line; the text was
+    stored once; nothing is built; nothing is redirected.
+    """
+    calls = watch_main(monkeypatch)
+    redirections = record_redirections(monkeypatch)
+    out = FlushFaultStream([make_error], trigger)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(argv)
+
+    assert stop.code == 1
+    assert out.flush_fired
+    assert err.getvalue().splitlines() == [handler_line]
+    assert len([text for text in out.writes if trigger(text)]) == 1, out.writes
+    assert calls == MainCalls()
+    assert redirections.copies == []
+
+
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_flush_stream_fault_a_ctrl_c_in_the_flush_of_the_help_or_version_text(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+) -> None:
+    """(e) AC14, AC15: Ctrl+C from stdout's flush gives 130, `interrupted` at most once."""
+    calls = watch_main(monkeypatch)
+    redirections = record_redirections(monkeypatch)
+    out = FlushFaultStream([interrupt_error], trigger)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(argv)
+
+    assert stop.code == 130
+    assert out.flush_fired
+    assert err.getvalue().splitlines() in ([], ["interrupted"])
+    assert len([text for text in out.writes if trigger(text)]) == 1, out.writes
+    assert calls == MainCalls()
+    assert redirections.copies == []
+
+
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_flush_stream_fault_a_system_exit_in_the_flush_of_the_help_or_version_text(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+) -> None:
+    """(e) D-1: `SystemExit(3)` from stdout's flush leaves `main` as that object.
+
+    No handler line is written for it.
+    """
+    calls = watch_main(monkeypatch)
+    redirections = record_redirections(monkeypatch)
+    exits = Raised(lambda: SystemExit(3))
+    out = FlushFaultStream([exits], trigger)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(argv)
+
+    assert out.flush_fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert err.getvalue() == ""
+    assert len([text for text in out.writes if trigger(text)]) == 1, out.writes
+    assert calls == MainCalls()
+    assert redirections.copies == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["ingest", "--last-page", "2"], id="parse-error"),
+        pytest.param([], id="bare-command"),
+    ],
+)
+def test_flush_stream_fault_a_failing_flush_of_the_parser_message(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str]
+) -> None:
+    """(f) AC14: stderr's flush raises after the usage message of the parser.
+
+    Code 1; the message was stored once; stdout is empty; the command was not called.
+    """
+    calls = watch_main(monkeypatch)
+    redirections = record_redirections(monkeypatch)
+    err = FlushFaultStream([os_error], lambda text: "usage:" in text)
+    out, _ = capture_streams(monkeypatch, err=err)
+
+    stop = run_main(argv)
+
+    assert stop.code == 1
+    assert err.flush_fired
+    assert out.getvalue() == ""
+    assert len([text for text in err.writes if "usage:" in text]) == 1, err.writes
+    assert calls == MainCalls()
+    assert redirections.copies == []
+
+
+def test_flush_stream_fault_a_failing_flush_of_a_progress_line_follows_the_progress_rules(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(g) AC15: stderr's flush raises after the progress line of page 1.
+
+    The same outcome as a progress write that raises: `unexpected-error` for page 1
+    with `OSError`, `<A> failed`, exit 1.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    out = io.StringIO()
+    err = FlushFaultStream([os_error], lambda text: text.startswith("page 1 sequence"))
+
+    result = invoke_through(command_rig, out, err)
+
+    run_id = the_run(lab)
+    assert result == 1
+    assert err.flush_fired
+    assert out.getvalue() == f"{run_id} failed\n"
+    assert lab.database.runs[run_id].status is RunStatus.FAILED
+    assert lab.details(run_id, "unexpected-error") == [
+        {"page": 1, "error_type": "OSError"}
+    ]
+    assert "Traceback" not in err.getvalue()
+    assert redirections.copies == []
+
+
+LAST_FLUSH_STREAMS = ["stdout", "stderr"]
+
+
+@pytest.mark.parametrize("stream", LAST_FLUSH_STREAMS)
+@pytest.mark.parametrize(
+    ("make_error", "code"),
+    [
+        pytest.param(os_error, 0, id="os-error-dropped"),
+        pytest.param(interrupt_error, 130, id="ctrl-c-sets-130"),
+    ],
+)
+def test_flush_stream_fault_the_last_flush_of_main_keeps_or_sets_the_code(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    stream: str,
+    make_error: Callable[[], BaseException],
+    code: int,
+) -> None:
+    """The last step of `main`: it flushes stdout, then stderr, each in its own guard.
+
+    A command that writes a line on each stream without flushing returns 0. An
+    exception other than Ctrl+C and `SystemExit` from that flush is dropped (0); a
+    Ctrl+C makes the code 130. The step writes no text; nothing is redirected.
+    """
+    redirections = record_redirections(monkeypatch)
+    arm_command_that_writes_without_flushing(monkeypatch, command_rig)
+    faulty = FlushFaultStream([make_error], lambda text: "synthetic" in text)
+    plain = io.StringIO()
+    out, err = (faulty, plain) if stream == "stdout" else (plain, faulty)
+    capture_streams(monkeypatch, out=out, err=err)
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert faulty.flush_fired
+    assert stop.code == code
+    assert out.getvalue() == SYNTHETIC_RESULT_LINE
+    assert err.getvalue() == SYNTHETIC_MESSAGE_LINE
+    assert redirections.copies == []
+
+
+@pytest.mark.parametrize("stream", LAST_FLUSH_STREAMS)
+def test_flush_stream_fault_a_system_exit_in_the_last_flush_of_main_replaces_its_code(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch, stream: str
+) -> None:
+    """D-1: `SystemExit(3)` from the last flush leaves `main` in place of its own code."""
+    redirections = record_redirections(monkeypatch)
+    arm_command_that_writes_without_flushing(monkeypatch, command_rig)
+    exits = Raised(lambda: SystemExit(3))
+    faulty = FlushFaultStream([exits], lambda text: "synthetic" in text)
+    plain = io.StringIO()
+    out, err = (faulty, plain) if stream == "stdout" else (plain, faulty)
+    capture_streams(monkeypatch, out=out, err=err)
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert faulty.flush_fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert out.getvalue() == SYNTHETIC_RESULT_LINE
+    assert err.getvalue() == SYNTHETIC_MESSAGE_LINE
+    assert redirections.copies == []
+
+
+# === neutralize_fault (AC14, AC15; F-27, decision D-10) =========================
+#
+# Plan Revision 12, "When the neutralizing fails". A failed stream with a working
+# descriptor is redirected to the null device (`os.open` of `os.devnull`, `os.dup2`,
+# `os.close`). When that fails, the agreed code still leaves the command and `main`
+# through the same exit: the helper absorbs every `Exception` (a `KeyboardInterrupt`
+# and a `SystemExit` are not absorbed), writes nothing about it, never retries the
+# faulted write, and attempts the neutralizing at most once per stream. The stream's
+# descriptor is one the test opened (`owned_descriptor`); `os.open` and `os.dup2` are
+# recorders (`record_redirections`) that never touch a standard descriptor. The
+# product is expected to call `os.open` and `os.dup2` through the `os` module.
+
+NEUTRALIZING_FAILURES = [
+    pytest.param("copy", lambda: OSError("synthetic copy failure"), id="copy-os-error"),
+    pytest.param(
+        "copy", lambda: ValueError("synthetic bad descriptor"), id="copy-value-error"
+    ),
+    pytest.param("open", lambda: OSError("synthetic open failure"), id="open-os-error"),
+    pytest.param(
+        "no-descriptor", lambda: OSError("synthetic unused"), id="no-descriptor"
+    ),
+]
+NEUTRALIZING_SPOKEN_WORDS = (
+    "synthetic copy",
+    "synthetic bad",
+    "synthetic open",
+    "dup2",
+    "Traceback",
+    "unexpected error",
+)
+
+
+def arm_neutralizing(
+    monkeypatch: pytest.MonkeyPatch,
+    descriptor: int,
+    mode: str,
+    make_error: Callable[[], BaseException] | None,
+) -> tuple[Redirections, int | None]:
+    """Make the neutralizing of a stream fail as `mode` says.
+
+    `copy`: `os.dup2` raises `make_error()`. `open`: `os.open` of the null device
+    raises it. `no-descriptor`: the stream has none (`fileno()` raises
+    `io.UnsupportedOperation`). `success`: both calls succeed. Return the recorders
+    and the descriptor the stream must report (`None` for none).
+    """
+    redirections = record_redirections(
+        monkeypatch,
+        open_error=make_error if mode == "open" else None,
+        copy_error=make_error if mode == "copy" else None,
+    )
+    return redirections, (None if mode == "no-descriptor" else descriptor)
+
+
+def assert_neutralizing_attempted_once(
+    redirections: Redirections, mode: str, descriptor: int
+) -> None:
+    """The neutralizing was attempted once, on the test's descriptor, or not at all."""
+    if mode == "no-descriptor":
+        assert redirections.null_device_opens == []
+        assert redirections.copies == []
+    elif mode == "open":
+        assert len(redirections.null_device_opens) == 1
+        assert redirections.copies == []
+    else:
+        assert len(redirections.null_device_opens) == 1
+        assert [target for _, target in redirections.copies] == [descriptor]
+
+
+def result_line_of(run_id: str) -> str:
+    return f"{run_id} succeeded"
+
+
+@pytest.mark.parametrize(("mode", "make_error"), NEUTRALIZING_FAILURES)
+def test_neutralize_fault_a_neutralizing_that_fails_still_gives_the_planned_code(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    owned_descriptor: int,
+    mode: str,
+    make_error: Callable[[], BaseException],
+) -> None:
+    """(a) D-10: the AC1 invocation; stdout's flush raises, and its neutralizing fails.
+
+    The command returns 1; `<A> succeeded` is stored once; stderr holds the outcome
+    message and says nothing about the neutralizing; the neutralizing was attempted
+    once (not at all when the stream has no descriptor).
+    """
+    lab = command_rig.lab
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, mode, make_error
+    )
+    line = result_line_of(FIRST_DRAWN_ID)
+    out = FlushFaultStream([os_error], lambda text: line in text, descriptor=descriptor)
+    err = io.StringIO()
+
+    result = invoke_through(command_rig, out, err)
+
+    assert result == 1
+    assert out.flush_fired
+    assert out.getvalue() == f"{line}\n"
+    assert err.getvalue().splitlines()[-1] == "succeeded"
+    for word in NEUTRALIZING_SPOKEN_WORDS:
+        assert word not in err.getvalue(), word
+    assert_neutralizing_attempted_once(redirections, mode, owned_descriptor)
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+    assert lab.opener.all_closed
+
+
+@pytest.mark.parametrize("fires", [1, 2], ids=["write-flush", "write-and-last-flush"])
+@pytest.mark.parametrize(("mode", "make_error"), NEUTRALIZING_FAILURES)
+def test_neutralize_fault_a_neutralizing_that_fails_still_gives_code_1_through_main(
+    monkeypatch: pytest.MonkeyPatch,
+    owned_descriptor: int,
+    mode: str,
+    make_error: Callable[[], BaseException],
+    fires: int,
+) -> None:
+    """(b) D-10: `--version`; stdout's flush raises, and its neutralizing fails.
+
+    `main` ends with `SystemExit(1)`; stderr is exactly one `unexpected error: OSError`;
+    the version text is stored once. With `fires` 2 the flush fails again at the last
+    flush of `main`: the code stays 1 and the neutralizing was still attempted once.
+    """
+    calls = watch_main(monkeypatch)
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, mode, make_error
+    )
+    out = FlushFaultStream([os_error] * fires, is_version_text, descriptor=descriptor)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(["--version"])
+
+    assert stop.code == 1
+    assert len(out.flush_faults) == fires
+    assert err.getvalue().splitlines() == ["unexpected error: OSError"]
+    assert out.getvalue() == version_text()
+    assert_neutralizing_attempted_once(redirections, mode, owned_descriptor)
+    assert calls == MainCalls()
+
+
+@pytest.mark.parametrize("mode", ["copy", "open"])
+def test_neutralize_fault_a_ctrl_c_in_the_neutralizing_exits_130_through_the_command(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    owned_descriptor: int,
+    mode: str,
+) -> None:
+    """(c) D-10: Ctrl+C from `os.dup2` (or `os.open`) in the AC1 invocation -> 130.
+
+    It propagates in place of the flush's exception and the command's rule gives 130;
+    the line was stored once and the neutralizing attempted once.
+    """
+    lab = command_rig.lab
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, mode, interrupt_error
+    )
+    line = result_line_of(FIRST_DRAWN_ID)
+    out = FlushFaultStream([os_error], lambda text: line in text, descriptor=descriptor)
+    err = io.StringIO()
+
+    result = invoke_through(command_rig, out, err)
+
+    assert result == 130
+    assert out.flush_fired
+    assert out.getvalue() == f"{line}\n"
+    assert_neutralizing_attempted_once(redirections, mode, owned_descriptor)
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+
+
+@pytest.mark.parametrize("mode", ["copy", "open"])
+def test_neutralize_fault_a_ctrl_c_in_the_neutralizing_exits_130_through_main(
+    monkeypatch: pytest.MonkeyPatch, owned_descriptor: int, mode: str
+) -> None:
+    """(c) D-10: Ctrl+C from `os.dup2` (or `os.open`) while `--version` is written -> 130.
+
+    `interrupted` at most once; the neutralizing was attempted once.
+    """
+    calls = watch_main(monkeypatch)
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, mode, interrupt_error
+    )
+    out = FlushFaultStream([os_error], is_version_text, descriptor=descriptor)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(["--version"])
+
+    assert stop.code == 130
+    assert out.flush_fired
+    assert err.getvalue().splitlines() in ([], ["interrupted"])
+    assert out.getvalue() == version_text()
+    assert_neutralizing_attempted_once(redirections, mode, owned_descriptor)
+    assert calls == MainCalls()
+
+
+@pytest.mark.parametrize("mode", ["copy", "open"])
+def test_neutralize_fault_a_system_exit_in_the_neutralizing_leaves_the_command(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    owned_descriptor: int,
+    mode: str,
+) -> None:
+    """(d) D-1, D-10: `SystemExit(4)` from the neutralizing leaves the command as is.
+
+    The line was stored once and the neutralizing attempted once.
+    """
+    lab = command_rig.lab
+    exits = Raised(lambda: SystemExit(4))
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, mode, exits
+    )
+    line = result_line_of(FIRST_DRAWN_ID)
+    out = FlushFaultStream([os_error], lambda text: line in text, descriptor=descriptor)
+    err = io.StringIO()
+
+    stop = invoke_exiting(command_rig, out, err)
+
+    assert out.flush_fired
+    assert stop is exits.first
+    assert stop.code == 4
+    assert out.getvalue() == f"{line}\n"
+    assert_neutralizing_attempted_once(redirections, mode, owned_descriptor)
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+
+
+@pytest.mark.parametrize("mode", ["copy", "open"])
+def test_neutralize_fault_a_system_exit_in_the_neutralizing_leaves_main(
+    monkeypatch: pytest.MonkeyPatch, owned_descriptor: int, mode: str
+) -> None:
+    """(d) D-1, D-10: `SystemExit(4)` from the neutralizing while `--version` is written.
+
+    The `SystemExit(4)` object leaves `main`; no handler line is written for it.
+    """
+    calls = watch_main(monkeypatch)
+    exits = Raised(lambda: SystemExit(4))
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, mode, exits
+    )
+    out = FlushFaultStream([os_error], is_version_text, descriptor=descriptor)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(["--version"])
+
+    assert out.flush_fired
+    assert stop is exits.first
+    assert stop.code == 4
+    assert err.getvalue() == ""
+    assert_neutralizing_attempted_once(redirections, mode, owned_descriptor)
+    assert calls == MainCalls()
+
+
+@pytest.mark.parametrize("mode", ["copy", "open"])
+def test_neutralize_fault_a_system_exit_in_the_last_flush_replaces_the_code_of_main(
+    command_rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    owned_descriptor: int,
+    mode: str,
+) -> None:
+    """(d) D-1, D-10: the only flush is the last flush of `main`, which ends with 0.
+
+    Its neutralizing raises `SystemExit(4)`: that object leaves `main` in place of
+    `SystemExit(0)`; the neutralizing was attempted once.
+    """
+    arm_command_that_writes_without_flushing(monkeypatch, command_rig)
+    exits = Raised(lambda: SystemExit(4))
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, mode, exits
+    )
+    out = FlushFaultStream(
+        [os_error], lambda text: "synthetic" in text, descriptor=descriptor
+    )
+    capture_streams(monkeypatch, out=out)
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert out.flush_fired
+    assert stop is exits.first
+    assert stop.code == 4
+    assert out.getvalue() == SYNTHETIC_RESULT_LINE
+    assert_neutralizing_attempted_once(redirections, mode, owned_descriptor)
+
+
+@pytest.mark.parametrize("mode", ["copy", "open"])
+def test_neutralize_fault_the_first_system_exit_wins_over_one_in_the_last_flush(
+    monkeypatch: pytest.MonkeyPatch, owned_descriptor: int, mode: str
+) -> None:
+    """(d) D-1, D-10: `SystemExit(3)` from the flush of `--version` propagates.
+
+    The last flush of `main` then fails with `OSError` and its neutralizing raises
+    `SystemExit(4)`, which is dropped: the `SystemExit(3)` object leaves `main`. The
+    neutralizing is attempted once, in the last flush (a `SystemExit` does not start it).
+    """
+    calls = watch_main(monkeypatch)
+    first = Raised(lambda: SystemExit(3))
+    second = Raised(lambda: SystemExit(4))
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, mode, second
+    )
+    out = FlushFaultStream([first, os_error], is_version_text, descriptor=descriptor)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(["--version"])
+
+    assert len(out.flush_faults) == 2
+    assert stop is first.first
+    assert stop.code == 3
+    assert err.getvalue() == ""
+    assert_neutralizing_attempted_once(redirections, mode, owned_descriptor)
+    assert calls == MainCalls()
+
+
+def test_neutralize_fault_a_successful_neutralizing_gives_the_same_code_through_the_command(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch, owned_descriptor: int
+) -> None:
+    """(e) D-6: the null device is opened and copied onto the test's descriptor once.
+
+    The same code and the same lines as `flush_stream_fault`: 1, `<A> succeeded` stored
+    once. No standard descriptor is the target.
+    """
+    lab = command_rig.lab
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, "success", None
+    )
+    line = result_line_of(FIRST_DRAWN_ID)
+    out = FlushFaultStream([os_error], lambda text: line in text, descriptor=descriptor)
+    err = io.StringIO()
+
+    result = invoke_through(command_rig, out, err)
+
+    assert result == 1
+    assert out.flush_fired
+    assert out.getvalue() == f"{line}\n"
+    assert_neutralizing_attempted_once(redirections, "success", owned_descriptor)
+    assert_the_stored_run_is_as_confirmed(lab, "succeeded")
+
+
+@pytest.mark.parametrize("fires", [1, 2], ids=["write-flush", "write-and-last-flush"])
+def test_neutralize_fault_a_successful_neutralizing_is_not_attempted_again_by_main(
+    monkeypatch: pytest.MonkeyPatch, owned_descriptor: int, fires: int
+) -> None:
+    """(e) D-6, D-10: `--version`; with `fires` 2 the flush fails at the last flush too.
+
+    Code 1 and one `unexpected error: OSError`; the stream was neutralized once, and
+    the last flush did not attempt it a second time.
+    """
+    calls = watch_main(monkeypatch)
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, "success", None
+    )
+    out = FlushFaultStream([os_error] * fires, is_version_text, descriptor=descriptor)
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(["--version"])
+
+    assert stop.code == 1
+    assert len(out.flush_faults) == fires
+    assert err.getvalue().splitlines() == ["unexpected error: OSError"]
+    assert_neutralizing_attempted_once(redirections, "success", owned_descriptor)
+    assert calls == MainCalls()
+
+
+def test_neutralize_fault_a_failed_last_flush_neutralizes_its_stream_and_keeps_the_code(
+    command_rig: Rig, monkeypatch: pytest.MonkeyPatch, owned_descriptor: int
+) -> None:
+    """(e) D-6: the only flush is the last flush of `main`, which ends with 0.
+
+    The `OSError` is dropped and the code stays 0; the stream was neutralized once; no
+    text is written about it.
+    """
+    arm_command_that_writes_without_flushing(monkeypatch, command_rig)
+    redirections, descriptor = arm_neutralizing(
+        monkeypatch, owned_descriptor, "success", None
+    )
+    out = FlushFaultStream(
+        [os_error], lambda text: "synthetic" in text, descriptor=descriptor
+    )
+    _, err = capture_streams(monkeypatch, out=out)
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert out.flush_fired
+    assert stop.code == 0
+    assert out.getvalue() == SYNTHETIC_RESULT_LINE
+    assert err.getvalue() == SYNTHETIC_MESSAGE_LINE
+    assert_neutralizing_attempted_once(redirections, "success", owned_descriptor)
+
+
+# === main_handler_line_fault (AC14, AC15; F-28, D-1, D-3, D-4) ==================
+#
+# Plan Revision 12, § Public names, "The handler of `main`": one attempt to write the
+# handler's own line; a Ctrl+C there makes the code 130, a `SystemExit` propagates in its
+# place, and any other failure keeps the code. `cli.default_wiring` raises, `sys.stderr`
+# is the `RaisingStream` aimed at the handler's line. They protect behavior that already
+# holds (audit experiment X26) and kill the mutants N10, N11 and N12.
+
+HANDLER_LINE_CASES = [
+    pytest.param(
+        memory_error,
+        "unexpected error: MemoryError",
+        interrupt_error,
+        130,
+        id="memory-error-then-line-ctrl-c",
+    ),
+    pytest.param(
+        interrupt_error,
+        "interrupted",
+        interrupt_error,
+        130,
+        id="ctrl-c-then-line-ctrl-c",
+    ),
+    pytest.param(
+        interrupt_error, "interrupted", os_error, 130, id="ctrl-c-then-line-os-error"
+    ),
+    pytest.param(
+        memory_error,
+        "unexpected error: MemoryError",
+        os_error,
+        1,
+        id="memory-error-then-line-os-error",
+    ),
+]
+
+
+@pytest.mark.parametrize("keep", [True, False], ids=["after-storing", "before-storing"])
+@pytest.mark.parametrize(
+    ("make_escape", "line", "make_fault", "code"), HANDLER_LINE_CASES
+)
+def test_main_handler_line_fault_a_failing_handler_line_keeps_or_sets_the_code(
+    monkeypatch: pytest.MonkeyPatch,
+    make_escape: Callable[[], BaseException],
+    line: str,
+    make_fault: Callable[[], BaseException],
+    code: int,
+    keep: bool,
+) -> None:
+    """Cases (i) to (iv): `default_wiring` raises, and the handler's line fails.
+
+    A Ctrl+C on the line gives 130, an `OSError` keeps the code the handler had (130
+    after a Ctrl+C, 1 after a `MemoryError`). The line is attempted once, stdout is
+    empty, no traceback is written and the command is not called.
+    """
+    calls = watch_main(monkeypatch, wiring=raising(make_escape))
+    err = RaisingStream(make_fault, lambda text: line in text, keep=keep)
+    out, _ = capture_streams(monkeypatch, err=err)
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert err.fired
+    assert stop.code == code
+    assert out.getvalue() == ""
+    assert len([text for text in err.writes if line in text]) == 1, err.writes
+    assert "Traceback" not in err.getvalue()
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=0)
+
+
+@pytest.mark.parametrize("keep", [True, False], ids=["after-storing", "before-storing"])
+@pytest.mark.parametrize(
+    ("make_escape", "line"),
+    [
+        pytest.param(
+            memory_error, "unexpected error: MemoryError", id="after-a-memory-error"
+        ),
+        pytest.param(interrupt_error, "interrupted", id="after-a-ctrl-c"),
+    ],
+)
+def test_main_handler_line_fault_a_system_exit_on_the_handler_line_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    make_escape: Callable[[], BaseException],
+    line: str,
+    keep: bool,
+) -> None:
+    """Case (v): `SystemExit(3)` on the handler's line leaves `main` as that object.
+
+    Code 3 whatever the handler was handling; the line is attempted once; stdout is
+    empty; no traceback; the command is not called.
+    """
+    calls = watch_main(monkeypatch, wiring=raising(make_escape))
+    exits = Raised(lambda: SystemExit(3))
+    err = RaisingStream(exits, lambda text: line in text, keep=keep)
+    out, _ = capture_streams(monkeypatch, err=err)
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert err.fired
+    assert stop is exits.first
+    assert stop.code == 3
+    assert out.getvalue() == ""
+    assert len([text for text in err.writes if line in text]) == 1, err.writes
+    assert "Traceback" not in err.getvalue()
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=0)
+
+
+# === exit_code_cleanup_system_exit (AC7, AC15; F-28, D-1, N39) ==================
+#
+# State machine K never turns a `SystemExit` into an outcome: a `SystemExit` raised by
+# the cleanup's `run-interrupted` append leaves the command with its own code (`Rig`
+# reads it), writes no `<A> running`, no `interrupted` and no `unexpected error` line.
+# The use-case twin is `cleanup_system_exit` in `test_ingest_use_case.py`.
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_exit_code_cleanup_system_exit_the_run_closing_append_leaves_with_its_code(
+    rig: Rig, when: Literal["before", "after"]
+) -> None:
+    """Ctrl+C at page 2; K's `run-interrupted` append raises `SystemExit(3)` -> code 3.
+
+    Stdout is empty (no `<A> running`), stderr has no `interrupted` and no
+    `unexpected error`; `<A>` stays `running`; every repository is closed.
+    """
+    lab = rig.lab
+    lab.source.script(2, KeyboardInterrupt())
+    lab.opener.faults[1] = [
+        lab.faults.raises(
+            "append_audit_event",
+            lambda: SystemExit(3),
+            detail="run-interrupted",
+            when=when,
+        )
+    ]
+
+    result = rig.invoke(SCOPE_ARGS)
+
+    run_id = the_run(lab)
+    assert_a_system_exit_left_quietly(result)
+    assert lab.database.runs[run_id].status is RunStatus.RUNNING
+    assert lab.opener.attempts[-1].operation == "append_audit_event"
+    assert lab.opener.all_closed
+
+
+# === Audit round 7 rework (2026-10-27), plan Revision 13 ========================
+#
+# Feature ingest-command (F4), outcome O10, rework of round 7 (audit finding F-31;
+# decisions D-11 and D-12, option A, chosen by the human on 2026-10-27; D-5 as adjusted
+# for a missing stream; acceptance criteria AC14 and AC15). Written red against the
+# Revision 15/13/10 specs, before the protected write, the neutralizing, the last
+# flush and the one local parser class know a missing stream.
+#
+# A stream is *missing* when it is `None`: `sys.stdout` or `sys.stderr` when Python
+# started without a descriptor 1 or 2 (CPython then sets the attribute to `None`), or
+# a `None` handed to `run_ingest_command`. A missing stream is disabled output, never
+# a failing stream (and never a faked closed stream): nothing is written for it,
+# neither there nor on the other stream, nothing is flushed, redirected or raised, and
+# no exit code, outcome or run status changes because of it. Tokens:
+#
+# - `absent_stderr_command`: a `None` stderr handed to the command;
+# - `absent_stderr_main`: `main` with `sys.stderr` `None` (and the parser class);
+# - `absent_stdout_command` and `absent_stdout_main`: a missing stdout (D-12): the
+#   result line, `--version` and `--help` are not written and not sent to stderr;
+# - `absent_streams_main`: both missing, the descriptors read with `capfd`;
+# - `absent_stream_helpers`: `output_streams` called with `None`.
+#
+# No test name here contains `usage`, `output`, `environment`, `interrupt`, `exit_code`,
+# `system_exit`, `stream_fault` or another forbidden word of the plan's token rule: a
+# usage error is a `parse error` or a `rule error`, an unset variable an `unset
+# variable`, a Ctrl+C `ctrl-c`. The `os.open` and `os.dup2` recorders of Revision 12
+# show that a missing stream starts no neutralizing. The real process is the process
+# tier (`tests/process/`).
+
+ABSENT: typing.TextIO = typing.cast(typing.TextIO, None)
+STANDARD_PRINT_USAGE = argparse.ArgumentParser.print_usage
+UNREACHED = ("make_source", "migrate", "make_store", "make_repository")
+ENDINGS = [
+    pytest.param(
+        "succeeded",
+        0,
+        "succeeded",
+        ["run-started", "page-completed", "page-completed"],
+        id="succeeded-run",
+    ),
+    pytest.param(
+        "failed-page",
+        1,
+        "failed",
+        ["run-started", "page-completed", "page-failed"],
+        id="failed-run",
+    ),
+    pytest.param(
+        "ctrl-c",
+        130,
+        "failed",
+        ["run-started", "page-completed", "run-interrupted"],
+        id="ended-by-ctrl-c",
+    ),
+]
+
+
+def arm_ending(lab: Lab, ending: str) -> None:
+    """The AC1 run (`succeeded`), the AC4 run (`failed-page`) or the AC7 run (`ctrl-c`)."""
+    if ending == "failed-page":
+        lab.source.script(2, lab.status_failure(2, 500))
+    elif ending == "ctrl-c":
+        lab.source.script(2, KeyboardInterrupt())
+    else:
+        assert ending == "succeeded"
+
+
+def call_command(
+    rig: Rig,
+    arguments: argparse.Namespace,
+    *,
+    environ: Mapping[str, str],
+    stdout: typing.TextIO,
+    stderr: typing.TextIO,
+) -> int:
+    """`run_ingest_command`; whatever escapes it fails the test by name."""
+    try:
+        return run_ingest_command(
+            arguments,
+            environ=environ,
+            wiring=rig.wiring(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except (Exception, KeyboardInterrupt) as error:
+        raise AssertionError(
+            f"the command let {type(error).__name__} escape"
+        ) from error
+
+
+def invoke_without_stream(
+    rig: Rig,
+    *,
+    stdout: typing.TextIO,
+    stderr: typing.TextIO,
+    argv: Sequence[str] = SCOPE_ARGS,
+    environ: Mapping[str, str] | None = None,
+) -> int:
+    """`ingest <argv>` through the command, with the streams given (one may be `None`)."""
+    arguments = cli.build_parser().parse_args(["ingest", *argv])
+    return call_command(
+        rig,
+        arguments,
+        environ=dict(GOOD_ENVIRON) if environ is None else environ,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def assert_process_streams_empty(capsys: pytest.CaptureFixture[str]) -> None:
+    """Nothing reached the process's stdout or stderr (no text sent to the other one)."""
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def assert_no_redirection(redirections: Redirections) -> None:
+    """A missing stream starts no neutralizing: no null device opened, no `os.dup2`."""
+    assert redirections.null_device_opens == []
+    assert redirections.copies == []
+
+
+def assert_argparse_is_standard() -> None:
+    """`argparse` is not patched: its two methods are the standard library's own."""
+    cli.build_parser()
+    for method, standard in (
+        (argparse.ArgumentParser._print_message, STANDARD_PRINT_MESSAGE),
+        (argparse.ArgumentParser.print_usage, STANDARD_PRINT_USAGE),
+    ):
+        assert method is standard
+        assert method.__module__ == "argparse"
+        assert (
+            Path(method.__code__.co_filename).resolve()
+            == Path(argparse.__file__).resolve()
+        )
+
+
+def use_environment(
+    monkeypatch: pytest.MonkeyPatch, *, unset: Sequence[str] = ()
+) -> None:
+    """The process variables `main` reads: the good ones, without those in `unset`."""
+    for name in POSTGRES_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in GOOD_ENVIRON.items():
+        if name not in unset:
+            monkeypatch.setenv(name, value)
+
+
+def arm_ingest_through_main(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, *, unset: Sequence[str] = ()
+) -> MainCalls:
+    """`main(["ingest", ...])` runs the real command over the rig's doubles.
+
+    With a variable in `unset`, the rig's doubles fail the test if the command reaches
+    them: a rejected invocation builds nothing.
+    """
+    use_environment(monkeypatch, unset=unset)
+    if unset:
+        rig.forbid(*UNREACHED)
+    return watch_main(monkeypatch, wiring=rig.wiring, run_command=True)
+
+
+def remove_streams(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+    """Python started without these streams: `sys.stdout` or `sys.stderr` is `None`."""
+    for name in names:
+        monkeypatch.setattr(sys, name, None)
+
+
+def assert_the_ingest_ended(rig: Rig, status: str, events: list[str]) -> None:
+    """The run is as with working streams: its events, its status, nothing after."""
+    lab = rig.lab
+    run_id = the_run(lab)
+    assert lab.event_types(run_id) == events
+    assert "unexpected-error" not in lab.event_types(run_id)
+    assert_the_stored_run_is_as_confirmed(lab, status)
+    assert lab.opener.all_closed
+
+
+@pytest.fixture
+def descriptor_rig(
+    lab: Lab, capfd: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> Rig:
+    """A rig whose process streams are read on the descriptors (`capfd`), not `capsys`."""
+    return Rig(lab, capfd, monkeypatch, "main")
+
+
+# === absent_stderr_command (AC14, AC15; F-31, D-11 option A) ====================
+
+
+@pytest.mark.parametrize(("ending", "code", "status", "events"), ENDINGS)
+def test_absent_stderr_command_an_ingest_ends_as_with_a_working_stderr(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+    code: int,
+    status: str,
+    events: list[str],
+) -> None:
+    """(a) to (c) A `None` stderr is disabled output: the outcome is the same.
+
+    The AC1, AC4 and AC7 runs end 0, 1 and 130; the injected stdout is exactly the one
+    result line; nothing reaches the process's stdout or stderr (`print(file=None)`
+    would fall back to `sys.stdout`); the reporter's `run_started` and progress lines
+    raise nothing, so the run is not closed `failed` by an `unexpected-error`; and no
+    null device is opened and no descriptor redirected.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    arm_ending(lab, ending)
+    out = io.StringIO()
+
+    result = invoke_without_stream(command_rig, stdout=out, stderr=ABSENT)
+
+    assert result == code
+    assert out.getvalue() == f"{the_run(lab)} {status}\n"
+    assert_process_streams_empty(capsys)
+    assert_the_ingest_ended(command_rig, status, events)
+    assert_no_redirection(redirections)
+
+
+@pytest.mark.parametrize("case", ["unset-variable", "rule-error"])
+def test_absent_stderr_command_a_rejected_invocation_returns_2_and_builds_nothing(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    """(d) The `error: <message>` line has nowhere to go and is not a failure.
+
+    A variable that is not set, and a namespace that breaks a rule of
+    `request_from_arguments` (built directly, as a caller other than `main` would),
+    return 2 (nothing escapes), with stdout empty and nothing built.
+    """
+    redirections = record_redirections(monkeypatch)
+    command_rig.forbid(*UNREACHED)
+    out = io.StringIO()
+    if case == "unset-variable":
+        environ = {k: v for k, v in GOOD_ENVIRON.items() if k != "POSTGRES_DB"}
+        arguments = cli.build_parser().parse_args(["ingest", *SCOPE_ARGS])
+    else:
+        environ = dict(GOOD_ENVIRON)
+        arguments = argparse.Namespace(
+            command="ingest",
+            year=YEAR,
+            buyer=BUYER,
+            first_page=3,
+            last_page=2,
+            resume=None,
+            migrations_dir="migrations",
+        )
+
+    result = call_command(
+        command_rig, arguments, environ=environ, stdout=out, stderr=ABSENT
+    )
+
+    assert result == 2
+    assert out.getvalue() == ""
+    assert_process_streams_empty(capsys)
+    assert command_rig.calls == []
+    assert_no_redirection(redirections)
+
+
+# === absent_stderr_main (AC14, AC15; F-31, D-11, D-5 as adjusted) ===============
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param([], id="bare-command"),
+        pytest.param(["ingest", "--last-page", "2"], id="parse-error"),
+    ],
+)
+def test_absent_stderr_main_the_bare_command_and_a_parse_error_exit_2_silently(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+) -> None:
+    """(a), (b) Code 2 and stdout empty: the usage is not sent to stdout.
+
+    `argparse` replaces a `None` file by `sys.stdout` in `print_usage`; the parser
+    class overrides `print_usage` so that a missing stderr stays missing. The command
+    is not run and nothing is built.
+    """
+    redirections = record_redirections(monkeypatch)
+    calls = watch_main(monkeypatch)
+    remove_streams(monkeypatch, "stderr")
+
+    stop = run_main(argv)
+
+    assert stop.code == 2
+    assert capsys.readouterr().out == ""
+    assert calls == MainCalls()
+    assert_no_redirection(redirections)
+    assert_argparse_is_standard()
+
+
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_absent_stderr_main_version_and_help_keep_their_text_on_stdout(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+) -> None:
+    """(c) `--version`, `--help` and `ingest --help` -> 0, the text on stdout as today."""
+    redirections = record_redirections(monkeypatch)
+    calls = watch_main(monkeypatch)
+    remove_streams(monkeypatch, "stderr")
+
+    stop = run_main(argv)
+
+    text = capsys.readouterr().out
+    assert stop.code == 0
+    assert trigger(text)
+    if argv == ["--version"]:
+        assert text == version_text()
+    else:
+        assert text.startswith("usage:")
+    assert calls == MainCalls()
+    assert_no_redirection(redirections)
+    assert_argparse_is_standard()
+
+
+def test_absent_stderr_main_an_ingest_ends_as_with_a_working_stderr(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(d) The AC1 arguments -> 0, stdout exactly `<A> succeeded`, `<A>` `succeeded`.
+
+    The progress lines and the final message are not written anywhere: no stderr text
+    on stdout, no `unexpected-error`, no run closed `failed` before its first request.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    calls = arm_ingest_through_main(command_rig, monkeypatch)
+    remove_streams(monkeypatch, "stderr")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert stop.code == 0
+    assert capsys.readouterr().out == f"{the_run(lab)} succeeded\n"
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=1)
+    assert_the_ingest_ended(
+        command_rig, "succeeded", ["run-started", "page-completed", "page-completed"]
+    )
+    assert_no_redirection(redirections)
+    assert_argparse_is_standard()
+
+
+def test_absent_stderr_main_an_unset_variable_exits_2_with_stdout_empty(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(e) The AC1 arguments with `POSTGRES_DB` unset -> 2, stdout empty, nothing built.
+
+    The message `error: POSTGRES_DB is not set` has nowhere to go and is not a failure.
+    """
+    redirections = record_redirections(monkeypatch)
+    calls = arm_ingest_through_main(command_rig, monkeypatch, unset=["POSTGRES_DB"])
+    remove_streams(monkeypatch, "stderr")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert stop.code == 2
+    assert capsys.readouterr().out == ""
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=1)
+    assert command_rig.calls == []
+    assert_no_redirection(redirections)
+    assert_argparse_is_standard()
+
+
+@pytest.mark.parametrize(
+    ("make_escape", "code"),
+    [
+        pytest.param(interrupt_error, 130, id="ctrl-c"),
+        pytest.param(memory_error, 1, id="memory-error"),
+    ],
+)
+def test_absent_stderr_main_the_handler_keeps_its_code_and_writes_its_line_nowhere(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    make_escape: Callable[[], BaseException],
+    code: int,
+) -> None:
+    """(f) `default_wiring` raises: 130 for Ctrl+C, 1 for `MemoryError`, stdout empty.
+
+    The handler's line (`interrupted`, `unexpected error: <class>`) is not written on
+    stdout in place of the missing stderr.
+    """
+    redirections = record_redirections(monkeypatch)
+    calls = watch_main(monkeypatch, wiring=raising(make_escape))
+    remove_streams(monkeypatch, "stderr")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert stop.code == code
+    assert capsys.readouterr().out == ""
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=0)
+    assert_no_redirection(redirections)
+
+
+def test_absent_stderr_main_an_own_exit_from_the_wiring_is_preserved(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(f) D-1: `SystemExit(3)` from `default_wiring` leaves `main` as that object."""
+    redirections = record_redirections(monkeypatch)
+    exits = Raised(lambda: SystemExit(3))
+    calls = watch_main(monkeypatch, wiring=raising(exits))
+    remove_streams(monkeypatch, "stderr")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert stop is exits.first
+    assert stop.code == 3
+    assert capsys.readouterr().out == ""
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=0)
+    assert_no_redirection(redirections)
+
+
+# === absent_stdout_command (AC14, AC15; F-31, D-12 option A) ====================
+
+
+@pytest.mark.parametrize(("ending", "code", "status", "events"), ENDINGS)
+def test_absent_stdout_command_an_ingest_ends_as_with_a_working_stdout(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+    code: int,
+    status: str,
+    events: list[str],
+) -> None:
+    """A `None` stdout drops the result line: the code is the one the run determined.
+
+    The injected stderr holds `run <A> started`, the progress lines and the outcome
+    message, and no `<A> <status>` line; nothing reaches the process's streams (the
+    result line goes nowhere); the run is as with a working stdout.
+    """
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    arm_ending(lab, ending)
+    err = io.StringIO()
+
+    result = invoke_without_stream(command_rig, stdout=ABSENT, stderr=err)
+
+    run_id = the_run(lab)
+    lines = err.getvalue().splitlines()
+    assert result == code
+    assert f"run {run_id} started" in lines
+    assert len(lines) >= 3
+    assert f"{run_id} {status}" not in lines
+    assert "Traceback" not in err.getvalue()
+    assert_process_streams_empty(capsys)
+    assert_the_ingest_ended(command_rig, status, events)
+    assert_no_redirection(redirections)
+
+
+# === absent_stdout_main (AC14, AC15; F-31, D-12 option A) =======================
+
+
+def test_absent_stdout_main_an_ingest_drops_only_the_result_line(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AC1 arguments -> 0; stderr as with a working stdout, without the result line."""
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    arm_ingest_through_main(command_rig, monkeypatch)
+    remove_streams(monkeypatch, "stdout")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    run_id = the_run(lab)
+    lines = capsys.readouterr().err.splitlines()
+    assert stop.code == 0
+    assert f"run {run_id} started" in lines
+    assert f"{run_id} succeeded" not in lines
+    assert len(lines) >= 3
+    assert_the_ingest_ended(
+        command_rig, "succeeded", ["run-started", "page-completed", "page-completed"]
+    )
+    assert_no_redirection(redirections)
+    assert_argparse_is_standard()
+
+
+def test_absent_stdout_main_a_ctrl_c_ingest_exits_130_without_a_result_line(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AC7 arguments -> 130; the closed run is stored, no `<A> failed` anywhere."""
+    lab = command_rig.lab
+    redirections = record_redirections(monkeypatch)
+    arm_ending(lab, "ctrl-c")
+    arm_ingest_through_main(command_rig, monkeypatch)
+    remove_streams(monkeypatch, "stdout")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    run_id = the_run(lab)
+    lines = capsys.readouterr().err.splitlines()
+    assert stop.code == 130
+    assert f"{run_id} failed" not in lines
+    assert_the_stored_run_is_as_confirmed(lab, "failed")
+    assert_no_redirection(redirections)
+
+
+@pytest.mark.parametrize(("argv", "trigger"), HELP_CASES)
+def test_absent_stdout_main_version_and_help_write_nothing_and_exit_0(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    trigger: Callable[[str], bool],
+) -> None:
+    """`--version`, `--help` and `ingest --help` -> 0, stderr empty (no substitute).
+
+    `argparse` alone would send their text to stderr when stdout is missing; the parser
+    class drops it.
+    """
+    redirections = record_redirections(monkeypatch)
+    calls = watch_main(monkeypatch)
+    remove_streams(monkeypatch, "stdout")
+
+    stop = run_main(argv)
+
+    assert stop.code == 0
+    assert_process_streams_empty(capsys)
+    assert calls == MainCalls()
+    assert_no_redirection(redirections)
+    assert_argparse_is_standard()
+
+
+@pytest.mark.parametrize(
+    ("argv", "words"),
+    [
+        pytest.param(
+            ["ingest", "--last-page", "2"], ("usage:", "error:"), id="parse-error"
+        ),
+        pytest.param([], ("usage:",), id="bare-command"),
+    ],
+)
+def test_absent_stdout_main_a_parse_error_and_the_bare_command_keep_their_stderr_text(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    words: tuple[str, ...],
+) -> None:
+    """Code 2 with `usage:` (and `error:`) on stderr, as with a working stdout."""
+    redirections = record_redirections(monkeypatch)
+    calls = watch_main(monkeypatch)
+    remove_streams(monkeypatch, "stdout")
+
+    stop = run_main(argv)
+
+    text = capsys.readouterr().err
+    assert stop.code == 2
+    for word in words:
+        assert word in text
+    assert "Traceback" not in text
+    assert calls == MainCalls()
+    assert_no_redirection(redirections)
+
+
+def test_absent_stdout_main_an_unset_variable_exits_2_with_its_message_on_stderr(
+    command_rig: Rig,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AC1 arguments with `POSTGRES_DB` unset -> 2, `error: POSTGRES_DB is not set`."""
+    redirections = record_redirections(monkeypatch)
+    arm_ingest_through_main(command_rig, monkeypatch, unset=["POSTGRES_DB"])
+    remove_streams(monkeypatch, "stdout")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    assert stop.code == 2
+    assert "error: POSTGRES_DB is not set" in capsys.readouterr().err.splitlines()
+    assert command_rig.calls == []
+    assert_no_redirection(redirections)
+
+
+# === absent_streams_main (AC14, AC15; F-31, D-11 and D-12) ======================
+
+
+@pytest.mark.parametrize(
+    ("ending", "code", "status", "events"),
+    [ENDINGS[0], ENDINGS[2]],
+)
+def test_absent_streams_main_an_ingest_ends_as_with_working_streams(
+    descriptor_rig: Rig,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+    code: int,
+    status: str,
+    events: list[str],
+) -> None:
+    """Both streams `None`: the AC1 run ends 0 and the AC7 run 130, nothing is written.
+
+    The descriptors (read with `capfd`) stay empty; the stored run is as confirmed and
+    no `unexpected-error` closes it.
+    """
+    redirections = record_redirections(monkeypatch)
+    arm_ending(descriptor_rig.lab, ending)
+    arm_ingest_through_main(descriptor_rig, monkeypatch)
+    remove_streams(monkeypatch, "stdout", "stderr")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    captured = capfd.readouterr()
+    assert stop.code == code
+    assert (captured.out, captured.err) == ("", "")
+    assert_the_ingest_ended(descriptor_rig, status, events)
+    assert_no_redirection(redirections)
+    assert_argparse_is_standard()
+
+
+@pytest.mark.parametrize(
+    ("argv", "code"),
+    [
+        pytest.param(["ingest", "--last-page", "2"], 2, id="parse-error"),
+        pytest.param([], 2, id="bare-command"),
+        pytest.param(["--version"], 0, id="version"),
+        pytest.param(["--help"], 0, id="help"),
+        pytest.param(["ingest", "--help"], 0, id="ingest-help"),
+    ],
+)
+def test_absent_streams_main_the_parser_writes_nothing_and_keeps_its_code(
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    code: int,
+) -> None:
+    """A parse error and the bare command -> 2; `--version` and `--help` -> 0."""
+    redirections = record_redirections(monkeypatch)
+    calls = watch_main(monkeypatch)
+    remove_streams(monkeypatch, "stdout", "stderr")
+
+    stop = run_main(argv)
+
+    captured = capfd.readouterr()
+    assert stop.code == code
+    assert (captured.out, captured.err) == ("", "")
+    assert calls == MainCalls()
+    assert_no_redirection(redirections)
+    assert_argparse_is_standard()
+
+
+def test_absent_streams_main_an_unset_variable_exits_2_and_builds_nothing(
+    descriptor_rig: Rig,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AC1 arguments with `POSTGRES_DB` unset -> 2, nothing is built or written."""
+    redirections = record_redirections(monkeypatch)
+    arm_ingest_through_main(descriptor_rig, monkeypatch, unset=["POSTGRES_DB"])
+    remove_streams(monkeypatch, "stdout", "stderr")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    captured = capfd.readouterr()
+    assert stop.code == 2
+    assert (captured.out, captured.err) == ("", "")
+    assert descriptor_rig.calls == []
+    assert_no_redirection(redirections)
+
+
+@pytest.mark.parametrize(
+    ("make_escape", "code"),
+    [
+        pytest.param(interrupt_error, 130, id="ctrl-c"),
+        pytest.param(memory_error, 1, id="memory-error"),
+    ],
+)
+def test_absent_streams_main_the_handler_keeps_its_code_and_writes_nothing(
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    make_escape: Callable[[], BaseException],
+    code: int,
+) -> None:
+    """`default_wiring` raises: 130 for Ctrl+C and 1 for `MemoryError`, nothing written.
+
+    The handler's attempt to write its line neither fails nor redirects anything.
+    """
+    redirections = record_redirections(monkeypatch)
+    calls = watch_main(monkeypatch, wiring=raising(make_escape))
+    remove_streams(monkeypatch, "stdout", "stderr")
+
+    stop = run_main(["ingest", *SCOPE_ARGS])
+
+    captured = capfd.readouterr()
+    assert stop.code == code
+    assert (captured.out, captured.err) == ("", "")
+    assert calls == MainCalls(default_wiring=1, run_ingest_command=0)
+    assert_no_redirection(redirections)
+
+
+# === absent_stream_helpers (AC14, AC15; F-31, D-11, D-10's record) ==============
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(output_streams.write_line, id="write-line"),
+        pytest.param(output_streams.write_text, id="write-text"),
+    ],
+)
+def test_absent_stream_helpers_a_protected_write_to_a_missing_stream_does_nothing(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    write: Callable[[typing.TextIO, str], None],
+) -> None:
+    """`write_line(None, "x")` and `write_text(None, "x")` return, raise and write nothing.
+
+    `print(text, file=None)` would write on `sys.stdout`, and `None.flush()` would
+    raise `AttributeError`; neither may happen.
+    """
+    redirections = record_redirections(monkeypatch)
+
+    write(ABSENT, "x")
+
+    assert_process_streams_empty(capsys)
+    assert_no_redirection(redirections)
+
+
+def test_absent_stream_helpers_the_neutralizing_of_a_missing_stream_does_nothing(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The neutralizing called with `None` returns: no `os.open`, no `os.dup2`."""
+    redirections = record_redirections(monkeypatch)
+
+    output_streams.neutralize(ABSENT)
+
+    assert_process_streams_empty(capsys)
+    assert_no_redirection(redirections)
+
+
+def test_absent_stream_helpers_the_last_flush_of_two_missing_streams_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`flush_for_exit(None, None)` returns `None` and redirects nothing."""
+    redirections = record_redirections(monkeypatch)
+
+    returned = output_streams.flush_for_exit(ABSENT, ABSENT)
+
+    assert returned is None
+    assert_no_redirection(redirections)
+
+
+@pytest.mark.parametrize(
+    "missing_first", [True, False], ids=["missing-first", "missing-last"]
+)
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(interrupt_error, id="ctrl-c"),
+        pytest.param(lambda: SystemExit(4), id="own-exit"),
+    ],
+)
+def test_absent_stream_helpers_a_missing_stream_masks_what_the_other_one_ended_in(
+    monkeypatch: pytest.MonkeyPatch,
+    make_error: Callable[[], BaseException],
+    missing_first: bool,
+) -> None:
+    """The other stream's flush ends in Ctrl+C or `SystemExit(4)`: it is returned.
+
+    The same object comes back whichever order the two streams are given in.
+    """
+    redirections = record_redirections(monkeypatch)
+    ended = Raised(make_error)
+    stream = FlushFaultStream([ended], lambda text: True)
+    stream.write("pending text\n")
+    streams = (ABSENT, stream) if missing_first else (stream, ABSENT)
+
+    returned = output_streams.flush_for_exit(*streams)
+
+    assert stream.flush_fired
+    assert returned is ended.first
+    assert_no_redirection(redirections)

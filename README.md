@@ -259,11 +259,16 @@ Output and exit codes:
     could not be taken again, or the connection was lost a second time,
     including a lost `start_run` whose outcome is unknown;
   - Ctrl+C or an unexpected error such as `MemoryError` while a lost connection
-    is being recovered, that is, while the second connection is being opened or
-    the ingest exclusion is being taken on it: nothing more is written to the
-    run, which stays `running` (exit 130 for Ctrl+C, 1 otherwise), and stderr
-    names only `open_repository` or `try_acquire_ingest_exclusion`;
-  - a refused `finish_run` that closes a failed run;
+    is being recovered, which lasts from the moment the connection is lost until
+    the ingest exclusion is held on the second connection: while the lost
+    connection is closed, while the second one is opened, while the exclusion is
+    taken on it, while a line is written, and while a second connection that
+    could not take the exclusion is closed. Nothing more is read or written to
+    the run, so the run stays `running` (exit 130 for Ctrl+C, 1 otherwise), and
+    stderr names at most `open_repository` or `try_acquire_ingest_exclusion`,
+    never an operation that was not attempted;
+  - a refused `finish_run` that closes a failed run: nothing more is written to
+    the run, even if Ctrl+C or an error lands while the refusal is reported;
   - a refused repeat of the final `finish_run` (`succeeded`) after a lost
     connection, when the stored status could not then be read;
   - any other exception that escaped after the run was announced.
@@ -275,6 +280,28 @@ Output and exit codes:
   confirmed, so a Ctrl+C or an unexpected error such as `MemoryError` prints no
   result line (stdout is empty, exit 130 for Ctrl+C and 1 otherwise) and nothing
   is written.
+
+  A database write that PostgreSQL refused is answered once and not repeated,
+  not even by the cleanup after a Ctrl+C.
+
+  Closing the database connection at the end never changes how the run ended: an
+  error from that close is ignored, and a Ctrl+C during it exits 130 with the
+  status already confirmed in the result line (`succeeded` or `failed`).
+- If the command cannot write its result (for example, a closed output stream),
+  the stored run keeps its status and the result line is attempted once, with the
+  status the command confirmed; it is never replaced by `running`. The exit code
+  is 130 if Ctrl+C landed while writing or was already the code, and 1 for any
+  other write failure, so a run can stay `succeeded` in PostgreSQL while the
+  command exits 1. Nothing is written to PostgreSQL because of it.
+  Normally a closed or failing output stream ends with exit code 1 (or 130), never
+  with Python's own 120 or its `Exception ignored` report. In the one residual
+  case, where redirecting the failed stream to the null device itself fails,
+  Python's finalization may still print that report and replace the exit code by
+  120; this changes nothing in PostgreSQL, and the output is not attempted again.
+- A stream that is closed when the command starts (for example `2>&-` or `>&-`)
+  is not a failure: that output is simply not written, never redirected to the
+  other stream, and the exit code and the stored run are the same as with the
+  stream open.
 - stderr carries the progress and the errors, each as a fixed message that never
   includes a URL, a header, a body or a setting. It names each database
   operation that was refused or lost, with the run concerned (and the sequence
@@ -284,9 +311,9 @@ Output and exit codes:
 | Code | Meaning |
 |---|---|
 | 0 | The run succeeded. |
-| 1 | The run failed, or it did not start (another ingest is running, the database or the migration lock is unavailable, reconciliation failed), or the chain of a resumption is broken. A resumption target that the database could not read (refused, or the connection lost) is exit 1, not 2. |
+| 1 | The run failed, or it did not start (another ingest is running, the database or the migration lock is unavailable, reconciliation failed), or the chain of a resumption is broken. A resumption target that the database could not read (refused, or the connection lost) is exit 1, not 2. Also the command could not write its result (see above). |
 | 2 | Usage error: an invalid or missing option, a missing or invalid environment variable, a proxy or certificate setting of the environment that the source cannot be built from (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), a migration error other than a busy lock, or an invalid resumption target (a malformed id, an id that names no run, or a run that already `succeeded`). |
-| 130 | Interrupted with Ctrl+C. |
+| 130 | Interrupted with Ctrl+C, including while the database connection or the source is closed at the end, or while the result is written. |
 
 If `ingest` refuses to start with `another ingest is running` although none is,
 a database session of a dead process may still hold the ingest exclusion. The

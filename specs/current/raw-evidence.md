@@ -1,6 +1,6 @@
 # Raw Evidence Specification
 
-> Last synced: 2026-10-09. Owned artifacts: `src/ec_procurement_quality/domain/content_hash.py`, `src/ec_procurement_quality/domain/raw_evidence.py`, `src/ec_procurement_quality/application/raw_evidence_store.py`, `src/ec_procurement_quality/infrastructure/local_disk_raw_evidence_store.py`, `tests/unit/test_content_hash.py`, `tests/unit/test_raw_evidence.py`, `tests/unit/test_local_disk_raw_evidence_store.py`.
+> Last synced: 2026-10-28. Owned artifacts: `src/ec_procurement_quality/domain/content_hash.py`, `src/ec_procurement_quality/domain/raw_evidence.py`, `src/ec_procurement_quality/application/raw_evidence_store.py`, `src/ec_procurement_quality/infrastructure/local_disk_raw_evidence_store.py`, `tests/unit/test_content_hash.py`, `tests/unit/test_raw_evidence.py`, `tests/unit/test_local_disk_raw_evidence_store.py`, `tests/unit/test_local_disk_raw_evidence_store_listing.py`.
 
 ## Purpose
 
@@ -9,8 +9,9 @@ exact bytes once under their SHA-256 (an *object*), one JSON *observation* per
 response obtained, write-once publication, and integrity checks on read. The
 layout is fixed by ADR 0005 (and ADR 0002). It is its own capability, separate
 from `cli` and `project-toolchain`, because it is the first piece of product
-domain behavior. It is a library only: no CLI command, HTTP access, use case
-or PostgreSQL code calls it yet.
+domain behavior. Since F4 the `ingest` command and its use case call it
+(`ingestion`), with the fixed root `data/raw/`; no HTTP access or PostgreSQL
+code does.
 
 ## Requirements
 
@@ -216,18 +217,45 @@ unpacked into two items.
 The system SHALL expose the store through the `RawEvidenceStore` protocol in
 `application` with exactly `store(*, execution_id, sequence, method, url,
 status, headers, captured_at, content) -> Observation`,
-`read_content(content_hash) -> bytes` and
-`read_observation(execution_id, sequence) -> Observation`; SHALL provide
+`read_content(content_hash) -> bytes`,
+`read_observation(execution_id, sequence) -> Observation` and, since F4,
+`list_observation_sequences(execution_id) -> tuple[int, ...]` (RE-13); SHALL provide
 `LocalDiskRawEvidenceStore(root: Path)` in `infrastructure`, which satisfies
 the protocol structurally; and SHALL keep `ContentHash`, `Observation` and the
 errors (`RawEvidenceError`, `EvidenceIntegrityError`, `EvidenceNotFoundError`)
 in `domain`. The adapter SHALL write no log output and SHALL add no dependency.
 
-**Source:** raw-evidence-store · intent.md § AC11, AC12; execution-plan.md § Binding constraints "Public names and signatures", "No logging and no secrets", "Layer imports"
+**Source:** raw-evidence-store · intent.md § AC11, AC12; execution-plan.md § Binding constraints "Public names and signatures", "No logging and no secrets", "Layer imports"; ingest-command · intent.md § AC22; execution-plan.md § Ownership
 
 #### Scenario: Adapter typed as the port
 - **WHEN** a test assigns `LocalDiskRawEvidenceStore(tmp_path)` to a variable annotated `RawEvidenceStore` and `uv run mypy .` is run
 - **THEN** `mypy` exits 0, and `uv run pytest tests/unit -q -k layer` passes, including the check that `application` imports only the standard library, `domain` and itself
+
+### Requirement: RE-13 — Read-only listing of the observations of one execution
+
+The system SHALL provide `list_observation_sequences(execution_id)` on the
+`RawEvidenceStore` port and on `LocalDiskRawEvidenceStore`, which lists the
+sequence numbers of the observations of one execution in increasing order,
+every one present, without stopping at a gap. It SHALL be read-only (it lists
+the execution's folder, reads no file contents, and writes, renames and deletes
+nothing), so a corrupt record is still listed and reading it with
+`read_observation` decides (RE-7). An execution with no observation SHALL give
+an empty result with no error and no directory created; an execution id outside
+the F1 pattern SHALL raise `ValueError` before anything is read (RE-11); an
+entry of the execution's folder that is not an observation file name
+(`<sequence>.json`), a symbolic link or a directory SHALL raise
+`EvidenceIntegrityError` naming the execution and no content; files under
+`tmp/` and orphan objects are never listed.
+
+**Source:** ingest-command · intent.md § AC22; execution-plan.md § Ownership
+
+#### Scenario: Gaps are listed
+- **WHEN** observations 1, 2 and 5 are stored for `synthetic-exec-001` and 1 for `synthetic-exec-002`
+- **THEN** the listing for `synthetic-exec-001` is `(1, 2, 5)`, and corrupting `2.json` does not change it while reading 2 raises `EvidenceIntegrityError` and 5 still reads
+
+#### Scenario: Unknown or invalid execution
+- **WHEN** the listing is asked for an execution with no observation, and for `../escape`
+- **THEN** the first is `()` with no directory created, and the second raises `ValueError`
 
 ## Invariants
 
@@ -254,8 +282,10 @@ in `domain`. The adapter SHALL write no log output and SHALL add no dependency.
    no test asserts it, and permission hardening and read-only evidence are out
    of scope (ADR 0005).
 7. The store does not scale or retain: no compression, retention, automatic
-   cleanup of orphan objects or leftover temporary files, listing, indexing, or
-   bulk verification command exists (ADR 0005 consequences).
+   cleanup of orphan objects or leftover temporary files, indexing, or bulk
+   verification command exists (ADR 0005 consequences). (Modified by
+   `ingest-command` (F4): a read-only listing of the observations of one
+   execution now exists, RE-13; the other absences stand.)
 
 ## Open reservations
 
@@ -265,14 +295,15 @@ in `domain`. The adapter SHALL write no log output and SHALL add no dependency.
 | U2 | Real concurrent writers to one store are untested and out of scope; only the deterministic simulation (the final name appears between the absence check and publication, through the `os.fsync` seam, four `race` tests) guards the taken-name branch | LOW | raw-evidence-store · intent.md § Scope Out; audit.md § Round 2 A1 |
 | U3 | The effect of the POSIX directory sync is not checked (power-loss durability cannot be shown by a unit test) | LOW | raw-evidence-store · audit.md § Separate assessment |
 | N1 | Any change to the record bytes needs a `schema_version` bump and a compatible comparison for idempotent re-store (Invariant 4) | LOW | raw-evidence-store · audit.md § Notes N1 |
-| N2 | A failure of the POSIX directory `fsync` after the link raises `OSError` although the file is already published; a retry is idempotent, so F4 must not read an `OSError` from `store` as "nothing was written" | LOW | raw-evidence-store · audit.md § Notes N2 |
-| N3 | Integrity errors use `from None`, but `__context__` still links to the `JSONDecodeError`, whose `doc` attribute holds the record text, header values included; it matters only if a caller serializes exception contexts (for example when F4 adds logging) | LOW | raw-evidence-store · audit.md § Notes N3 |
+| N2 | A failure of the POSIX directory `fsync` after the link raises `OSError` although the file is already published; a retry is idempotent, so F4 must not read an `OSError` from `store` as "nothing was written". F4 asks the store for the observation after such an `OSError` and records it if found (ingest-command AC6 b); carried and accepted on 2026-10-28 | LOW | raw-evidence-store · audit.md § Notes N2; ingest-command · tasks.md § Carried reservations |
+| N3 | Integrity errors use `from None`, but `__context__` still links to the `JSONDecodeError`, whose `doc` attribute holds the record text, header values included; it matters only if a caller serializes exception contexts (for example when F4 adds logging). F4 prints no exception chain or `__context__`, only fixed messages and class names (ingest-command AC15); carried and accepted on 2026-10-28 | LOW | raw-evidence-store · audit.md § Notes N3; ingest-command · tasks.md § Carried reservations |
 
 ## Contributing features
 
 | Feature | Shipped | What it established |
 |---|---|---|
 | raw-evidence-store (F1) | 2026-10-09 | The content hash, the observation and the evidence errors in `domain`, the `RawEvidenceStore` port in `application`, and the local-disk adapter in `infrastructure`, with the ADR 0005 layout, write-once atomic publication, the `Set-Cookie` rule and integrity checks on read (RE-1 to RE-12) |
+| ingest-command (F4) | 2026-10-28 | Modified RE-12 (the port and adapter gain `list_observation_sequences`) and Invariant 7 (a read-only listing exists; still no indexing, bulk verification or cleanup); added RE-13 (the listing). The `ingest` command is the first caller of the store |
 
 ## Related ADRs
 

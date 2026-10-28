@@ -1,6 +1,6 @@
 # Persistence Specification
 
-> Last synced: 2026-10-14. Owned artifacts: `migrations/0001_initial_schema.sql`, `src/ec_procurement_quality/domain/ingestion_audit.py`, `src/ec_procurement_quality/domain/persistence_errors.py`, `src/ec_procurement_quality/application/ingestion_repository.py`, `src/ec_procurement_quality/infrastructure/postgres_settings.py`, `src/ec_procurement_quality/infrastructure/postgres_migrations.py`, `src/ec_procurement_quality/infrastructure/postgres_ingestion_repository.py`, `tests/unit/test_ingestion_audit.py`, `tests/unit/test_postgres_settings.py`, `tests/unit/test_postgres_migration_files.py`, `tests/integration/`.
+> Last synced: 2026-10-28. Owned artifacts: `migrations/0001_initial_schema.sql`, `src/ec_procurement_quality/domain/ingestion_audit.py`, `src/ec_procurement_quality/domain/persistence_errors.py`, `src/ec_procurement_quality/application/ingestion_repository.py`, `src/ec_procurement_quality/infrastructure/postgres_settings.py`, `src/ec_procurement_quality/infrastructure/postgres_migrations.py`, `src/ec_procurement_quality/infrastructure/postgres_ingestion_repository.py`, `tests/unit/test_ingestion_audit.py`, `tests/unit/test_postgres_settings.py`, `tests/unit/test_postgres_migration_files.py`, `tests/unit/test_persistence_error_hierarchy.py`, `tests/integration/` (including `tests/integration/ingest/test_postgres_runs_and_exclusion.py`).
 
 ## Purpose
 
@@ -11,8 +11,8 @@ append-only list of audit events per run. The raw bytes stay in the local store
 of `raw-evidence` (ADR 0005); PostgreSQL holds identity, metadata and audit
 only. It is its own capability because it owns the database schema, the
 migration runner and the `psycopg` adapter, which neither `raw-evidence` nor
-`source-access` describes. It is a library only: no CLI command or use case
-calls the runner or the adapter yet.
+`source-access` describes. Since F4 the `ingest` command calls the runner and
+the adapter (`ingestion`, `cli`).
 
 ## Requirements
 
@@ -70,15 +70,19 @@ connection is opened.
 ### Requirement: PS-4 — One migration run at a time
 
 The system SHALL take the session advisory lock `pg_try_advisory_lock(MIGRATION_LOCK_KEY)`
-before creating the bookkeeping table, SHALL fail at once with `MigrationError`
-when another session holds it, creating and applying nothing, SHALL never wait,
-and SHALL release it before returning.
+before creating the bookkeeping table, SHALL fail at once with
+`MigrationLockError` when another session holds it, creating and applying
+nothing, SHALL never wait, and SHALL release it before returning.
+`MigrationLockError` is a subclass of `MigrationError` with the same fixed
+message, raised only at that one busy-lock branch; every other runner refusal
+stays a plain `MigrationError`, so existing handlers of `MigrationError` keep
+working.
 
-**Source:** postgres-persistence · intent.md § AC4
+**Source:** postgres-persistence · intent.md § AC4; ingest-command · intent.md § AC16 (decision P-1); execution-plan.md § Ownership
 
 #### Scenario: Lock held elsewhere
 - **WHEN** a separate connection to an empty throwaway database holds the lock with `MIGRATION_LOCK_KEY` and `apply_migrations` is called
-- **THEN** `MigrationError` says another migration run holds the lock, `schema_migration` does not exist, and after the lock is released the call succeeds
+- **THEN** `MigrationLockError` (a `MigrationError`) says another migration run holds the lock, `schema_migration` does not exist, and after the lock is released the call succeeds; every non-lock `MigrationError` case is not a `MigrationLockError`
 
 ### Requirement: PS-5 — The schema enforces identities and rules
 
@@ -118,7 +122,8 @@ and SHALL let a run change only once, from `running` to `succeeded` or
 ### Requirement: PS-7 — Runs through the port, repeats safe, scopes compared as JSON values
 
 The system SHALL start, finish and read runs through `IngestionRepository`
-(`start_run`, `finish_run`, `read_run`), return the stored run unchanged for a
+(`start_run`, `finish_run`, `read_run`; and, since F4, list them by status with
+`list_runs`, PS-14), return the stored run unchanged for a
 repeat with the same values, and raise `PersistenceIntegrityError` for a
 different value under an existing identity. Two scopes SHALL be the same only
 when `same_json` holds: types are compared at every depth (`True` is not `1`,
@@ -128,7 +133,7 @@ when `same_json` holds: types are compared at every depth (`True` is not `1`,
 execution id SHALL raise `PersistenceNotFoundError`. Times read back SHALL be
 the same instants, in UTC.
 
-**Source:** postgres-persistence · intent.md § AC7, Revision 2; execution-plan.md § Binding constraints "Public names and signatures" (`same_json(left: object, right: object)`), § Adapter behavior
+**Source:** postgres-persistence · intent.md § AC7, Revision 2; execution-plan.md § Binding constraints "Public names and signatures" (`same_json(left: object, right: object)`), § Adapter behavior; ingest-command · execution-plan.md § Ownership (`list_runs`)
 
 #### Scenario: Repeat and conflict
 - **WHEN** `start_run` of `synthetic-exec-001` with scope `{"source": "synthetic", "year": 2025}` is repeated with the same scope and start instant, and then with another scope
@@ -243,20 +248,53 @@ migration file name); SHALL make no driver exception reachable through
 ### Requirement: PS-13 — Layer placement and the port
 
 The system SHALL keep the run status, `IngestionRun`, `AuditEvent`, `JsonValue`,
-`same_json` and the five persistence errors (`PersistenceError` and its direct
+`same_json` and the six persistence errors (`PersistenceError`, its four direct
 subclasses `PersistenceConnectionError`, `PersistenceIntegrityError`,
-`PersistenceNotFoundError` and `MigrationError`) in `domain` (standard library
-only, strict `mypy`); the `IngestionRepository` protocol in `application`
-(standard library and `domain` only); and `PostgresSettings`,
+`PersistenceNotFoundError` and `MigrationError`, and `MigrationLockError`, a
+subclass of `MigrationError`) in `domain` (standard library only, strict
+`mypy`); the `IngestionRepository` protocol in `application` (standard library
+and `domain` only), which since F4 also has `list_runs` and
+`try_acquire_ingest_exclusion`; and `PostgresSettings`,
 `apply_migrations` and `PostgresIngestionRepository` in `infrastructure`, the
 only layer that imports `psycopg`. The adapter SHALL satisfy the port
 structurally and be used by one thread at a time.
 
-**Source:** postgres-persistence · intent.md § AC13; execution-plan.md § Binding constraints "Public names and signatures", "Other constraints"
+**Source:** postgres-persistence · intent.md § AC13; execution-plan.md § Binding constraints "Public names and signatures", "Other constraints"; ingest-command · intent.md § AC16, AC23; execution-plan.md § Ownership
 
 #### Scenario: Adapter typed as the port
 - **WHEN** a test assigns `PostgresIngestionRepository(settings)` to a variable annotated `IngestionRepository`, and `uv run mypy .` and `uv run pytest tests/unit -q -k layer` are run
 - **THEN** both succeed, including `test_layer_only_infrastructure_imports_psycopg`
+
+#### Scenario: Six errors
+- **WHEN** `uv run pytest tests/unit/test_persistence_error_hierarchy.py -q` is run
+- **THEN** it passes: `MigrationLockError.__bases__ == (MigrationError,)`, the persistence errors are six, and the four direct subclasses of `PersistenceError` are unchanged
+
+### Requirement: PS-14 — Runs listed by status, and one ingest at a time
+
+The system SHALL provide, on the `IngestionRepository` port and on
+`PostgresIngestionRepository`, `list_runs(status)`, which returns the runs with
+that `RunStatus` in a stable order (start time, then execution id) and raises
+`ValueError` for a status that is not a `RunStatus`; and
+`try_acquire_ingest_exclusion() -> bool`, which takes the ingest exclusion or
+confirms that this repository holds it, returns `False` at once, without waiting
+and without writing, when another session holds it, and keeps the hold for the
+rest of the connection (until `close()` or the end of the session; there is no
+release operation). The port SHALL speak only of the exclusion: the advisory
+lock that implements it, and its key, stay inside `infrastructure`, and nothing
+in an error text, `repr` or `args` names that key or any setting. The exclusion
+and the migration lock (PS-4) SHALL NOT block each other. A repository that
+lost its connection SHALL report `PersistenceConnectionError` and no longer
+claim the exclusion.
+
+**Source:** ingest-command · intent.md § AC23; execution-plan.md § Ownership
+
+#### Scenario: Listing by status
+- **WHEN** runs `synthetic-exec-001` `running`, `synthetic-exec-002` `failed` and `synthetic-exec-003` `running` are stored
+- **THEN** `list_runs(RunStatus.RUNNING)` returns 001 and 003 in a stable order and `list_runs(RunStatus.FAILED)` returns 002
+
+#### Scenario: Two repositories, one exclusion
+- **WHEN** a repository takes the exclusion and a second repository on the same database asks for it
+- **THEN** the second is refused at once without waiting and nothing is written; after the first is closed, or its server session is terminated, the second takes it
 
 ## Invariants
 
@@ -277,23 +315,28 @@ structurally and be used by one thread at a time.
    mappings, which treats `True` as `1`.
 7. Audit events are not idempotent and have no idempotency key; a caller must
    not retry `append_audit_event` blindly after `PersistenceConnectionError`.
-8. Nothing calls the runner or the adapter yet: no CLI command, no use case, no
-   code under `src/` reads the environment or `.env`.
+8. ~~Nothing calls the runner or the adapter yet: no CLI command, no use case,
+   no code under `src/` reads the environment or `.env`.~~ Retired by
+   `ingest-command` (F4): the `ingest` command calls the runner and the adapter
+   through the `ingestion` use case. What still holds: no code under `src/`
+   reads `.env`; the command reads the connection settings from the process
+   environment only (`cli`, CLI-4).
 
 ## Open reservations
 
 | ID | Reservation | Severity | Source |
 |---|---|---|---|
-| U1 | The outcome of a connection lost while the commit is in flight is unknown and is documented, not tested (a deterministic test needs a protocol-aware proxy) | LOW (impact Med) | postgres-persistence · intent.md § AC11; audit.md § AC11 |
+| U1 | The outcome of a connection lost while the commit is in flight is unknown and is documented, not tested (a deterministic test needs a protocol-aware proxy). F4 covers its state machine with test doubles (`FlakyRepository` and the kill seams); the real wire-level case is still untested. Restated and accepted by the human on 2026-10-28 | LOW (impact Med) | postgres-persistence · intent.md § AC11; audit.md § AC11; ingest-command · tasks.md § Carried reservations |
 | F5 | The record does not show that the per-turn Stop hook fired during implementation; only the CI gate and the reruns are shown (accepted by the human as an environment observation) | LOW | postgres-persistence · audit.md § Findings F5 |
 | N3 | `open_connection` and `connection_was_lost` live in `postgres_settings.py`; a dedicated connection module could be considered when F4 adds consumers (recommendation) | LOW | postgres-persistence · audit.md § Notes N3 |
-| N5 | An existence check followed by a list runs in two statement snapshots under READ COMMITTED; safe today because runs cannot be deleted; F4 may use REPEATABLE READ for reads if it needs one snapshot (recommendation) | LOW | postgres-persistence · audit.md § Notes N5 |
+| N5 | An existence check followed by a list runs in two statement snapshots under READ COMMITTED; safe today because runs cannot be deleted; F4 may use REPEATABLE READ for reads if it needs one snapshot (recommendation). F4's reconciliation reads run in separate snapshots too, which is safe under the ingest exclusion (PS-14). Restated and accepted by the human on 2026-10-28 | LOW | postgres-persistence · audit.md § Notes N5; ingest-command · tasks.md § Carried reservations |
 
 ## Contributing features
 
 | Feature | Shipped | What it established |
 |---|---|---|
 | postgres-persistence (F3) | 2026-10-14 | The schema `0001_initial_schema.sql`, the migration runner, the domain types and errors, the `IngestionRepository` port and the `psycopg` adapter, with append-only triggers, idempotent repeats, typed errors and no leaks (PS-1 to PS-13) |
+| ingest-command (F4) | 2026-10-28 | Modified PS-4 (a busy lock raises `MigrationLockError`), PS-7 (`list_runs`) and PS-13 (six errors; two more port operations); added PS-14 (runs listed by status and the ingest exclusion); retired Invariant 8 (the `ingest` command now calls the runner and the adapter); restated U1 and N5. No schema change, no migration |
 
 ## Related ADRs
 
