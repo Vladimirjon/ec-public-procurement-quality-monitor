@@ -110,14 +110,28 @@ The project has not been released yet, so every entry is under `Unreleased`.
     from a closed catalogue;
   - writes the single result line `<execution id> <status>` to stdout and the
     progress and errors to stderr, and ends with exit code 0 (succeeded), 1
-    (failed, not started or broken resumption chain), 2 (usage, environment,
-    migration error other than a busy lock, or invalid resumption target) or 130
-    (Ctrl+C).
+    (failed, not started, broken resumption chain, or the result could not be
+    written), 2 (usage, environment, migration error other than a busy lock, or
+    invalid resumption target) or 130 (Ctrl+C);
+  - writes and flushes every output in one protected attempt, so a closed or
+    failing stdout or stderr (for example a pipe whose reader has gone) ends with
+    exit code 1 (130 for Ctrl+C), never with Python's own exit code 120 or its
+    `Exception ignored` report, and a failed write of the result leaves the
+    stored run's status unchanged. A stderr that fails while the run is still in
+    progress is an error of the progress reporter and closes the run `failed`,
+    as for any other reporter error. One residual case is listed under Known
+    limitations;
+  - treats a stdout or stderr that is missing when Python starts (for example
+    `>&-` or `2>&-`) as disabled output, not as a failure: nothing meant for it is
+    written, not even on the other stream, and the exit code and the stored run
+    are those of working streams.
 
   The use case lives in `application` (`run_ingest` and its ports), the
   catalogue and scope in `domain`, and the composition in `interfaces`. No
   migration, dependency or `compose.yaml` change was needed. Its tests use
-  in-memory doubles and simulated transports and never reach the network.
+  in-memory doubles and simulated transports and never reach the network; a
+  process tier under `tests/process/` runs `cli.main` in child Python processes
+  with working, closed and missing pipes.
 
 ### Changed
 
@@ -150,7 +164,21 @@ The project has not been released yet, so every entry is under `Unreleased`.
   Existing handlers of `MigrationError` keep working.
 - `[tool.mypy]` in `pyproject.toml` gains `explicit_package_bases = true` and
   `mypy_path = "src"`, so that `uv run mypy .` accepts the several `conftest.py`
-  files of the test folders. No dependency was added and `uv.lock` is unchanged.
+  files of the test folders. No dependency was added.
+- `uv.lock`: the `certifi` package, already locked, is updated from 2026.7.22 to
+  2026.10.23 (a security update, GHSA-6q48-6c7w-9gw2). No package was added or
+  removed, and `pyproject.toml` does not change for it. The audit found it
+  outside the literal "`uv.lock` is unchanged" checks of the F4 specs and the
+  human kept it on 2026-10-28.
+- `main` of the CLI now turns a Ctrl+C that reaches it into exit code 130 and any
+  other exception into exit code 1, without a traceback, for every command, and
+  lets every `SystemExit` through unchanged, so `--version` (0) and usage errors
+  (2) are as before. The main parser and the `ingest` subparser share one local
+  `ArgumentParser` subclass that overrides only the writing hook and
+  `print_usage`; `argparse` itself is not changed.
+- With a stdout that is missing when Python starts, `--version`, `--help` and
+  `ingest --help` now print nothing and exit 0; `argparse` alone would have
+  written their text on stderr. With working streams nothing changes.
 - `README.md`, `AGENTS.md` and `docs/architecture.md` describe the `ingest`
   command and replace the sentences that said nothing calls the adapters. The
   minimum audit events and the run scope are answered for ingestion in
@@ -216,3 +244,20 @@ The project has not been released yet, so every entry is under `Unreleased`.
     responses have not been compared with the earlier observations (source
     access, first real ingestion). The command was tested only with simulated
     sources.
+  - Accepted at audit (APPROVED WITH RESERVATIONS, round 8): if the command
+    redirects a failed output stream to the null device and that redirection
+    itself fails (the null device cannot be opened, `os.dup2` raises, the stream
+    has no usable descriptor, or the redirected stream still fails), Python's
+    finalization may still print its `Exception ignored ... flushing` report and
+    replace the agreed exit code by 120. This changes nothing in PostgreSQL, and
+    the output is not attempted again. It is a stated limitation, not a
+    guarantee; the README states it too.
+  - A run closed before its `run-started` event was written (for example by a
+    reporter that fails at that point, or a Ctrl+C there) cannot be resumed:
+    `--resume` answers `invalid resumption chain <execution id>` and exits 1.
+    The specification makes such a chain malformed on purpose. That run requested
+    nothing, so nothing is lost, and a fresh `ingest` of the same scope does the
+    same work.
+  - A Ctrl+C that lands in the last few instructions of `main`, after the exit
+    code was decided, can still print a traceback. It touches no data or run
+    state.

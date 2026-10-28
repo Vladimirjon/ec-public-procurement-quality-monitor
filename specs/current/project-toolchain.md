@@ -1,6 +1,6 @@
 # Project Toolchain Specification
 
-> Last synced: 2026-10-14. Owned artifacts: `pyproject.toml`, `uv.lock`, `src/ec_procurement_quality/`, `tests/unit/`, `tests/integration/conftest.py`, `.github/workflows/harny-feedback.yml` (hand-maintained steps), `.github/workflows/tests.yml`.
+> Last synced: 2026-10-28. Owned artifacts: `pyproject.toml`, `uv.lock`, `src/ec_procurement_quality/`, `tests/unit/`, `tests/process/`, `tests/integration/conftest.py`, `.github/workflows/harny-feedback.yml` (hand-maintained steps), `.github/workflows/tests.yml`.
 
 ## Purpose
 
@@ -75,9 +75,12 @@ repository.
 
 The system SHALL pass `mypy .` on the whole repository, with strict checking
 applied to `ec_procurement_quality.domain.*` through explicit per-module flags
-and not to the other layers.
+and not to the other layers. The `[tool.mypy]` table also sets
+`explicit_package_bases = true` and `mypy_path = "src"` (decision F-1 of the
+human, F4), so that `mypy .` accepts the several `conftest.py` files of the test
+folders; no strictness changes outside `domain`.
 
-**Source:** project-skeleton · intent.md § AC8
+**Source:** project-skeleton · intent.md § AC8; ingest-command · intent.md § AC18, AC20 (decision F-1); execution-plan.md § Ownership
 
 #### Scenario: Untyped function in domain
 - **WHEN** `def f(x): return x` is placed in `src/ec_procurement_quality/domain/probe.py` and `uv run mypy .` is run
@@ -89,16 +92,17 @@ and not to the other layers.
 
 ### Requirement: PT-6 — Unit test suite
 
-The system SHALL run a pytest suite from `tests/unit/` and `tests/integration/`
-with `uv run pytest`, including a unit test that proves the version command
+The system SHALL run a pytest suite from `tests/unit/`, `tests/integration/`
+and, since F4, `tests/process/` (child-process tests of the CLI's output
+streams) with `uv run pytest`, including a unit test that proves the version command
 output (CLI-1). The integration tests are skipped when no database is
 configured (PT-13).
 
-**Source:** project-skeleton · intent.md § AC9; postgres-persistence · intent.md § AC14, § Constraints "Current-truth notes"
+**Source:** project-skeleton · intent.md § AC9; postgres-persistence · intent.md § AC14, § Constraints "Current-truth notes"; ingest-command · audit.md round 8 § Commands run
 
 #### Scenario: Run the suite
 - **WHEN** `uv run pytest` is run
-- **THEN** it exits 0 with every test passed (7 at F0; 137 at F1, the 7 F0 tests plus 130 raw evidence tests; 961 at F2, the 137 earlier tests plus 824 source adapter tests; at F3, 1307 tests, of which 1132 passed and 175 integration tests were skipped without a database, and all 1307 passed with `uv run --env-file .env pytest`), including the version test in `tests/unit/test_cli.py`
+- **THEN** it exits 0 with every test passed (7 at F0; 137 at F1, the 7 F0 tests plus 130 raw evidence tests; 961 at F2, the 137 earlier tests plus 824 source adapter tests; at F3, 1307 tests, of which 1132 passed and 175 integration tests were skipped without a database, and all 1307 passed with `uv run --env-file .env pytest`; at F4, 2976 tests, of which 2710 passed and 266 integration tests were skipped without a database, and all 2976 passed with `uv run --env-file .env pytest`, 0 skipped), including the version test in `tests/unit/test_cli.py`
 
 ### Requirement: PT-7 — The `feedback` CI check really runs ruff and mypy
 
@@ -154,11 +158,11 @@ pull request and on every push to `main`, installing with
 `uv sync --locked` and running
 `uv run pytest --cov=ec_procurement_quality --cov-report=term-missing`.
 
-**Source:** project-skeleton · intent.md § AC14; postgres-persistence · intent.md § AC15; execution-plan.md § Binding constraints "CI"
+**Source:** project-skeleton · intent.md § AC14; postgres-persistence · intent.md § AC15; execution-plan.md § Binding constraints "CI"; ingest-command · audit.md round 8 § Commands run; tasks.md § Working state
 
 #### Scenario: Pull request
 - **WHEN** a pull request is opened
-- **THEN** the `Tests` job is green, its `Install dependencies` step ran `uv sync --locked`, and its `Run tests` log shows a `TOTAL` coverage row and every test passed (`7 passed` at F0, `133 passed` on the F1 head `392145f`; 137 locally at F1 with the `race` tests; at F2, `890 passed` on the PR #16 head `dc78500`, the run the audit read, and `961 passed` on the PR #16 head `b939248`, confirmed by a read of the PR checks after the audit, outside `audit.md`; 961 locally; at F3, `1298 passed` with no skipped count on the PR #23 head `ee9ac87`, run `38604796727`, whose log shows `docker pull postgres:18` and `PostgreSQL 18.6`, the run the audit read; 1307 locally after the tests added for audit findings F3 and F4). The push-to-`main` trigger is verified by inspection only
+- **THEN** the `Tests` job is green, its `Install dependencies` step ran `uv sync --locked`, and its `Run tests` log shows a `TOTAL` coverage row and every test passed (`7 passed` at F0, `133 passed` on the F1 head `392145f`; 137 locally at F1 with the `race` tests; at F2, `890 passed` on the PR #16 head `dc78500`, the run the audit read, and `961 passed` on the PR #16 head `b939248`, confirmed by a read of the PR checks after the audit, outside `audit.md`; 961 locally; at F3, `1298 passed` with no skipped count on the PR #23 head `ee9ac87`, run `38604796727`, whose log shows `docker pull postgres:18` and `PostgreSQL 18.6`, the run the audit read; 1307 locally after the tests added for audit findings F3 and F4; at F4, `2976 passed` on the PR #26 head `108c5a0`, run `40617404828`, Linux, Python 3.13.18, total coverage 98 %, the run the audit read, and again `2976 passed` on `61fb1c1`, run `40718224389`; 2976 locally with the database). The push-to-`main` trigger is verified by inspection only
 
 ### Requirement: PT-11 — `pytest-cov` is development-only, and `httpx` and `psycopg` are the only runtime dependencies
 
@@ -252,6 +256,7 @@ except that when the `CI` variable is `true` it SHALL fail instead.
 | F4 | The Stop, SubagentStop and pre-commit hooks skip `ruff` and `mypy` when `.venv` is not on `PATH`; accepted and documented (PT-9) | LOW | project-skeleton · audit.md |
 | F6 | `tasks.md` bookkeeping was stale at audit time; `tasks.md` says it was corrected afterwards, which the auditor did not re-check | LOW | project-skeleton · audit.md |
 | F7 | The CI-side probe that a failing test turns `tests` red was not run; only the local exit code exists | LOW | project-skeleton · audit.md |
+| F-30 | `uv.lock` differs from `main` before F4 only by the already-locked transitive dependency `certifi` 2026.7.22 -> 2026.10.23 (a security update, GHSA-6q48-6c7w-9gw2; no package added, `pyproject.toml` unchanged for it, `uv audit --locked` clean). The literal "`uv.lock` is unchanged" checks of the F4 specs (AC18, AC20) are stale by exactly that one package. The human kept the update on 2026-10-28; no earlier authorization is recorded | LOW | ingest-command · audit.md round 8 § B F-30; tasks.md § Carried reservations |
 
 `tests` became a required status check of `main` on 2026-10-09, after the F0
 audit, as a human GitHub settings action outside F0 scope (see
@@ -265,6 +270,7 @@ audit, as a human GitHub settings action outside F0 scope (see
 | raw-evidence-store (F1) | 2026-10-09 | Modified PT-3 (the layers may hold modules; `application` imports only the standard library, `domain` and itself, enforced by a layer test) and PT-6, PT-10 and PT-11 (test counts restated: 137 at F1). Invariants 3 and 4 kept |
 | sercop-source-adapter (F2) | 2026-10-12 | Modified PT-3 (only `infrastructure` may import `httpx`, enforced by a layer test), PT-11 (`[project] dependencies` holds `httpx`, the first approved runtime dependency, and Invariant 4 is fulfilled) and the counts of PT-6, PT-10 and PT-11 (961 at F2) |
 | postgres-persistence (F3) | 2026-10-14 | Modified PT-3 (only `infrastructure` may import `psycopg`, enforced by a layer test), PT-6 (the suite includes `tests/integration/`), PT-10 (the `tests` job runs a `postgres:18` service and the integration tests) and PT-11 (`psycopg[binary]`, the second approved runtime dependency; Invariant 4 kept), restated the counts (1307 at F3), and added PT-13 (integration tier, one throwaway database per test, skip or fail policy) and Invariant 6 |
+| ingest-command (F4) | 2026-10-28 | Restated the counts of PT-6 and PT-10 (2976 at F4; the suite now includes `tests/process/`), noted in PT-5 the two `[tool.mypy]` keys of decision F-1 (PT-3 unchanged: the layer tests also cover the new modules); registered reservation F-30 (the `certifi` lockfile update) |
 
 ## Related ADRs
 
