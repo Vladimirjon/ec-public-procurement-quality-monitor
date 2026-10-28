@@ -298,6 +298,10 @@ Output and exit codes:
   case, where redirecting the failed stream to the null device itself fails,
   Python's finalization may still print that report and replace the exit code by
   120; this changes nothing in PostgreSQL, and the output is not attempted again.
+- A stream that is closed when the command starts (for example `2>&-` or `>&-`)
+  is not a failure: that output is simply not written, never redirected to the
+  other stream, and the exit code and the stored run are the same as with the
+  stream open.
 - stderr carries the progress and the errors, each as a fixed message that never
   includes a URL, a header, a body or a setting. It names each database
   operation that was refused or lost, with the run concerned (and the sequence

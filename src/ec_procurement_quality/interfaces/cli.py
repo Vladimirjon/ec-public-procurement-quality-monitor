@@ -31,19 +31,32 @@ PROGRAM_NAME = "ec-procurement-quality"
 DISTRIBUTION_NAME = "ec-procurement-quality"
 
 
+# "No file given" must differ from an explicit ``None``, which is a missing stream.
+_NO_FILE: Any = object()
+
+
 class _CliParser(argparse.ArgumentParser):
     """The parser of the command line: ``argparse``'s own, but a failing write shows.
 
     ``argparse`` suppresses an ``OSError`` from its own writes (``--version``,
     ``--help``, the usage and the error message). Here it reaches the handler of
-    ``main``, and the message is flushed in the same attempt. Only the writing hook
-    changes; ``argparse`` itself is not patched.
+    ``main``, and the message is flushed in the same attempt. A message meant for a
+    missing stream (``None``) is not written, nor written on the other stream, where
+    ``argparse`` would fall back to it. Only the writing hook and ``print_usage``
+    change; ``argparse`` itself is not patched.
     """
 
-    def _print_message(self, message: str, file: Any = None) -> None:
-        if message:
+    def _print_message(self, message: str, file: Any = _NO_FILE) -> None:
+        if file is _NO_FILE:
+            file = sys.stderr
+        if message and file is not None:
             with suppress(AttributeError):
-                write_text(file or sys.stderr, message)
+                write_text(file, message)
+
+    def print_usage(self, file: Any = _NO_FILE) -> None:
+        if file is _NO_FILE:
+            file = sys.stdout
+        self._print_message(self.format_usage(), file)
 
 
 class _IngestParser(_CliParser):

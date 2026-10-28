@@ -194,7 +194,7 @@ class _StderrReporter:
     It also remembers that the result line was attempted: at most one per invocation.
     """
 
-    def __init__(self, stderr: TextIO) -> None:
+    def __init__(self, stderr: TextIO | None) -> None:
         self._stderr = stderr
         self.execution_id: str | None = None
         self.result_written = False
@@ -252,7 +252,10 @@ def _settled_code(code: int, failures: Sequence[BaseException | None]) -> int:
 
 
 def _report(
-    outcome: IngestOutcome, reporter: _StderrReporter, stdout: TextIO, stderr: TextIO
+    outcome: IngestOutcome,
+    reporter: _StderrReporter,
+    stdout: TextIO | None,
+    stderr: TextIO | None,
 ) -> int:
     """Write the final message and the result line; return the exit code.
 
@@ -267,7 +270,7 @@ def _report(
     return _settled_code(_EXIT_CODES[outcome.end], failures)
 
 
-def _print_running(reporter: _StderrReporter, stdout: TextIO) -> None:
+def _print_running(reporter: _StderrReporter, stdout: TextIO | None) -> None:
     """An exception escaped after the run was announced: closing is unconfirmed.
 
     Nothing is printed when a result line was already attempted.
@@ -278,7 +281,11 @@ def _print_running(reporter: _StderrReporter, stdout: TextIO) -> None:
 
 
 def _end_after_escape(
-    reporter: _StderrReporter, stdout: TextIO, stderr: TextIO, code: int, text: str
+    reporter: _StderrReporter,
+    stdout: TextIO | None,
+    stderr: TextIO | None,
+    code: int,
+    text: str,
 ) -> int:
     """The handlers of an exception that escaped `run_ingest`: the line, then `text`."""
     failures = [
@@ -292,7 +299,7 @@ def _migrate(
     wiring: IngestWiring,
     settings: PostgresSettings,
     directory: Path,
-    stderr: TextIO,
+    stderr: TextIO | None,
 ) -> int | None:
     """Apply the migrations; return an exit code when they stop the command."""
     try:
@@ -319,8 +326,8 @@ def _invoke(
     migrations_dir: Path,
     store_root: Path,
     reporter: _StderrReporter,
-    stdout: TextIO,
-    stderr: TextIO,
+    stdout: TextIO | None,
+    stderr: TextIO | None,
 ) -> int:
     try:
         source = wiring.make_source(wiring.clock.now)
@@ -364,8 +371,8 @@ def run_ingest_command(
     *,
     environ: Mapping[str, str],
     wiring: IngestWiring,
-    stdout: TextIO,
-    stderr: TextIO,
+    stdout: TextIO | None,
+    stderr: TextIO | None,
 ) -> int:
     """Run ``ingest`` and return the exit code: 0, 1, 2 or 130.
 
